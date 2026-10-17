@@ -28,8 +28,8 @@
  *    case times out — the live-session gap, back again.
  *  - Emptying reattachBackoffMs, or otherwise not re-attaching a RUNNING
  *    workflow: "dropped stream" times out waiting for the second attach.
- *  - Resuming a reconnect from 0 rather than the last offset the server sent:
- *    the from_offset assertion fails. Replaying from zero is not harmless — it
+ *  - Resuming a reconnect from 0 rather than the last point the server sent:
+ *    the resume assertion fails. Replaying from zero is not harmless — it
  *    re-sends the whole history on every blip.
  *  - Never registering the `online` listener: "connectivity returns" times out,
  *    which is a reader stranded by an outage that outlasted the retry budget.
@@ -111,7 +111,7 @@ const session = (id, over = {}) => ({
 
 /**
  * A frame shaped like the wire's. `replay` is what puts the pipeline in
- * catch-up, and `resume_offset` is what a reconnect resumes from, so both have
+ * catch-up, and `resume` is what a reconnect resumes from, so both have
  * to be real for this to test anything.
  */
 const frame = (agentId, offset, { replay = true } = {}) => ({
@@ -122,7 +122,7 @@ const frame = (agentId, offset, { replay = true } = {}) => ({
     turn_id: "t1",
     turn_number: 1,
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     delta: `${agentId}#${offset} `,
     replay
@@ -144,7 +144,7 @@ const subagentStarted = (subagentId, workflowId, offset) => ({
     turn_id: "t1",
     turn_number: 1,
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     subagent_id: subagentId,
     agent_key: "qa",
@@ -260,8 +260,8 @@ function fakeApi({ streamFor, statusFor }) {
         const status = statusFor(workflowId);
         return { workflow_id: workflowId, execution_status: status, closed: status !== "RUNNING" };
       },
-      attach(sessionId, fromOffset, signal) {
-        attachCalls.push({ sessionId, fromOffset });
+      attach(sessionId, resume, signal) {
+        attachCalls.push({ sessionId, resume });
         return streamFor(sessionId).iterate(signal);
       }
     }
@@ -436,7 +436,7 @@ describe("frame arrival", () => {
 
     void controller.selectSession("wf-drop");
     await waitFor("the first attach", () => attachCalls.length === 1);
-    assert.equal(attachCalls[0].fromOffset, 0, "a first attach starts from the beginning");
+    assert.equal(attachCalls[0].resume, "", "a first attach starts from the beginning");
 
     stream.push(...Array.from({ length: 3 }, (_, i) => frame("root", i)));
     await sleep(80);
@@ -444,9 +444,9 @@ describe("frame arrival", () => {
 
     await waitFor("a re-attach after the drop", () => attachCalls.length === 2, 6_000);
     assert.equal(
-      attachCalls[1].fromOffset,
-      3,
-      "a reconnect must resume from the last offset the server sent, not replay from 0"
+      attachCalls[1].resume,
+      "3@c",
+      "a reconnect must resume from the last point the server sent, not replay from the beginning"
     );
 
     stream.push(...Array.from({ length: 2 }, (_, i) => frame("root", 3 + i)));
@@ -521,9 +521,9 @@ describe("frame arrival", () => {
       "the reconnect must target the session on screen"
     );
     assert.equal(
-      attachCalls[1].fromOffset,
-      controller.lastResumeOffset,
-      "reconnecting on an online event must resume from the last offset too"
+      attachCalls[1].resume,
+      controller.lastResume,
+      "reconnecting on an online event must resume from the last point too"
     );
     finish("wf-later");
     streams["wf-later"].end();

@@ -54,16 +54,20 @@ async def connect_client() -> "Client":
     The plugin is where the shared data converter is DEFINED, so the session-manager worker, the
     web server, and every agent worker can read each other's payloads only because they all add
     it. Its default large-payload storage matches ``create_agent_harness_app``'s, keeping the
-    packaged entrypoints mutually readable out of the box.
+    packaged entrypoints mutually readable out of the box. The stream provider named by
+    ``STREAMS_PROVIDER`` rides along, the same one every agent worker registers.
     """
     from temporalio.client import Client
     from temporalio.envconfig import ClientConfig
 
+    from temporal_agent_harness.harness.stream_transport import provider_from_env
     from temporal_agent_harness.plugin import AgentHarnessPlugin
 
     connect_config = ClientConfig.load_client_connect_config()
     try:
-        return await Client.connect(**connect_config, plugins=[AgentHarnessPlugin()])
+        return await Client.connect(
+            **connect_config, plugins=[AgentHarnessPlugin(), provider_from_env()]
+        )
     except RuntimeError as exc:
         # "no server running" is the commonest way a first run fails, and the SDK reports it as a
         # dozen frames of tonic/bridge internals. Translate just that failure into the two things

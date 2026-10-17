@@ -213,11 +213,12 @@ async def _answer_open_questions(http: httpx.AsyncClient, session_id: str) -> bo
         print("  ✓ submitted")
 
     # The turn only proceeds once EVERY parked callback in the batch is answered, so watch it now.
-    # We didn't start this turn, so observe it via /api/attach; from_offset=0 replays history, and
-    # _observe suppresses it until our answers resolve (fine for an example — a resume_offset cursor
-    # would trim the replay). Any follow-up ask_user in the same turn is handled inline by _observe.
+    # We didn't start this turn, so observe it via /api/attach; with no resume point it replays
+    # history, and _observe suppresses it until our answers resolve (fine for an example — the
+    # `resume` value each event carries would trim the replay). Any follow-up ask_user in the same
+    # turn is handled inline by _observe.
     async with http.stream(
-        "GET", "/api/attach", params={"session_id": session_id, "from_offset": 0}
+        "GET", "/api/attach", params={"session_id": session_id}
     ) as resp:
         await _observe(http, session_id, resp, open_after=answered)
     return True

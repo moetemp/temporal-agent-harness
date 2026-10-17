@@ -1,7 +1,7 @@
 # ABOUTME: End-to-end integration tests for AgentServiceHandler against a real dev server.
 #
-# Needs a real dev server, not the time-skipping test server — update-with-callback requires
-# dynamic config the time-skipping server doesn't have (see _DEV_SERVER_ARGS below).
+# Needs a real dev server, not the time-skipping test server: the caller reaches the handler
+# through a Nexus endpoint, which the time-skipping server does not serve (see _DEV_SERVER_ARGS).
 #
 # Run with: uv run pytest tests/nexus_agent_adapter/test_handler_integration.py -v
 
@@ -16,9 +16,10 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.api.enums.v1 import EventType
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from tests._streams import streaming_client
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
 from temporal_agent_harness.harness.agent_protocol import AgentConfig, ToolApprovalPolicy
@@ -62,13 +63,12 @@ class AskReply(BaseModel):
 
 @agent.defn
 class ProbeAgent:
-    """2s reply delay so pollMessages is provably still pending (async path, not sync)."""
+    """2s reply delay so pollMessages is provably waiting on a live stream, not a backlog."""
 
     @workflow.init
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -116,7 +116,7 @@ class CallerWorkflow:
             AgentServiceDefinition.poll_messages,
             PollMessagesInput(
                 session_id=input.session_id,
-                cursor=send_out.stream_head_offset or 0,
+                cursor="",
                 timeout_seconds=20,
             ),
         )
@@ -138,8 +138,8 @@ async def env() -> AsyncGenerator[WorkflowEnvironment, None]:
     await env.shutdown()
 
 
-async def test_poll_messages_delivers_via_async_callback(env: WorkflowEnvironment) -> None:
-    client = env.client
+async def test_poll_messages_delivers_the_reply(env: WorkflowEnvironment) -> None:
+    client = streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
@@ -181,11 +181,13 @@ async def test_poll_messages_delivers_via_async_callback(env: WorkflowEnvironmen
             "pollMessages must deliver the reply's stream items"
         )
 
-        # Proves the async callback path was taken, not a sync completion.
+        # The poll is one synchronous operation over the stream consumer, so the caller's
+        # history records it scheduled and completed with no started event in between.
         history = await handle.fetch_history()
         op_types = {e.event_type for e in history.events}
-        assert EventType.EVENT_TYPE_NEXUS_OPERATION_STARTED in op_types
+        assert EventType.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED in op_types
         assert EventType.EVENT_TYPE_NEXUS_OPERATION_COMPLETED in op_types
+        assert EventType.EVENT_TYPE_NEXUS_OPERATION_STARTED not in op_types
 
 
 class SendOnlyOutput(BaseModel):
@@ -217,7 +219,7 @@ async def test_send_agent_message_survives_handler_worker_restart(
 ) -> None:
     """Handler worker restarts between two sends on the same session; turn count still
     advances — state lives in the workflow, not the handler."""
-    client = env.client
+    client = streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
@@ -286,7 +288,7 @@ class PollOnlyCallerWorkflow:
         )
         poll_out = await client.execute_operation(
             AgentServiceDefinition.poll_messages,
-            PollMessagesInput(session_id=input.session_id, cursor=0),
+            PollMessagesInput(session_id=input.session_id, cursor=""),
         )
         return PollOnlyOutput(
             poll_closed=bool(poll_out.closed), poll_item_count=len(poll_out.items)
@@ -304,7 +306,7 @@ async def test_poll_messages_closed_when_workflow_already_completed(
     env: WorkflowEnvironment,
 ) -> None:
     """A completed target workflow must produce closed=True synchronously, not an error."""
-    client = env.client
+    client = streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
     completed_task_queue = f"completed-{uuid.uuid4()}"
@@ -373,7 +375,6 @@ class GatedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
 
@@ -445,7 +446,7 @@ class FullSurfaceCallerWorkflow:
             AgentServiceDefinition.poll_messages,
             PollMessagesInput(
                 session_id=input.session_id,
-                cursor=send_out.stream_head_offset or 0,
+                cursor="",
                 timeout_seconds=20,
             ),
         )
@@ -543,7 +544,7 @@ async def test_send_agent_message_rejects_malformed_input(
 
 
 async def test_full_operation_surface(env: WorkflowEnvironment) -> None:
-    client = env.client
+    client = streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"

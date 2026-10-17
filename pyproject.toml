@@ -26,7 +26,7 @@ classifiers = [
 # pydantic. AI-SDK and external-storage needs are opt-in extras below, so installing the
 # harness doesn't drag in Gemini or boto3.
 dependencies = [
-    "temporalio>=1.31.0",  # provides temporalio.contrib.workflow_streams (experimental)
+    "temporalio>=1.31.0",  # provides temporalio.streams (the AI-198 stream interface, prototype)
     "pydantic>=2.0",
 ]
 
@@ -145,6 +145,11 @@ dev = [
     "temporalio[opentelemetry]>=1.31.0",
     # Pydantic AI integration (the ai_sdks glue + its tests) — mirrors the `pydantic-ai` extra.
     "pydantic-ai-slim[temporal]>=2.13",
+    # The two stream providers that need a client of their own. Without these, a fresh dev sync
+    # cannot run STREAMS_PROVIDER=redis (no redis client) or =native, whose stream client imports
+    # grpc and so drops out of the provider registry rather than failing loudly.
+    "redis>=5,<9",
+    "temporalio[grpc]>=1.31.0",
     # Nexus-brokered MCP server tests. No version marker: temporal-nexus-mcp runs on every
     # Python this project supports, so `uv run pytest` collects the same suite on all of them.
     "temporal-nexus-mcp",
@@ -166,6 +171,8 @@ include = ["temporal_agent_harness*"]
 ]
 
 [tool.uv.sources]
+# Pinned to the AI-198 streams prototype of the Python SDK: `temporalio.streams` is not released.
+temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "d5db2a536fc6f35e56371d3fa9aa3057610ae599" }
 temporal-nexus-mcp = { path = "nexus/mcp", editable = true }
 
 [tool.pytest.ini_options]

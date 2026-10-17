@@ -46,5 +46,11 @@ jobs:
           enable-cache: true
           cache-suffix: py${{ matrix.python-version }}
 
+      # temporalio is pinned to a git sha, so uv builds the SDK from source, Rust bridge
+      # included, and prost-wkt-types' build script wants protoc on the PATH.
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run the test suite
         run: uv run pytest -q

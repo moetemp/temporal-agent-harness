@@ -21,8 +21,8 @@ const CHILD = `${ROOT}-093b70`;
 let clock = 0;
 
 /* Offsets are supplied rather than counted, because they are the whole subject: a fixture that
-   numbered its own frames could not express the one shape under test. `resume_offset` rides along
-   at `event_offset + 1` the way the merge emits it for a root event. */
+   numbered its own frames could not express the one shape under test. `resume` rides along as an
+   opaque point minted from `event_offset + 1`, the way a root event carries one. */
 function frame(event, offset, data = {}, agentId = ROOT, turnNumber = 1) {
   return {
     event,
@@ -33,7 +33,7 @@ function frame(event, offset, data = {}, agentId = ROOT, turnNumber = 1) {
       turn_id: `${agentId}-t${turnNumber}`,
       timestamp: (clock += 1),
       event_offset: offset,
-      resume_offset: offset + 1,
+      resume: `${offset + 1}@c`,
       ...data
     }
   };
@@ -222,7 +222,7 @@ describe("frames outside the root's offset space must not manufacture one", () =
         workflow_id: "wf-child",
         function: "task_ask",
         subagent_turn: 1,
-        from_offset: 0
+        after_cursor: ""
       }),
       modelStart(400, 1, CHILD),
       modelEnd(401, 1, CHILD),
@@ -268,8 +268,8 @@ describe("frames outside the root's offset space must not manufacture one", () =
     // `event_offset` (and every mock fixture) carries no such field.
     const offsetless = [
       delta(20),
-      { event: "stream_error", data: { kind: "timeout", message: "gave up", resume_offset: 21 } },
-      { event: "reply_delta", data: { type: "reply_delta", agent_id: ROOT, turn_number: 1, turn_id: "t", timestamp: 1, resume_offset: 22, text: "x" } },
+      { event: "stream_error", data: { kind: "timeout", message: "gave up", resume: "21@c"} },
+      { event: "reply_delta", data: { type: "reply_delta", agent_id: ROOT, turn_number: 1, turn_id: "t", timestamp: 1, resume: "22@c", text: "x" } },
       delta(21)
     ];
     assert.deepEqual(

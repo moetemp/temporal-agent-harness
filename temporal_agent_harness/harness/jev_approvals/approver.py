@@ -8,7 +8,6 @@ model to ask::
 
     self._runner = AgentWorkflowRunner(
         config,
-        stream=WorkflowStream(),
         # THE SWITCH: auto mode is a policy mode, not something an evaluator turns on.
         approval_policy_default=ToolApprovalPolicy.auto_mode(
             pre_approved_tools=["get_order"],   # approved above auto mode; never asked

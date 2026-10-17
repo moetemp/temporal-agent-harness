@@ -12,6 +12,7 @@ from temporal_agent_harness.harness.stream_merge.gates import (
 )
 from temporal_agent_harness.harness.stream_merge.merge import (
     DEFAULT_STALL_GRACE_SECONDS,
+    ResumePoint,
     SelectPolicy,
     ShouldStop,
     merge_stream,
@@ -21,6 +22,7 @@ from temporal_agent_harness.harness.stream_merge.merge import (
 
 __all__ = [
     "merge_stream",
+    "ResumePoint",
     "select_live",
     "select_replay",
     "SelectPolicy",

@@ -32,9 +32,10 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
-from temporalio.testing import WorkflowEnvironment
+from temporalio.streams import StreamCursorError
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
 from temporal_agent_harness.harness.agent_protocol import (
@@ -60,6 +61,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TextReply,
     AutoApprovalContext,
     ToolApprovalPolicy,
+    TurnEnded,
     AgentMessageReply,
 )
 from temporalio.exceptions import ApplicationError
@@ -145,7 +147,6 @@ class TypedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._seen: list[str] = []
@@ -186,7 +187,6 @@ class NoEvaluatorProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.allow_tools(["get_order"]),
         )
         self._seen: list[str] = []
@@ -223,7 +223,6 @@ class MidTurnProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._released: set[str] = set()
@@ -282,7 +281,7 @@ class MidTurnProbeAgent:
 @pytest_asyncio.fixture
 async def client_and_queue():
     """A time-skipping env (pydantic converter) with a worker hosting the probe."""
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"agent-workflow-runner-test-{uuid.uuid4()}"
@@ -394,26 +393,73 @@ async def test_agent_interface_query_announces_handlers(client_and_queue):
     assert "message" in by_name["greet"].output["properties"]
 
 
-def _subscribe_all(client: Client, workflow_id: str):
-    """Subscribe to a workflow's whole event log from the start (live-tailing)."""
-    from datetime import timedelta
+async def test_attach_resuming_from_a_point_yields_exactly_what_follows_it(
+    client_and_queue,
+):
+    """Against the configured provider, not a scripted double.
 
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
+    Resume-after-a-cursor is the property every consumer of this stream depends on,
+    and proving it on a fake proves the fake. This drives a real provider: it reads
+    a session's events, takes the point handed back with the k-th one, and asserts
+    the resumed stream is exactly what came after it.
+    """
+    client, task_queue = client_and_queue
+    handle = await _start(client, task_queue, TypedProbeAgent)
+    # Several turns, so the stream holds enough events to resume inside.
+    for name in ("ada", "grace", "linus"):
+        await _send(handle, "greet", {"name": name})
+    await _wait_for_seen(handle, 3)
+    agent_client = AgentClient(client, handle.id)
 
-    return WorkflowStreamClient.create(client, workflow_id).subscribe(
-        topics=["turn_events"],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
+    seen: list[tuple[AgentEvent, str]] = []
+    stream = await agent_client.attach(
+        on_item=lambda item, resume: (item, resume.encode())
     )
+    async with asyncio.timeout(20):
+        async for item in stream:
+            seen.append(item)
+
+    assert len(seen) >= 4, "the session needs enough events to resume inside"
+    k = len(seen) // 2
+    _, point = seen[k]
+
+    resumed: list[AgentEvent] = []
+    stream = await agent_client.attach(
+        on_item=lambda item, _resume: item, resume=point
+    )
+    async with asyncio.timeout(20):
+        async for item in stream:
+            resumed.append(item)
+
+    # Exactly what follows the point, in order, and nothing before it.
+    def identity(event: AgentEvent) -> tuple:
+        return (event.agent_id, event.turn_number, event.event.type, event.seq)
+
+    assert [identity(e) for e in resumed] == [identity(e) for e, _ in seen[k + 1 :]]
+
+
+async def test_attach_refuses_a_foreign_resume_point_before_streaming(client_and_queue):
+    """A point minted by another stream provider fails the attach call itself, so a web layer
+    can answer with a client error instead of failing after the response started."""
+    client, task_queue = client_and_queue
+    handle = await _start(client, task_queue, TypedProbeAgent)
+    agent_client = AgentClient(client, handle.id)
+
+    with pytest.raises(StreamCursorError):
+        await agent_client.attach(on_item=lambda item, _resume: item, resume="1@foreign:0")
+
+
+def _subscribe_all(client: Client, workflow_id: str):
+    """Follow a workflow's whole event log from the start (live-tailing)."""
+    return turn_events(client, workflow_id)
 
 
 async def _collect_until_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
-        async for item in _subscribe_all(client, workflow_id):
-            events.append(item.data)
-            if item.data.event.type == AgentEventType.TURN_END:
+        async for envelope in turn_events(client, workflow_id):
+            events.append(envelope)
+            if envelope.event.type == AgentEventType.TURN_END:
                 break
     return events
 
@@ -426,8 +472,8 @@ async def _collect_events(client: Client, workflow_id: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     try:
         async with asyncio.timeout(2):
-            async for item in _subscribe_all(client, workflow_id):
-                events.append(item.data)
+            async for envelope in _subscribe_all(client, workflow_id):
+                events.append(envelope)
     except TimeoutError:
         pass
     return events
@@ -634,22 +680,13 @@ def test_agent_defn_rejects_bespoke_input_at_definition_time():
 # ---------------------------------------------------------------------------
 
 
-def test_stream_and_approval_policy_default_are_required():
-    """``stream`` and ``approval_policy_default`` are required keyword-only constructor
-    args, so omitting either is a call-site TypeError — no runtime ``build()`` check to
-    forget. The author must make a deliberate safe-by-default approval choice."""
-    stream = MagicMock()
-    stream.topic.return_value = MagicMock()
+def test_approval_policy_default_is_required():
+    """``approval_policy_default`` is a required keyword-only constructor arg, so omitting it
+    is a call-site TypeError — no runtime ``build()`` check to forget. The author must make a
+    deliberate safe-by-default approval choice."""
     with pytest.raises(TypeError):
-        AgentWorkflowRunner(  # type: ignore[call-arg]  — missing stream
-            AgentConfig(),
-            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
-        )
-    with pytest.raises(TypeError):
-        AgentWorkflowRunner(  # type: ignore[call-arg]  — missing approval_policy_default
-            AgentConfig(),
-            stream=stream,
-        )
+        # approval_policy_default is deliberately missing.
+        AgentWorkflowRunner(AgentConfig())  # type: ignore[call-arg]
 
 
 def test_approval_policy_resolves_config_over_agent_default(offline_build_policy):
@@ -1263,6 +1300,28 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
     assert rr.subagent_id == "aaaaaa-bbbbbb"
 
 
+def test_publish_reaches_the_writer_in_order(offline_build):
+    """A publish is one synchronous call on the writer, so the writer sees the envelopes in
+    the order the runner published them, with the sequence numbers it stamped."""
+    runner = offline_build(AgentConfig())
+    runner._pub("turn-1", 1, TurnEnded())
+    runner._pub("turn-2", 2, TurnEnded())
+
+    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    assert [e.turn_id for e in published] == ["turn-1", "turn-2"]
+    assert [e.seq for e in published] == [1, 2]
+
+
+def test_refused_publish_raises_at_the_call(offline_build):
+    """A publish the provider refuses fails the caller right there, not somewhere later."""
+    runner = offline_build(AgentConfig())
+    runner._events.publish.side_effect = [None, RuntimeError("store refused it")]
+    runner._pub("turn-1", 1, TurnEnded())
+
+    with pytest.raises(RuntimeError, match="store refused it"):
+        runner._pub("turn-2", 2, TurnEnded())
+
+
 def test_accepted_turn_from_error_raises_when_detail_absent():
     """An accepted-but-errored turn with no ``subagent_turn`` detail is a broken activity
     contract. The parent raises loudly rather than closing the bracket on an invented number
@@ -1288,13 +1347,13 @@ def offline_build(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
+    # Offline there is no provider to bind a writer on; a mock records what the runner publishes.
+    # Its publish is synchronous like the real one.
+    monkeypatch.setattr(aw.workflow, "stream_writer", lambda *a, **k: MagicMock())
 
     def build(config: AgentConfig):
-        stream = MagicMock()
-        stream.topic.return_value = MagicMock()
         return AgentWorkflowRunner(
             config,
-            stream=stream,
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -1311,6 +1370,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
+    monkeypatch.setattr(aw.workflow, "stream_writer", lambda *a, **k: MagicMock())
 
     def build(
         config: AgentConfig,
@@ -1319,11 +1379,8 @@ def offline_build_policy(monkeypatch):
         auto_mode_evaluator=None,
         auto_approval_criteria=None,
     ):
-        stream = MagicMock()
-        stream.topic.return_value = MagicMock()
         return AgentWorkflowRunner(
             config,
-            stream=stream,
             approval_policy_default=default,
             auto_approval_criteria_default=auto_approval_criteria,
             auto_mode_evaluator=auto_mode_evaluator,
@@ -1490,12 +1547,12 @@ async def test_message_accepted_reports_what_the_message_did_to_the_turn(client_
     await handle.signal(MidTurnProbeAgent.release, "work")
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
-        async for item in _subscribe_all(client, handle.id):
-            events.append(item.data)
+        async for envelope in _subscribe_all(client, handle.id):
+            events.append(envelope)
             # Two turns run here (the open one, then the queued one), so stop on the second.
             if (
-                item.data.event.type == AgentEventType.TURN_END
-                and item.data.turn_number == queued.turn_number
+                envelope.event.type == AgentEventType.TURN_END
+                and envelope.turn_number == queued.turn_number
             ):
                 break
 
@@ -1550,11 +1607,11 @@ async def test_message_handler_start_brackets_only_the_handler(client_and_queue)
     await handle.signal(MidTurnProbeAgent.release, "work")
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
-        async for item in _subscribe_all(client, handle.id):
-            events.append(item.data)
+        async for envelope in _subscribe_all(client, handle.id):
+            events.append(envelope)
             if (
-                item.data.event.type == AgentEventType.MESSAGE_HANDLER_START
-                and item.data.message_id == queued.message_id
+                envelope.event.type == AgentEventType.MESSAGE_HANDLER_START
+                and envelope.message_id == queued.message_id
             ):
                 break
     ours = [e for e in events if e.message_id == queued.message_id]
@@ -1597,7 +1654,7 @@ async def test_message_context_distinguishes_joining_from_opening(client_and_que
 async def test_send_message_fast_fails_on_a_join_instead_of_hanging(client_and_queue):
     """``send_message`` is one message → one turn → one stream, and says so immediately.
 
-    A joining message has its turn's ``turn_started`` BEHIND its ``accepted_offset``, so the
+    A joining message has its turn's ``turn_started`` BEHIND the position read before the send, so the
     merge's skip preamble never matches and the caller would sit in silence until the turn
     timeout (300s) for a single ``AgentTurnTimeout``. The reply's ``disposition`` makes that
     knowable at submit time, so it raises instead — and the message is still running, which is

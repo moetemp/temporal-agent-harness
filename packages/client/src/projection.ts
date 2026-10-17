@@ -59,6 +59,12 @@ export interface ProjectionChanges {
   pending: readonly Message[] | null;
 }
 
+const STREAMED_TEXT: ReadonlySet<MessagePart["type"]> = new Set([
+  "reply_delta",
+  "thought_summary",
+  "text_annotation"
+]);
+
 interface PartLocation {
   messageId: string;
   index: number;
@@ -336,6 +342,8 @@ export class AgentProjection {
       case "subagent_stopped":
       case "subagent_stream_unavailable":
         return;
+      case "attempt_superseded":
+        return this.#dropStreamedText(data.turn_number);
       case "state_snapshot": {
         const d = frame.data;
         this.states.set(d.state_id, { value: clone(d.value as JsonValue), version: d.version, error: null });
@@ -410,6 +418,29 @@ export class AgentProjection {
     const last = message.parts.at(-1);
     if (last?.type === type) this.#setPart(message.id, message.parts.length - 1, { type, text: last.text + text });
     else this.#append(message.id, { type, text });
+  }
+
+  /** A retried streaming activity rewrites its turn's text from the start, so the deltas its
+   *  retired attempt left behind would otherwise run into the new ones. Tool and subagent
+   *  parts stay: a retry reissues none of them. */
+  #dropStreamedText(turnNumber: number): void {
+    for (const message of this.messages) {
+      if (message.turnNumber !== turnNumber) continue;
+      const kept: number[] = [];
+      message.parts.forEach((part, i) => {
+        if (!STREAMED_TEXT.has(part.type)) kept.push(i);
+      });
+      if (kept.length === message.parts.length) continue;
+      const moved = new Map(kept.map((oldIndex, newIndex) => [oldIndex, newIndex]));
+      for (const locations of [this.#tools, this.#subagentTurns]) {
+        for (const location of locations.values()) {
+          if (location.messageId !== message.id) continue;
+          location.index = moved.get(location.index) ?? location.index;
+        }
+      }
+      message.parts = kept.map((i) => message.parts[i]!);
+      this.#touchedMessages.add(message.id);
+    }
   }
 
   #replaceLast<T extends MessagePart["type"]>(

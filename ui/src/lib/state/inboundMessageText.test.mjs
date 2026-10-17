@@ -24,7 +24,7 @@ const messageAccepted = (handler, payload, disposition = "opened") => ({
     turn_number: 1,
     message_id: `msg-${disposition}`,
     timestamp: 1,
-    resume_offset: 1,
+    resume: "1@c",
     event_offset: 1,
     handler,
     payload,

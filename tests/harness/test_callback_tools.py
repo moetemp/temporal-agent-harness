@@ -28,9 +28,9 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
 from temporal_agent_harness.harness.agent import ToolApprovalPolicy
@@ -40,7 +40,6 @@ from temporal_agent_harness.harness.agent_client import (
 )
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -96,7 +95,6 @@ class CallbackProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Default: no gate, so the callback mechanics are isolated. The gating-parity test
             # overrides this per session via AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
@@ -136,7 +134,7 @@ class CallbackProbeAgent:
 
 @pytest_asyncio.fixture
 async def env_and_client():
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"callback-test-{uuid.uuid4()}"
@@ -173,21 +171,15 @@ async def _send(handle, text: str) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_events(client, workflow_id)
 
 
 async def _drain_to_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, workflow_id):
-            events.append(item.data)
-            if item.data.event.type == AgentEventType.TURN_END:
+            events.append(item)
+            if item.event.type == AgentEventType.TURN_END:
                 break
     return events
 
@@ -209,13 +201,13 @@ async def _await_callback_requested(
     """Stream into ``collect`` until ``tool_id``'s callback_requested arrives; return it."""
     async with asyncio.timeout(30):
         async for item in _subscribe(client, workflow_id):
-            collect.append(item.data)
-            ev = item.data.event
+            collect.append(item)
+            ev = item.event
             if (
                 ev.type == AgentEventType.CALLBACK_REQUESTED
                 and ev.tool_id == tool_id
             ):
-                return item.data
+                return item
     raise AssertionError("callback_requested never arrived")
 
 
@@ -234,7 +226,7 @@ async def test_callback_tool_returns_client_result(env_and_client):
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, handle.id):
-            ev = item.data
+            ev = item
             events.append(ev)
             if (
                 ev.event.type == AgentEventType.CALLBACK_REQUESTED
@@ -298,7 +290,7 @@ async def test_callback_tool_is_gated_like_any_tool(env_and_client):
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, handle.id):
-            ev = item.data
+            ev = item
             events.append(ev)
             if (
                 ev.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED
@@ -342,7 +334,7 @@ async def test_denied_callback_never_requests_fulfillment(env_and_client):
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, handle.id):
-            ev = item.data
+            ev = item
             events.append(ev)
             if (
                 ev.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED
@@ -490,10 +482,10 @@ async def test_close_while_pending_fails_the_callback(env_and_client):
     pre_close: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, handle.id):
-            pre_close.append(item.data)
+            pre_close.append(item)
             if (
-                item.data.event.type == AgentEventType.CALLBACK_REQUESTED
-                and item.data.event.tool_id == "cb-echo"
+                item.event.type == AgentEventType.CALLBACK_REQUESTED
+                and item.event.tool_id == "cb-echo"
             ):
                 await handle.signal("close")
                 break

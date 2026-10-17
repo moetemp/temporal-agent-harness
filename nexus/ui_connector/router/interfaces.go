@@ -160,7 +160,7 @@ type BackendDriver interface {
 
 	// PollTurn returns the next batch of deltas. Call repeatedly with NextCursor until
 	// Closed is true.
-	PollTurn(ctx workflow.Context, handle TurnHandle, cursor int64) (PollResult, error)
+	PollTurn(ctx workflow.Context, handle TurnHandle, cursor string) (PollResult, error)
 }
 
 // StartResult is the outcome of StartTurn. At most one field is set:
@@ -174,16 +174,16 @@ type StartResult struct {
 
 // TurnHandle correlates a started turn with its response stream.
 type TurnHandle struct {
-	SessionID        string
-	TurnID           string
-	TurnNumber       int64
-	StreamHeadOffset int64
+	SessionID  string
+	TurnID     string
+	TurnNumber int64
 }
 
-// PollResult is one batch of a turn's response stream.
+// PollResult is one batch of a turn's response stream. NextCursor is the stream provider's
+// own token for the last item; hand it back unchanged to read what follows.
 type PollResult struct {
 	Deltas     []Delta
-	NextCursor int64
+	NextCursor string
 	Closed     bool
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -201,7 +202,7 @@ func makeAgentStreamItem(t *testing.T, item agentStreamItem, offset int64, topic
 	require.NoError(t, err)
 	return harnessgen.StreamItem{
 		Topic:  topic,
-		Offset: offset,
+		Offset: strconv.FormatInt(offset, 10),
 		Data:   base64.StdEncoding.EncodeToString(b),
 	}
 }
@@ -211,8 +212,8 @@ func makeAgentStreamItem(t *testing.T, item agentStreamItem, offset int64, topic
 // mockAgentSvc returns a Nexus service that implements the nexus-agent/ service operations.
 //
 //   - sendMessage always succeeds and reports TurnNumber=1.
-//   - pollMessages returns at most 2 items per call (one complete turn) starting
-//     at the requested cursor, then Closed=true once all items are exhausted.
+//   - pollMessages returns at most 2 items per call (one complete turn) after the
+//     item the cursor names, then Closed=true once all items are exhausted.
 func mockAgentSvc(items []harnessgen.StreamItem) *nexus.Service {
 	svc := nexus.NewService(harnessgen.AgentService.ServiceName)
 	svc.MustRegister(nexus.NewSyncOperation(
@@ -224,21 +225,21 @@ func mockAgentSvc(items []harnessgen.StreamItem) *nexus.Service {
 	svc.MustRegister(nexus.NewSyncOperation(
 		harnessgen.AgentService.PollMessages.Name(),
 		func(_ context.Context, input harnessgen.PollMessagesInput, _ nexus.StartOperationOptions) (harnessgen.PollMessagesOutput, error) {
-			var out []harnessgen.StreamItem
-			for _, item := range items {
-				if item.Offset >= input.Cursor {
-					out = append(out, item)
-					if len(out) == 2 { // cap at one turn per batch
-						break
-					}
+			// The cursor is opaque, as a real provider's is: the items after the one it names.
+			start := 0
+			for i, item := range items {
+				if item.Offset == input.Cursor {
+					start = i + 1
+					break
 				}
 			}
+			out := items[start:min(start+2, len(items))] // cap at one turn per batch
 			if len(out) == 0 {
 				return harnessgen.PollMessagesOutput{Closed: ptr(true), NextOffset: input.Cursor, Items: []harnessgen.StreamItem{}}, nil
 			}
 			return harnessgen.PollMessagesOutput{
 				Items:      out,
-				NextOffset: out[len(out)-1].Offset + 1,
+				NextOffset: out[len(out)-1].Offset,
 			}, nil
 		},
 	))
@@ -284,6 +285,8 @@ type testOutboundDriver struct{}
 func (testOutboundDriver) SupportsStreaming(router.Input) bool {
 	return true
 }
+
+func (testOutboundDriver) StreamPollInterval(router.Input) time.Duration { return 0 }
 
 func (testOutboundDriver) activityOptions(ctx workflow.Context) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{

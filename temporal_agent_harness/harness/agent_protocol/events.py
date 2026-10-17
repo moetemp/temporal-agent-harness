@@ -1,7 +1,7 @@
 # ABOUTME: The agent's workflow-stream event vocabulary — the AgentEventType enum,
 # the typed payload models a producer emits, the AgentStreamItem discriminated union
 # over them, the AgentEvent transport envelope the harness wraps them in, and the
-# ``turn_events`` topic they are published on.
+# ``turn_events`` topic they are published on, as a wire string and as a typed definition.
 #
 # A producer constructs a StreamEvent payload (e.g. ``ReplyDelta(text=…)``) that
 # carries ONLY its ``type`` discriminator and semantic fields — never routing
@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from temporalio import streams
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AutoApprovalVerdict,
@@ -31,7 +32,9 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
 )
 
 # The pubsub topic the agent publishes its turn events on. The workflow must use
-# this exact name when publishing and clients when subscribing.
+# this exact name when publishing and clients when subscribing. The wire and the Nexus
+# adapter's contract carry this string; code that reads or writes the topic passes
+# ``TURN_EVENTS`` (defined at the end of this module), which carries the envelope type too.
 TURN_EVENTS_TOPIC = "turn_events"
 
 
@@ -311,13 +314,23 @@ class AgentEventType(StrEnum):
     Unlike every other event here, this one is **never published by a workflow** — it is
     SYNTHESIZED CLIENT-SIDE by the stream merge and injected into the merged logical stream. It is
     emitted when a mounted subagent stream can't be read (today: a stopped/completed subagent, whose
-    stream ``workflow_streams`` can't yet replay — an upstream workflow_streams fix is in flight) 
+    stream the provider cannot read) 
     or stalls without delivering its turn. It is purely informational and **non-fatal**: the parent's
     own stream is self-sufficient (it already carries the subagent's ``subagent_reply_received`` and 
     the send-tool's result), so the parent renders fully; only the subagent's own turn DETAIL is
     missing. The merge does NOT retry — recovery is a fresh ``attach`` (a full page refresh in a
     UI). A drill-in UI keys off the carried ``subagent_id`` to mark that subagent's view degraded.
     See :class:`SubagentStreamUnavailable`."""
+
+    ATTEMPT_SUPERSEDED = "attempt_superseded"
+    """A streaming producer started a newer attempt, so everything the previous one wrote on
+    this turn is stale and a consumer that rendered it should drop it.
+
+    Like SUBAGENT_STREAM_UNAVAILABLE this is never published by a workflow: the stream reader
+    synthesizes it when a retried activity writes under a higher attempt, and the merge stamps
+    it with the agent and turn the superseded records belonged to. A consumer that keeps the
+    turn's deltas removes the ones it received before this marker; one that only renders the
+    final reply can ignore it. See :class:`AttemptSuperseded`."""
 
     REPLY_DELTA = "reply_delta"
     """An incremental text chunk (word/token) of the agent's reply. See
@@ -867,15 +880,16 @@ class SubagentMessageSent(StreamEvent[Literal[AgentEventType.SUBAGENT_MESSAGE_SE
         "Several dispatches in one parent turn share that envelope turn_number but get distinct "
         "subagent_turn values; pairs with the turn_number on the subagent's OWN stream events."
     )
-    from_offset: int = Field(
-        default=0,
-        description="The offset in the SUBAGENT's OWN stream at which this turn's events begin "
-        "(the child stream position the parent resumes consumption from for this turn). A client "
-        "merging the parent + subagent streams positions the child cursor here the first time it "
-        "mounts the child — so a merge that starts mid-session (resuming at a parent turn that is "
-        "not the child's first) skips the child's pre-resume history, whose own message_sent "
-        "markers are not on the merged stream and could otherwise never be ordered. Unrelated "
-        "address space from the parent stream's offsets.",
+    after_cursor: str = Field(
+        default="",
+        description="The cursor on the SUBAGENT's OWN stream that this turn's events follow "
+        "(the child position the parent resumed consumption after for this turn; empty means "
+        "the beginning). A client merging the parent + subagent streams positions the child "
+        "cursor here the first time it mounts the child — so a merge that starts mid-session "
+        "(resuming at a parent turn that is not the child's first) skips the child's pre-resume "
+        "history, whose own message_sent markers are not on the merged stream and could "
+        "otherwise never be ordered. An opaque provider token, unrelated to the parent "
+        "stream's cursors.",
     )
 
 
@@ -949,6 +963,31 @@ class SubagentStreamUnavailable(StreamEvent[Literal[AgentEventType.SUBAGENT_STRE
         default="",
         description="A short, human-facing note on why the subagent's events were unavailable "
         "(e.g. the child workflow has completed and its stream isn't yet replayable).",
+    )
+
+
+class AttemptSuperseded(StreamEvent[Literal[AgentEventType.ATTEMPT_SUPERSEDED]]):
+    """A newer attempt of one streaming producer supersedes everything the last one wrote.
+
+    SYNTHESIZED CLIENT-SIDE by the stream reader, never workflow-published. An activity that
+    streams half an answer and then fails leaves those records in the stream; its retry calls
+    the model again and writes different words. No provider can undo the first half, so the
+    reader says a new generation began and the consumer decides. The enclosing
+    :class:`AgentEvent` carries the ``agent_id`` and ``turn_id`` of the records being
+    superseded, so a consumer drops that turn's deltas received before this marker.
+    """
+
+    type: Literal[AgentEventType.ATTEMPT_SUPERSEDED] = AgentEventType.ATTEMPT_SUPERSEDED
+    producer_id: str = Field(
+        description="The producer whose attempt advanced, as the stream records carry it "
+        "(inside an activity, the activity id)."
+    )
+    superseded_attempt: int = Field(
+        description="The attempt whose records are stale. Everything this producer wrote under "
+        "it on this turn is replaced by what follows."
+    )
+    attempt: int = Field(
+        description="The attempt now writing. Records after this marker belong to it."
     )
 
 
@@ -1092,6 +1131,7 @@ AgentStreamItem = Annotated[
     | SubagentMessageSent
     | SubagentReplyReceived
     | SubagentStreamUnavailable
+    | AttemptSuperseded
     | ReplyDelta
     | ThoughtSummaryDelta
     | TextAnnotationDelta
@@ -1152,7 +1192,20 @@ class AgentEvent(BaseModel):
     timestamp: float = Field(
         description="When the harness published this envelope (epoch seconds)."
     )
+    seq: int | None = Field(
+        default=None,
+        description="The publishing agent's own count of the events it has published from "
+        "workflow code, starting at 1, or None for an event an activity published on the "
+        "agent's behalf. A client uses it with ``AgentStatus.last_event_seq`` to know when it "
+        "has caught up with everything the agent has said, which a stream position cannot tell "
+        "it because positions belong to the stream provider.",
+    )
     event: AgentStreamItem = Field(
         description="The wrapped stream-event payload — a discriminated union over ``type`` that "
         "Temporal's Pydantic converter reconstructs to the concrete payload subtype on read."
     )
+
+
+# The turn-events topic as a definition: every context that reads or writes it decodes to
+# ``AgentEvent`` without naming the type again.
+TURN_EVENTS = streams.topic(TURN_EVENTS_TOPIC, AgentEvent)

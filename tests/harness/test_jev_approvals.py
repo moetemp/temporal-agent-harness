@@ -22,23 +22,21 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
-from datetime import timedelta
 
 import pytest
 from temporalio import activity, workflow
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.exceptions import ApplicationError
 from temporalio.client import WorkflowUpdateStage
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
 from temporal_agent_harness.harness.agent_workflow import Injected
 from temporal_agent_harness.harness.agent_client import AgentClient
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -533,7 +531,6 @@ class JevApprovalProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_PROBE_CRITERIA,
             auto_mode_evaluator=jev_evaluator(),
@@ -619,7 +616,7 @@ def _fake_jev(verdict: str, confidence: float, irreversible: float):
 
 @asynccontextmanager
 async def _jev_env(fake_activity):
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"jev-approval-test-{uuid.uuid4()}"
@@ -660,16 +657,10 @@ async def _run_once(
         result_type=AgentMessageReply,
     )
     events: list[AgentEvent] = []
-    stream = WorkflowStreamClient.create(client, handle.id)
     async with asyncio.timeout(30):
-        async for item in stream.subscribe(
-            topics=[TURN_EVENTS_TOPIC],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
-        ):
-            events.append(item.data)
-            if item.data.event.type == AgentEventType.TURN_END:
+        async for item in turn_events(client, handle.id):
+            events.append(item)
+            if item.event.type == AgentEventType.TURN_END:
                 break
     return events
 
@@ -792,18 +783,15 @@ async def test_end_to_end_an_unsure_verdict_leaves_the_call_to_a_human():
         agent_client = AgentClient(client, handle.id)
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(30):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
-                ev = item.data
+            async for item in turn_events(client, handle.id):
+                ev = item
                 events.append(ev)
+                # The human answers once the evaluator has escalated. Answering on the
+                # request would race the evaluator's activity, and a human who wins that
+                # race supersedes the evaluation instead of following it.
                 if (
-                    ev.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED
+                    ev.event.type == AgentEventType.AUTO_APPROVAL_EVALUATION_ENDED
                     and ev.event.tool_id == "r1"
                 ):
                     await agent_client.approve_tool("r1", approved=False, reason="not today")
@@ -851,18 +839,14 @@ async def test_end_to_end_a_failing_jev_call_escalates_rather_than_approving():
         agent_client = AgentClient(client, handle.id)
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(30):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
-                ev = item.data
+            async for item in turn_events(client, handle.id):
+                ev = item
                 events.append(ev)
+                # The human answers once the evaluation has failed, for the same reason as
+                # in the escalate case above.
                 if (
-                    ev.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED
+                    ev.event.type == AgentEventType.AUTO_APPROVAL_EVALUATION_ERROR
                     and ev.event.tool_id == "r1"
                 ):
                     await agent_client.approve_tool("r1", approved=True, reason="ok by me")
@@ -934,16 +918,10 @@ async def test_end_to_end_auto_mode_off_never_asks_the_model():
         assert status.has_auto_approval_evaluator is True
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(20):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
-                events.append(item.data)
-                if item.data.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
+            async for item in turn_events(client, handle.id):
+                events.append(item)
+                if item.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
                     break
 
     # Not even a bracket: auto mode being off means nothing is evaluated, so unlike an
@@ -987,16 +965,10 @@ async def test_end_to_end_no_criteria_never_reaches_the_evaluator():
         assert seen == []
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(20):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
-                events.append(item.data)
-                if item.data.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
+            async for item in turn_events(client, handle.id):
+                events.append(item)
+                if item.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
                     break
 
     # Requested, then waiting on a person. Nothing was evaluated, so unlike an ESCALATE

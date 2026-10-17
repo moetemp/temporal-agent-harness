@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 
 from temporalio.client import Client
 
@@ -45,15 +46,59 @@ SelectPolicy = Callable[[list[Cursor]], Cursor]
 # (a single turn vs. a full attach) differ only in this and in the select policy + start offset.
 ShouldStop = Callable[[Cursor, AgentEvent], Awaitable[bool]]
 
-# What the merge yields per step: the event plus the **resume offset** — a ROOT-stream resume CURSOR
-# (NOT a per-event coordinate) that a consumer records and hands back to ``attach(from_offset=...)``
-# to resume without re-replaying already-seen root events. It advances past EVERY root event emitted
-# (to ``ev_offset + 1``) and does NOT move on a subagent's own events — so every event within one
-# subagent turn's bracket carries the SAME value: the cursor as of that turn's
-# ``subagent_message_sent`` (the root offset, not the child's own offset). Any root offset is a safe
-# resume point (see ``merge_stream``); it is neither the event's own per-stream offset nor a merged
-# display ordinal (the cross-stream interleaving itself is never a resumable position).
-MergedItem = tuple[AgentEvent, int]
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where a consumer of the merged stream left off on the ROOT stream.
+
+    ``cursor`` is the stream provider's token for the last root record emitted (empty for the
+    beginning). Handing it back as ``attach(resume=...)`` resumes just past that record; the
+    token is opaque and is never compared or advanced here. ``seq`` is the root agent's own count
+    of workflow-published events as of that record (``AgentEvent.seq``), which is how a consumer
+    tells that it has caught up with everything the agent has said
+    (``AgentStatus.last_event_seq``), since a provider position cannot answer that. The pair
+    encodes to one string for a UI or a Nexus caller to store.
+    """
+
+    cursor: str = ""
+    seq: int = 0
+
+    def advance(self, *, cursor: str, seq: int | None) -> ResumePoint:
+        """The point just past a root record; an activity-published record keeps the last seq."""
+        return ResumePoint(cursor=cursor, seq=self.seq if seq is None else seq)
+
+    def encode(self) -> str:
+        """One string for a consumer to store and hand back.
+
+        The cursor token already names the provider that minted it, so a point handed to
+        another provider is refused by that provider when the read is opened.
+        """
+        if not (self.cursor or self.seq):
+            return ""
+        return f"{self.seq}@{self.cursor}"
+
+    @classmethod
+    def decode(cls, text: str) -> ResumePoint:
+        """The point ``text`` encodes. Raises ``ValueError`` when the text is malformed."""
+        if not text:
+            return cls()
+        seq, sep, cursor = text.partition("@")
+        if not sep:
+            raise ValueError(f"not a resume point: {text!r}")
+        try:
+            return cls(cursor=cursor, seq=int(seq))
+        except ValueError:
+            raise ValueError(f"not a resume point: {text!r}") from None
+
+
+# What the merge yields per step: the event plus the **resume point**, a ROOT-stream position
+# (NOT a per-event coordinate) that a consumer records and hands back to ``attach(resume=...)`` to
+# resume without re-replaying already-seen root events. It advances on EVERY root event emitted
+# and does NOT move on a subagent's own events, so every event within one subagent turn's bracket
+# carries the SAME value: the point as of that turn's ``subagent_message_sent`` (a root position,
+# not the child's own). Any root position is a safe resume point (see ``merge_stream``); it is
+# neither the event's own per-stream cursor nor a merged display ordinal (the cross-stream
+# interleaving itself is never a resumable position).
+MergedItem = tuple[AgentEvent, ResumePoint]
 
 
 def select_replay(candidates: list[Cursor]) -> Cursor:
@@ -103,10 +148,10 @@ class _Merge:
         # Children we've given up on but not yet emitted a marker for — drained by ``_drive`` into
         # the merged stream as synthetic ``subagent_stream_unavailable`` events.
         self._pending_markers: list[AgentEvent] = []
-        # The ROOT-stream resume cursor handed back to the consumer (see ``MergedItem``). Seeded to
-        # the offset the merge started from (resuming there again loses nothing) and advanced past
-        # each ROOT event as it is emitted (subagent events leave it unchanged).
-        self._root_resume_offset = 0
+        # The ROOT-stream resume point handed back to the consumer (see ``MergedItem``). Seeded to
+        # where the merge started from (resuming there again loses nothing) and advanced past each
+        # ROOT event as it is emitted (subagent events leave it unchanged).
+        self._root_resume = ResumePoint()
         # PER-CHILD stall deadlines: child_workflow_id -> the event-loop time by which, if that
         # child is STILL the (sole) thing close-gating a buffered parent ``subagent_reply_received``,
         # we presume it unreachable and give up on it. Set when a child first starts blocking and
@@ -120,7 +165,7 @@ class _Merge:
         self,
         workflow_id: str,
         *,
-        from_offset: int,
+        after: str,
         is_child: bool,
         skip_until_turn_id: str | None = None,
     ) -> None:
@@ -128,7 +173,7 @@ class _Merge:
 
         Idempotency is load-bearing: a parent may drive the same subagent across many turns, each
         re-emitting ``subagent_message_sent`` for that child — but the child's cursor is mounted on
-        the FIRST and keeps advancing sequentially; later turns' ``from_offset`` just equal where
+        the FIRST and keeps advancing sequentially; later turns' ``after_cursor`` just equal where
         the cursor already sits. The ``skip_until_turn_id`` preamble is only ever meaningful for the
         ROOT cursor (send_message)."""
         if workflow_id in self._cursors:
@@ -141,14 +186,12 @@ class _Merge:
             self._gates.gone.discard(workflow_id)
         else:
             self._root_workflow_id = workflow_id
-            # Resuming there again would lose nothing — seed the resume offset to the start point.
-            self._root_resume_offset = from_offset
         self._cursors[workflow_id] = Cursor.mount(
             self._client,
             workflow_id=workflow_id,
             is_child=is_child,
             mount_index=self._mount_seq,
-            from_offset=from_offset,
+            after=after,
             skip_until_turn_id=skip_until_turn_id,
         )
         self._mount_seq += 1
@@ -172,12 +215,15 @@ class _Merge:
         self,
         *,
         root_workflow_id: str,
-        root_from_offset: int,
+        root_resume: ResumePoint,
         skip_until_turn_id: str | None,
     ) -> AsyncIterator[MergedItem]:
+        # Resuming there again would lose nothing, so the consumer's point is the first one
+        # handed back.
+        self._root_resume = root_resume
         self._mount(
             root_workflow_id,
-            from_offset=root_from_offset,
+            after=root_resume.cursor,
             is_child=False,
             skip_until_turn_id=skip_until_turn_id,
         )
@@ -192,7 +238,7 @@ class _Merge:
             # Drain any synthetic ``subagent_stream_unavailable`` markers queued by a give-up first, so a
             # consumer learns a subagent's detail was dropped right where it happened.
             while self._pending_markers:
-                yield (self._pending_markers.pop(0), self._root_resume_offset)
+                yield (self._pending_markers.pop(0), self._root_resume)
             self._ensure_pulls()
             candidates = [
                 c
@@ -206,26 +252,39 @@ class _Merge:
                 cur = self._select(candidates)
                 ev = cur.head
                 assert ev is not None  # candidates filter guarantees it
-                ev_offset = cur.head_offset
+                ev_cursor = cur.head_cursor
                 cur.head = None  # consumed → _ensure_pulls re-pulls this cursor next loop
-                # Advance the resume cursor PAST every ROOT event emitted (any root offset is a safe
-                # resume point — ``attach`` resumes with NO skip, and a subagent whose turn began
-                # before the resume offset is simply never mounted, its ``reply_received`` released by
-                # the unmounted-stuck give-up). Subagent events leave the cursor unchanged, so they
-                # all carry the value as of their triggering ``subagent_message_sent`` — which means
-                # a reconnect mid a subagent turn forgoes that subagent's remaining detail (lossless
-                # only at root-event granularity; see ``merge_stream``).
+                # Advance the resume point PAST every ROOT event emitted (any root position is a
+                # safe resume point: ``attach`` resumes with NO skip, and a subagent whose turn
+                # began before the resume point is simply never mounted, its ``reply_received``
+                # released by the unmounted-stuck give-up). Subagent events leave the point
+                # unchanged, so they all carry the value as of their triggering
+                # ``subagent_message_sent``, which means a reconnect mid a subagent turn forgoes
+                # that subagent's remaining detail (lossless only at root-event granularity; see
+                # ``merge_stream``).
                 if not cur.is_child:
-                    self._root_resume_offset = ev_offset + 1
-                yield (ev, self._root_resume_offset)
+                    self._root_resume = self._root_resume.advance(cursor=ev_cursor, seq=ev.seq)
+                yield (ev, self._root_resume)
                 action = self._gates.on_emit(
                     is_child=cur.is_child, source_workflow_id=cur.workflow_id, ev=ev
                 )
                 if isinstance(action, MountChild):
                     self._subagent_ids[action.workflow_id] = action.subagent_id
-                    self._mount(
-                        action.workflow_id, from_offset=action.from_offset, is_child=True
-                    )
+                    try:
+                        self._mount(
+                            action.workflow_id, after=action.after_cursor, is_child=True
+                        )
+                    except Exception as exc:  # noqa: BLE001 -- one child, not the merge
+                        # The read parses the child's cursor at the call, so a provider that
+                        # refuses it raises here rather than on the first pull. That is one
+                        # subagent's detail lost, which is what the give-up path is for.
+                        _log.warning(
+                            "stream_merge: giving up on subagent %s, its stream could not be "
+                            "mounted: %r",
+                            action.workflow_id,
+                            exc,
+                        )
+                        await self._give_up(action.workflow_id)
                 elif isinstance(action, UnmountChild):
                     # The child is drained + idle by the time its subagent_stopped surfaces, so
                     # closing its cursor strands no gated event and frees its in-flight poll update.
@@ -455,25 +514,26 @@ async def merge_stream(
     *,
     client: Client,
     root_workflow_id: str,
-    root_from_offset: int,
+    root_resume: ResumePoint,
     skip_until_turn_id: str | None,
     select: SelectPolicy,
     should_stop: ShouldStop,
     stall_grace_seconds: float = DEFAULT_STALL_GRACE_SECONDS,
 ) -> AsyncIterator[MergedItem]:
-    """Drive one gated k-way merge, yielding ``(event, resume_offset)`` pairs (see :data:`MergedItem`).
+    """Drive one gated k-way merge, yielding ``(event, resume_point)`` pairs (:data:`MergedItem`).
 
-    Mounts ``root_workflow_id`` at ``root_from_offset``, then interleaves the root with every subagent
-    stream it mounts on a ``subagent_message_sent``, recursively. ``skip_until_turn_id`` skips the root
-    to a SPECIFIC turn's ``turn_started`` (``send_message``, which must land on the submitted turn even
-    if its acceptance offset is mid a prior turn); ``None`` does no skipping — used by BOTH ``attach``
-    from 0 (replay everything) and ``attach`` resume from an arbitrary offset (start exactly there).
-    Resuming mid-stream is safe without skipping: a subagent whose turn began before ``root_from_offset``
-    is never mounted (we never emit its ``subagent_message_sent``), so its events are absent and its
-    later ``subagent_reply_received`` is released by the unmounted-stuck give-up; subagents dispatched
-    at/after the offset mount and bracket-merge normally. ``select`` decides the order of
-    genuinely-concurrent events; ``should_stop`` ends the run after a chosen terminal event. Always
-    honors per-stream offset order and both brackets.
+    Mounts ``root_workflow_id`` after ``root_resume.cursor``, then interleaves the root with every
+    subagent stream it mounts on a ``subagent_message_sent``, recursively. ``skip_until_turn_id``
+    skips the root to a SPECIFIC turn's ``turn_started`` (``send_message``, which must land on the
+    submitted turn even if the position it started from is mid a prior turn); ``None`` does no
+    skipping — used by BOTH ``attach`` from the beginning (replay everything) and ``attach``
+    resuming after a stored point (start exactly there). Resuming mid-stream is safe without
+    skipping: a subagent whose turn began before the resume point is never mounted (we never emit
+    its ``subagent_message_sent``), so its events are absent and its later
+    ``subagent_reply_received`` is released by the unmounted-stuck give-up; subagents dispatched
+    at/after the point mount and bracket-merge normally. ``select`` decides the order of
+    genuinely-concurrent events; ``should_stop`` ends the run after a chosen terminal event.
+    Always honors per-stream order and both brackets.
 
     A subagent stream that can't be read (a completed/stopped subagent, an over-subscribed
     workflow) or stalls is given up on — its close gate released so the parent flows, and a
@@ -488,7 +548,7 @@ async def merge_stream(
     )
     async for item in engine.run(
         root_workflow_id=root_workflow_id,
-        root_from_offset=root_from_offset,
+        root_resume=root_resume,
         skip_until_turn_id=skip_until_turn_id,
     ):
         yield item

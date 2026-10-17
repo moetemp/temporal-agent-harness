@@ -251,6 +251,9 @@ export interface ChatServerOptions {
 export function createChatServer(opts: ChatServerOptions): Chat {
   const { harness } = opts;
   const log = opts.logger ?? new ConsoleLogger('info', 'chat-server');
+  /** The newest resume point read on each session's stream, so a turn does not replay the
+   *  session's whole history to find its own events. */
+  const resumeBySession = new Map<string, string>();
 
   /**
    * Run one platform event, and never let it fail silently.
@@ -758,8 +761,8 @@ export function createChatServer(opts: ChatServerOptions): Chat {
   /**
    * Run one message to completion, as a sequence of streamed messages.
    *
-   * Two halves, per the harness's client contract: `submit_message` admits the message and
-   * returns where its dispatch begins, then `attach` reads the session stream from there.
+   * Two halves, per the harness's client contract: `submit_message` admits the message, then
+   * `attach` reads the session stream after the last point this server read on it.
    * Streaming the send instead (`POST /api/chat`) cannot express a mid-turn message — it
    * rejects with `joined_turn` the moment a `mid_turn: accept` handler joins a running turn,
    * which is precisely when a user reaches for one.
@@ -800,6 +803,9 @@ export function createChatServer(opts: ChatServerOptions): Chat {
     requestId: string,
     thread: Thread,
   ): Promise<void> {
+    // Read before submitting: every frame behind this point was published before the message
+    // existed, so none of its own events can be skipped, whichever turn reads them.
+    const resume = resumeBySession.get(sessionId) ?? '';
     const accepted = await harness.submitMessage(sessionId, message, requestId);
     log.info('message: accepted', {
       sessionId,
@@ -811,7 +817,7 @@ export function createChatServer(opts: ChatServerOptions): Chat {
     // ONE iterator for the whole turn, stepped by hand. A `for await` that exits early calls
     // `.return()` on it, which would close the attach stream at the first gate and lose
     // everything after it.
-    const events = harness.attach(sessionId, accepted.accepted_offset);
+    const events = harness.attach(sessionId, resume);
     interface Frame {
       event: string;
       data: Record<string, unknown>;
@@ -845,6 +851,8 @@ export function createChatServer(opts: ChatServerOptions): Chat {
           log.warn('message: stream closed before the handler finished', { sessionId });
           return undefined;
         }
+        const point = next.value.data.resume;
+        if (typeof point === 'string') resumeBySession.set(sessionId, point);
         // Turn brackets carry no message_id; everything belonging to a dispatch does.
         const owner = next.value.data.message_id;
         if (owner !== undefined && owner !== null && owner !== accepted.message_id) continue;

@@ -33,6 +33,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from temporal_agent_harness.harness.stream_transport import provider_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.openai_agents import (
     ModelActivityParameters,
@@ -70,12 +71,13 @@ async def main() -> None:
         observer_factory=harness_observer_factory,
     )
 
-    # Two plugins, harness LAST so the OpenAI plugin's (OpenAI-aware, pydantic-compatible)
-    # payload converter wins; the harness plugin then adds the large-payload offload on top,
-    # matching the session-manager worker and the web server.
+    # The harness plugin after the AI SDK's, so the OpenAI plugin's (OpenAI-aware,
+    # pydantic-compatible) payload converter wins; the harness plugin then adds the
+    # large-payload offload on top, matching the session-manager worker and the web server.
     connect_config = ClientConfig.load_client_connect_config()
+    provider = provider_from_env()
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin()]
+        **connect_config, plugins=[plugin, AgentHarnessPlugin(), provider]
     )
 
     worker = Worker(

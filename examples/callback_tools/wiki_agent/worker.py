@@ -29,6 +29,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from temporal_agent_harness.harness.stream_transport import provider_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.google_genai_plugin import GoogleGenAIPlugin
 
@@ -51,12 +52,13 @@ async def main() -> None:
         sys.exit("error: GEMINI_API_KEY env var not set")
     plugin = GoogleGenAIPlugin(GeminiClient(api_key=api_key))
 
-    # AgentHarnessPlugin last: it leaves the Gemini plugin's payload converter in place and
+    # AgentHarnessPlugin after it: it leaves the Gemini plugin's payload converter in place and
     # adds the harness's large-payload offload, so this worker, the session-manager worker,
     # and the web server all read the same payloads.
     connect_config = ClientConfig.load_client_connect_config()
+    provider = provider_from_env()
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin()]
+        **connect_config, plugins=[plugin, AgentHarnessPlugin(), provider]
     )
 
     worker = Worker(

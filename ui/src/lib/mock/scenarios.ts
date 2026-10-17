@@ -3,6 +3,7 @@ import type {
   AgentSseFrame,
   AgentSseEventMap,
   FileCitationAnnotation,
+  ResumePoint,
   Session,
   TokenUsage
 } from "$lib/api/types";
@@ -72,15 +73,21 @@ const sessions: Session[] = [
 const rootAgentId = "7f3c1a";
 const searchSubagentId = `${rootAgentId}-b52e04`;
 const searchSubagentWorkflowId = "agent-session-mock-qa-search";
-let resumeOffset = 0;
+let rootSeq = 0;
+
+// Shaped like the server's encoded point, `<seq>@<cursor>`, so the mock exercises
+// the same opaque handling the real one does rather than a bare number.
+function mockResumePoint(seq: number): ResumePoint {
+  return `${seq}@mock-${seq}`;
+}
 
 function frame<T extends keyof AgentSseEventMap>(
   event: T,
-  data: Omit<AgentSseEventMap[T], "agent_id" | "resume_offset"> &
-    { agent_id?: string; resume_offset?: number }
+  data: Omit<AgentSseEventMap[T], "agent_id" | "resume" | "seq"> &
+    { agent_id?: string; resume?: ResumePoint; seq?: number | null }
 ): AgentSseFrame {
   const agentId = data.agent_id ?? rootAgentId;
-  if (agentId === rootAgentId) resumeOffset += 1;
+  if (agentId === rootAgentId) rootSeq += 1;
   return {
     event,
     data: {
@@ -90,7 +97,8 @@ function frame<T extends keyof AgentSseEventMap>(
       // message_id: null. Enforced here rather than at every call site, so the mock cannot
       // drift into attributing them to a message.
       ...(event === "turn_started" || event === "turn_end" ? { message_id: null } : {}),
-      resume_offset: data.resume_offset ?? resumeOffset
+      seq: data.seq ?? null,
+      resume: data.resume ?? mockResumePoint(rootSeq)
     } as AgentSseEventMap[T]
   } as AgentSseFrame;
 }
@@ -779,7 +787,7 @@ const frames: AgentSseFrame[] = [
     workflow_id: searchSubagentWorkflowId,
     handler: "summarize_budget_examples",
     subagent_turn: 1,
-    from_offset: 0
+    after_cursor: ""
   }),
   frame("message_accepted", {
     type: "message_accepted",

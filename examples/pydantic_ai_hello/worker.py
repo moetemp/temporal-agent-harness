@@ -38,6 +38,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from temporal_agent_harness.harness.stream_transport import provider_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from .workflow import TASK_QUEUE, PydanticAIHelloAgentWorkflow, _TEMPORAL_AGENT
@@ -56,11 +57,12 @@ async def main() -> None:
         sys.exit("error: OPENAI_API_KEY env var not set")
 
     # PydanticAIPlugin supplies the Pydantic-compatible data converter + sandbox passthroughs;
-    # AgentHarnessPlugin (last) leaves that converter in place and adds the harness's own
+    # AgentHarnessPlugin (after it) leaves that converter in place and adds the harness's own
     # requirements — the large-payload offload plus its activities.
     connect_config = ClientConfig.load_client_connect_config()
+    provider = provider_from_env()
     client = await Client.connect(
-        **connect_config, plugins=[PydanticAIPlugin(), AgentHarnessPlugin()]
+        **connect_config, plugins=[PydanticAIPlugin(), AgentHarnessPlugin(), provider]
     )
 
     worker = Worker(

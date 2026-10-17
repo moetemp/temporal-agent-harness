@@ -28,6 +28,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from temporal_agent_harness.harness.stream_transport import provider_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from . import activities
@@ -49,7 +50,8 @@ async def main() -> None:
 
     connect_config = ClientConfig.load_client_connect_config()
     client = await Client.connect(
-        **connect_config, plugins=[AgentHarnessPlugin(tools=activities.ALL_TOOLS)]
+        **connect_config,
+        plugins=[AgentHarnessPlugin(tools=activities.ALL_TOOLS), provider_from_env()],
     )
 
     worker = Worker(client, task_queue=task_queue, workflows=[TicTacToeAgentWorkflow])

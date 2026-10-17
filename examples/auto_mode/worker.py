@@ -44,6 +44,7 @@ from temporalio.worker import Worker
 
 from temporal_agent_harness.ai_sdks.google_genai_plugin import GoogleGenAIPlugin
 from temporal_agent_harness.harness.jev_approvals.activity import typesafe_api_key
+from temporal_agent_harness.harness.stream_transport import provider_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from ..monty import activities
@@ -73,7 +74,7 @@ async def main() -> None:
             "Jev. For the same agent without auto mode, run examples/monty instead."
         )
 
-    # Two plugins, harness LAST so the Gemini plugin's payload converter wins:
+    # The harness plugin after the AI SDK's, so the Gemini plugin's payload converter wins:
     #   * GoogleGenAIPlugin  — the Gemini interactions activity.
     #   * AgentHarnessPlugin — the large-payload offload converter, the Code Mode
     #     sandbox-stepping activities, the durable body of every travel tool in ALL_TOOLS,
@@ -84,6 +85,7 @@ async def main() -> None:
         plugins=[
             GoogleGenAIPlugin(GeminiClient(api_key=gemini_api_key)),
             AgentHarnessPlugin(tools=activities.ALL_TOOLS),
+            provider_from_env(),
         ],
     )
 

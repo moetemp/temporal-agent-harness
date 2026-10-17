@@ -48,6 +48,23 @@ test("two messages streaming in one turn keep their own replies", () => {
   assert.equal(p.root!.agentStatus, "idle");
 });
 
+test("a superseded attempt's streamed text is dropped and the retry's replaces it", () => {
+  const f = new Frames();
+  const a = { message_id: "a" };
+  const p = project([
+    f.make("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, a),
+    f.make("turn_started"),
+    f.make("message_handler_start", {}, a),
+    f.make("reply_delta", { text: "half an ans" }, a),
+    f.make("attempt_superseded", { producer_id: "7", superseded_attempt: 1, attempt: 2 }),
+    f.make("reply_delta", { text: "Whole answer" }, a),
+    f.make("message_handler_end", { output: { text: "Whole answer" } }, a),
+    f.make("turn_end")
+  ]);
+
+  assert.deepEqual(p.root!.messages[0]!.parts, [{ type: "reply_delta", text: "Whole answer" }]);
+});
+
 test("a queued message stays accepted until its handler starts", () => {
   const f = new Frames();
   const q = { message_id: "q", turn_number: 2 };
@@ -169,13 +186,13 @@ test("every subagent in the merged stream gets its own view, linked from the par
   const p = project([
     f.make("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, root),
     f.make("subagent_started", { subagent_id: "root.s1", agent_key: "researcher", workflow_id: "wf-s1" }, root),
-    f.make("subagent_message_sent", { ...sub, from_offset: 0 }, root),
+    f.make("subagent_message_sent", { ...sub, after_cursor: "" }, root),
     // The child's own turn, merged in after the parent asked for it.
     f.make("message_accepted", { handler: "ask", payload: { text: "look it up" }, disposition: "opened" }, child),
     f.make("turn_started", {}, child),
     f.make("reply_delta", { text: "found it" }, child),
     // ...which itself drives a grandchild.
-    f.make("subagent_message_sent", { ...subsub, from_offset: 0 }, child),
+    f.make("subagent_message_sent", { ...subsub, after_cursor: "" }, child),
     f.make("message_accepted", { handler: "fetch", payload: {}, disposition: "opened" }, grandchild),
     f.make("message_handler_end", { output: { text: "page" } }, grandchild),
     f.make("subagent_reply_received", { ...subsub, outcome: "ok" }, child),
@@ -221,7 +238,7 @@ test("a stopped subagent, and one whose stream was lost, say so", () => {
   const sub = { subagent_id: "root.s1", agent_key: "helper", workflow_id: "wf-s1", handler: "ask", subagent_turn: 1 };
   const p = project([
     f.make("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, root),
-    f.make("subagent_message_sent", { ...sub, from_offset: 0 }, root),
+    f.make("subagent_message_sent", { ...sub, after_cursor: "" }, root),
     f.make("subagent_stream_unavailable", { subagent_id: "root.s1", workflow_id: "wf-s1", reason: "completed" }, { agent_id: "root.s1" })
   ]);
   const part = p.root!.messages[0]!.parts[0];

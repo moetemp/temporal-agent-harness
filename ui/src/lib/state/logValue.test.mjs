@@ -34,7 +34,7 @@ const meta = (turn = 1) => ({
   turn_id: "turn-1",
   turn_number: turn,
   timestamp: 1_700_000_000 + offset,
-  resume_offset: `${offset++}`
+  resume: `${offset++}`
 });
 
 const toolRequested = (toolId, toolInput) => ({

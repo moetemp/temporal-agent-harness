@@ -219,10 +219,9 @@ func (d *Driver) StartTurn(ctx workflow.Context, input router.Input) (router.Sta
 			return router.StartResult{}, err
 		}
 		return router.StartResult{Handle: &router.TurnHandle{
-			SessionID:        input.SessionID,
-			TurnID:           sendOut.TurnId,
-			TurnNumber:       sendOut.TurnNumber,
-			StreamHeadOffset: derefOrZero(sendOut.StreamHeadOffset),
+			SessionID:  input.SessionID,
+			TurnID:     sendOut.TurnId,
+			TurnNumber: sendOut.TurnNumber,
 		}}, nil
 
 	case input.Slash != nil:
@@ -285,10 +284,9 @@ func startSlashTurn(ctx workflow.Context, agentClient workflow.NexusClient, sess
 		return router.StartResult{Reply: fmt.Sprintf("_Command failed: %v_", err)}, nil
 	}
 	return router.StartResult{Handle: &router.TurnHandle{
-		SessionID:        sessionID,
-		TurnID:           sendOut.TurnId,
-		TurnNumber:       sendOut.TurnNumber,
-		StreamHeadOffset: derefOrZero(sendOut.StreamHeadOffset),
+		SessionID:  sessionID,
+		TurnID:     sendOut.TurnId,
+		TurnNumber: sendOut.TurnNumber,
 	}}, nil
 }
 
@@ -306,7 +304,7 @@ func resolveApproval(ctx workflow.Context, agentClient workflow.NexusClient, ses
 
 // PollTurn polls the Nexus agent response stream starting from cursor and decodes each
 // item into a generic router.Delta.
-func (d *Driver) PollTurn(ctx workflow.Context, handle router.TurnHandle, cursor int64) (router.PollResult, error) {
+func (d *Driver) PollTurn(ctx workflow.Context, handle router.TurnHandle, cursor string) (router.PollResult, error) {
 	agentClient := workflow.NewNexusClient(d.nexusEndpoint(), harnessgen.AgentService.ServiceName)
 
 	var pollOut harnessgen.PollMessagesOutput

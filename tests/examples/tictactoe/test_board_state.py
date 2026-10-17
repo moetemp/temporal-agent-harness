@@ -12,13 +12,12 @@ import uuid
 import jsonpatch
 import pytest_asyncio
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -33,7 +32,7 @@ from examples.tictactoe.workflow import TicTacToeAgentWorkflow
 
 @pytest_asyncio.fixture
 async def client_and_queue():
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"tictactoe-test-{uuid.uuid4()}"
@@ -64,12 +63,9 @@ async def test_new_game_streams_the_declared_board(client_and_queue):
     )
 
     events: list[AgentEvent] = []
-    stream = WorkflowStreamClient.create(client, handle.id)
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
-    ):
-        events.append(item.data)
-        if item.data.event.type == AgentEventType.TURN_END:
+    async for item in turn_events(client, handle.id):
+        events.append(item)
+        if item.event.type == AgentEventType.TURN_END:
             break
 
     snapshots = [e.event for e in events if e.event.type == AgentEventType.STATE_SNAPSHOT]

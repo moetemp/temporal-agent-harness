@@ -18,7 +18,12 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from temporalio.contrib.workflow_streams import WorkflowStreamItem
+from temporalio.streams import (
+    Cursor,
+    RecordKind,
+    StreamCursorError,
+    StreamRecord,
+)
 
 import temporal_agent_harness.harness.stream_merge.cursor as cursor_mod
 from temporal_agent_harness.harness.agent_protocol import (
@@ -37,6 +42,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TurnStarted,
 )
 from temporal_agent_harness.harness.stream_merge import (
+    ResumePoint,
     Gates,
     MountChild,
     UnmountChild,
@@ -72,7 +78,9 @@ def _te(agent_id: str, turn: int) -> AgentEvent:
     return _ev(agent_id, turn, TurnEnded())
 
 
-def _ms(agent_id: str, parent_turn: int, *, child: str, child_turn: int, from_offset: int = 0) -> AgentEvent:
+def _ms(
+    agent_id: str, parent_turn: int, *, child: str, child_turn: int, after_cursor: str = ""
+) -> AgentEvent:
     return _ev(
         agent_id,
         parent_turn,
@@ -82,7 +90,7 @@ def _ms(agent_id: str, parent_turn: int, *, child: str, child_turn: int, from_of
             workflow_id=child,
             handler="f",
             subagent_turn=child_turn,
-            from_offset=from_offset,
+            after_cursor=after_cursor,
         ),
     )
 
@@ -146,60 +154,68 @@ def _tool(agent_id: str, turn: int, tid: str, *, start: bool) -> AgentEvent:
 # ---------------------------------------------------------------------------
 
 
-class _FakeHandle:
+class _FakeStreams:
+    """Scripted in-memory streams, patched over ``cursor.follow_turn_events``.
+
+    Cursors are the stringified positions of the scripted events, so a test can say where a
+    stream is resumed after; the merge itself never looks inside them.
+    """
+
     def __init__(
         self,
-        events: list[AgentEvent],
+        streams: dict[str, list[AgentEvent]],
         *,
         closes: list[str] | None = None,
-        workflow_id: str = "",
-        fail_after: int | None = None,
-        live_tail: bool = False,
-        drip: float | None = None,
+        fail_workflows: dict[str, int] | None = None,
+        live_tail_workflows: set[str] | None = None,
+        drip_workflows: dict[str, float] | None = None,
+        refuse_workflows: set[str] | None = None,
     ) -> None:
-        self._events = events
+        self._streams = streams
+        # Collects the workflow_ids whose subscription the merge closed (unmount / teardown).
         self._closes = closes
-        self._workflow_id = workflow_id
-        # When set, the (fail_after+1)-th item raises a read error (mimics the per-workflow
-        # concurrent-update cap / a poll against a completed child) — to test graceful skip.
-        self._fail_after = fail_after
-        # When True, the generator BLOCKS after exhausting its backlog instead of stopping — mimics
-        # subscribe() live-tailing a still-running workflow (its poll update stays in flight). Used
-        # to prove unmount-on-subagent_stopped actually closes that held subscription.
-        self._live_tail = live_tail
-        # When set, sleep this many seconds BEFORE each yielded item — a stream that delivers in a
-        # slow real-time drip. Used to prove the PER-CHILD stall deadline: a steadily-dripping
-        # sibling (each delivery < stall_grace apart) must NOT keep resetting a dead child's clock.
-        self._drip = drip
+        # workflow_id -> item count after which its stream raises a read error (mimics the
+        # per-workflow concurrent-update cap / a poll against a completed child).
+        self._fail_workflows = fail_workflows or {}
+        # Streams that BLOCK after exhausting their backlog instead of stopping — mimics a live
+        # tail on a still-running workflow. Used to prove unmount-on-subagent_stopped closes it.
+        self._live_tail_workflows = live_tail_workflows or set()
+        # workflow_id -> seconds to sleep BEFORE each yielded item — a slow real-time drip. Used
+        # to prove the PER-CHILD stall deadline: a steadily-dripping sibling must NOT keep
+        # resetting a dead child's clock.
+        self._drip_workflows = drip_workflows or {}
+        # Streams whose read is refused AT THE CALL, the way a provider refuses a
+        # cursor it did not mint: the parse is eager, so it never reaches a pull.
+        self._refuse_workflows = refuse_workflows or set()
 
-    def subscribe(
-        self,
-        topics: Any = None,
-        from_offset: int = 0,
-        *,
-        result_type: Any = None,
-        poll_cooldown: Any = None,
-    ) -> AsyncIterator[WorkflowStreamItem[AgentEvent]]:
-        events = self._events
-        fail_after = self._fail_after
-        live_tail = self._live_tail
+    def follow(
+        self, _client: Any, workflow_id: str, *, after: str = ""
+    ) -> AsyncIterator[StreamRecord[AgentEvent]]:
+        if workflow_id in self._refuse_workflows:
+            raise StreamCursorError(f"cursor {after!r} was not minted by this provider")
+        events = self._streams.get(workflow_id, [])
+        fail_after = self._fail_workflows.get(workflow_id)
+        live_tail = workflow_id in self._live_tail_workflows
+        drip = self._drip_workflows.get(workflow_id)
         closes = self._closes
-        workflow_id = self._workflow_id
-        drip = self._drip
+        start = int(after) + 1 if after else 0
 
-        async def gen() -> AsyncIterator[WorkflowStreamItem[AgentEvent]]:
+        async def gen() -> AsyncIterator[StreamRecord[AgentEvent]]:
             # Finite backlog then StopAsyncIteration — unlike the live server stream, which would
             # block tailing. Finite streams make the merge's ordering deterministically testable.
             # The cursor closes this generator (its `aclose`) on unmount/teardown; record that via
             # GeneratorExit so a test can assert the merge released the subscription.
             try:
-                for n, offset in enumerate(range(from_offset, len(events))):
+                for n, offset in enumerate(range(start, len(events))):
                     if fail_after is not None and n >= fail_after:
                         raise RuntimeError("simulated stream read error (e.g. update cap)")
                     if drip is not None:
                         await asyncio.sleep(drip)
-                    yield WorkflowStreamItem(
-                        topic=TURN_EVENTS_TOPIC, data=events[offset], offset=offset
+                    yield StreamRecord(
+                        kind=RecordKind.DATA,
+                        cursor=Cursor(str(offset)),
+                        topic=TURN_EVENTS_TOPIC,
+                        value=events[offset],
                     )
                 if live_tail:
                     # Block forever (until cancelled by aclose) — a live, idle workflow's poll.
@@ -212,33 +228,6 @@ class _FakeHandle:
         return gen()
 
 
-class _FakeStreams:
-    def __init__(
-        self,
-        streams: dict[str, list[AgentEvent]],
-        *,
-        closes: list[str] | None = None,
-        fail_workflows: dict[str, int] | None = None,
-        live_tail_workflows: set[str] | None = None,
-        drip_workflows: dict[str, float] | None = None,
-    ) -> None:
-        self._streams = streams
-        self._closes = closes
-        self._fail_workflows = fail_workflows or {}
-        self._live_tail_workflows = live_tail_workflows or set()
-        self._drip_workflows = drip_workflows or {}
-
-    def create(self, _client: Any, workflow_id: str) -> _FakeHandle:
-        return _FakeHandle(
-            self._streams.get(workflow_id, []),
-            closes=self._closes,
-            workflow_id=workflow_id,
-            fail_after=self._fail_workflows.get(workflow_id),
-            live_tail=workflow_id in self._live_tail_workflows,
-            drip=self._drip_workflows.get(workflow_id),
-        )
-
-
 async def _never_stop(_cursor: Any, _ev: AgentEvent) -> bool:
     return False
 
@@ -249,14 +238,15 @@ async def _run_merge(
     root: str,
     select: Any,
     skip_until_turn_id: str | None = None,
-    root_from_offset: int = 0,
+    root_after_cursor: str = "",
     should_stop: Any = None,
     closes: list[str] | None = None,
     fail_workflows: dict[str, int] | None = None,
     live_tail_workflows: set[str] | None = None,
     drip_workflows: dict[str, float] | None = None,
+    refuse_workflows: set[str] | None = None,
     stall_grace_seconds: float = 5.0,
-    resume_offsets: list[int] | None = None,
+    resume_points: list[ResumePoint] | None = None,
 ) -> list[AgentEvent]:
     """Drive the merge over scripted streams to exhaustion (or should_stop), returning the output.
 
@@ -265,30 +255,31 @@ async def _run_merge(
     a read error. ``live_tail_workflows`` makes the named streams block after their backlog (a live
     idle workflow) so unmount-on-stop — and the stall backstop on a never-delivering child — can be
     exercised without the backlog naturally ending. ``stall_grace_seconds`` is the liveness backstop
-    (tests pass a tiny value so a simulated hang resolves fast). ``root_from_offset`` (with no
-    ``skip_until_turn_id``) exercises the no-skip resume path. ``resume_offsets`` (if given) collects
-    the per-event root resume offset the merge yields."""
+    (tests pass a tiny value so a simulated hang resolves fast). ``root_after_cursor`` (with no
+    ``skip_until_turn_id``) exercises the no-skip resume path. ``resume_points`` (if given) collects
+    the per-event root resume point the merge yields."""
     fake = _FakeStreams(
         streams,
         closes=closes,
         fail_workflows=fail_workflows,
         live_tail_workflows=live_tail_workflows,
         drip_workflows=drip_workflows,
+        refuse_workflows=refuse_workflows,
     )
     out: list[AgentEvent] = []
-    with patch.object(cursor_mod, "WorkflowStreamClient", fake):
-        async for ev, resume_offset in merge_stream(
+    with patch.object(cursor_mod, "follow_turn_events", fake.follow):
+        async for ev, resume in merge_stream(
             client=None,
             root_workflow_id=root,
-            root_from_offset=root_from_offset,
+            root_resume=ResumePoint(cursor=root_after_cursor),
             skip_until_turn_id=skip_until_turn_id,
             select=select,
             should_stop=should_stop or _never_stop,
             stall_grace_seconds=stall_grace_seconds,
         ):
             out.append(ev)
-            if resume_offsets is not None:
-                resume_offsets.append(resume_offset)
+            if resume_points is not None:
+                resume_points.append(resume)
     return out
 
 
@@ -353,11 +344,13 @@ def test_open_gate_holds_child_until_message_sent_emitted():
     # Child event is held until the parent's message_sent for that turn has been emitted.
     assert not gates.ready(is_child=True, source_workflow_id="C", ev=child_ts)
     mount = gates.on_emit(
-        is_child=False, source_workflow_id="P", ev=_ms("P", 1, child="C", child_turn=1, from_offset=7)
+        is_child=False,
+        source_workflow_id="P",
+        ev=_ms("P", 1, child="C", child_turn=1, after_cursor="6"),
     )
     # _ms stamps subagent_id = child[:6] ("C"); the mount carries it so a later give-up can label
     # the child even if it delivered no events of its own.
-    assert mount == MountChild(workflow_id="C", from_offset=7, subagent_id="C")
+    assert mount == MountChild(workflow_id="C", after_cursor="6", subagent_id="C")
     assert gates.ready(is_child=True, source_workflow_id="C", ev=child_ts)
 
 
@@ -482,9 +475,9 @@ async def test_reused_subagent_two_turns_one_parent_turn(select):
     streams = {
         "P": [
             _ts("P", 1),
-            _ms("P", 1, child="C", child_turn=1, from_offset=0),
+            _ms("P", 1, child="C", child_turn=1, after_cursor=""),
             _rr("P", 1, child="C", child_turn=1),
-            _ms("P", 1, child="C", child_turn=2, from_offset=3),
+            _ms("P", 1, child="C", child_turn=2, after_cursor="2"),
             _rr("P", 1, child="C", child_turn=2),
             _te("P", 1),
         ],
@@ -548,7 +541,7 @@ async def test_nested_grandchild_recursion(select):
 
 async def test_send_message_skip_preamble_starts_at_target_turn_started():
     # A resume mid-session: the root stream has a prior turn (turn 1) we must NOT emit, then our
-    # target turn 2. We start at accepted_offset and skip until turn 2's turn_started.
+    # target turn 2. We start at the position read before the send and skip until turn 2's turn_started.
     target = "P-t2"
     streams = {
         "P": [
@@ -573,7 +566,7 @@ async def test_send_message_skip_preamble_starts_at_target_turn_started():
         root="P",
         select=select_live,
         skip_until_turn_id=target,
-        root_from_offset=3,
+        root_after_cursor="2",
         should_stop=stop_at_target_turn_end,
     )
     # Only the target turn's events, starting at its turn_started.
@@ -585,19 +578,20 @@ async def test_send_message_skip_preamble_starts_at_target_turn_started():
     assert all(m.turn_id == target for m in merged)
 
 
-async def test_send_message_resume_mounts_reused_child_at_from_offset():
+async def test_send_message_resume_mounts_reused_child_after_cursor():
     # Resume on parent turn 2, which drives child C's turn 2. C's turns 1 (from an earlier, skipped
-    # parent turn) must NOT appear — the merge mounts C at the from_offset carried on message_sent,
+    # parent turn) must NOT appear — the merge mounts C after the after_cursor carried on message_sent,
     # skipping C's pre-resume history (whose own message_sent isn't on this merged stream).
     target = "P-t2"
     streams = {
         "P": [
             _ts("P", 1),
-            _ms("P", 1, child="C", child_turn=1, from_offset=0),
+            _ms("P", 1, child="C", child_turn=1, after_cursor=""),
             _rr("P", 1, child="C", child_turn=1),
             _te("P", 1),
             _ev("P", 2, TurnStarted(), turn_id=target),
-            _ms("P", 2, child="C", child_turn=2, from_offset=3),  # C turn 2 begins at child offset 3
+            # C turn 2 begins at child offset 3.
+            _ms("P", 2, child="C", child_turn=2, after_cursor="2"),
             _rr("P", 2, child="C", child_turn=2),
             _ev("P", 2, TurnEnded(), turn_id=target),
         ],
@@ -605,7 +599,7 @@ async def test_send_message_resume_mounts_reused_child_at_from_offset():
             _ts("C", 1),  # offset 0 — belongs to parent turn 1; must NOT be merged on resume
             _reply("C", 1),  # offset 1
             _te("C", 1),  # offset 2
-            _ts("C", 2),  # offset 3 — where turn 2 begins (from_offset=3)
+            _ts("C", 2),  # offset 3 — where turn 2 begins (after_cursor="2")
             _reply("C", 2),  # offset 4
             _te("C", 2),  # offset 5
         ],
@@ -623,7 +617,7 @@ async def test_send_message_resume_mounts_reused_child_at_from_offset():
         root="P",
         select=select_replay,
         skip_until_turn_id=target,
-        root_from_offset=4,
+        root_after_cursor="3",
         should_stop=stop_at_target_turn_end,
     )
     # No turn-1 events from either stream; child turn-2 events nested in their bracket.
@@ -884,7 +878,7 @@ async def test_unreadable_root_ends_merge_without_raising():
 
 
 # ---------------------------------------------------------------------------
-# attach(from_offset) — root-offset resume (the cursor advances on every root event)
+# attach(resume) — root-position resume (the point advances on every root event)
 # ---------------------------------------------------------------------------
 
 
@@ -899,26 +893,44 @@ def _three_turn_root() -> dict[str, list[AgentEvent]]:
     }
 
 
-async def test_resume_offset_advances_past_each_root_event():
-    # The resume cursor advances past EVERY root event emitted (here the root has no subagents, so
-    # every event is a root event and the cursor advances on each — any offset is a safe resume point
-    # under the no-skip policy). A subagent's own events would instead repeat the prior root value.
+async def test_resume_point_advances_past_each_root_event():
+    # The resume point advances past EVERY root event emitted (here the root has no subagents, so
+    # every event is a root event and the point advances on each; any root position is a safe
+    # resume point under the no-skip policy). A subagent's own events would instead repeat the
+    # prior root value.
     streams = _three_turn_root()
-    offsets: list[int] = []
+    points: list[ResumePoint] = []
     merged = await _run_merge(
-        streams, root="P", select=select_replay, resume_offsets=offsets
+        streams, root="P", select=select_replay, resume_points=points
     )
     assert len(merged) == 9
-    # Each root event at offset i hands back resume offset i+1.
-    assert offsets == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    # Each root event hands back its own cursor as the point to resume after.
+    assert [p.cursor for p in points] == [str(i) for i in range(9)]
 
 
-async def test_resume_from_offset_streams_only_events_after_it():
+def test_resume_point_round_trips():
+    # The cursor token keeps its provider prefix and any separators of its own.
+    point = ResumePoint(cursor="native:run-1:7", seq=3)
+    text = point.encode()
+    assert text == "3@native:run-1:7"
+    assert ResumePoint.decode(text) == point
+    # The beginning encodes to nothing at all.
+    assert ResumePoint().encode() == ""
+    assert ResumePoint.decode("") == ResumePoint()
+
+
+@pytest.mark.parametrize("text", ["7", "x@7", "redis:3@7", "@"])
+def test_malformed_resume_point_is_rejected(text):
+    with pytest.raises(ValueError):
+        ResumePoint.decode(text)
+
+
+async def test_resume_after_a_cursor_streams_only_events_after_it():
     # Resuming from offset 3 (start of turn 2) yields turns 2 and 3 — turn 1 is not re-sent. No
     # skip: the root simply starts at offset 3, which is turn 2's turn_started.
     streams = _three_turn_root()
     merged = await _run_merge(
-        streams, root="P", select=select_replay, root_from_offset=3
+        streams, root="P", select=select_replay, root_after_cursor="2"
     )
     assert {e.turn_number for e in merged} == {2, 3}
     assert merged[0].event.type == AgentEventType.TURN_STARTED and merged[0].turn_number == 2
@@ -929,10 +941,10 @@ async def test_resume_mid_turn_streams_the_rest_of_that_turn_no_fast_forward():
     # REST of turn 2 (reply, turn_end) and then turn 3 — it does NOT fast-forward past turn 2.
     streams = _three_turn_root()
     merged = await _run_merge(
-        streams, root="P", select=select_replay, root_from_offset=4
+        streams, root="P", select=select_replay, root_after_cursor="3"
     )
     assert [e.event.type for e in merged] == [
-        AgentEventType.MESSAGE_HANDLER_END, AgentEventType.TURN_END,        # rest of turn 2 (from offset 4)
+        AgentEventType.MESSAGE_HANDLER_END, AgentEventType.TURN_END,        # rest of turn 2 (after cursor 3)
         AgentEventType.TURN_STARTED, AgentEventType.MESSAGE_HANDLER_END, AgentEventType.TURN_END,  # turn 3
     ]
     assert [e.turn_number for e in merged] == [2, 2, 3, 3, 3]
@@ -941,16 +953,16 @@ async def test_resume_mid_turn_streams_the_rest_of_that_turn_no_fast_forward():
 @pytest.mark.parametrize("select", [select_replay, select_live])
 async def test_resume_includes_subagent_dispatched_at_or_after_offset(select):
     # Resume at the start of parent turn 2 (offset 4), which drives subagent C (turn 2). C's turn-2
-    # message_sent is at/after the offset, so C mounts at its from_offset (3) and turn-2 detail
+    # message_sent is at/after the offset, so C mounts after its after_cursor and turn-2 detail
     # merges normally; C's turn-1 detail (dispatched before the offset) is not re-sent.
     streams = {
         "P": [
             _ts("P", 1),                                              # 0
-            _ms("P", 1, child="C", child_turn=1, from_offset=0),     # 1
+            _ms("P", 1, child="C", child_turn=1, after_cursor=""),     # 1
             _rr("P", 1, child="C", child_turn=1),                    # 2
             _te("P", 1),                                             # 3
             _ts("P", 2),                                             # 4  (resume here)
-            _ms("P", 2, child="C", child_turn=2, from_offset=3),     # 5
+            _ms("P", 2, child="C", child_turn=2, after_cursor="2"),     # 5
             _rr("P", 2, child="C", child_turn=2),                    # 6
             _te("P", 2),                                             # 7
         ],
@@ -959,7 +971,7 @@ async def test_resume_includes_subagent_dispatched_at_or_after_offset(select):
             _ts("C", 2), _reply("C", 2), _te("C", 2),                # 3,4,5  (turn 2)
         ],
     }
-    merged = await _run_merge(streams, root="P", select=select, root_from_offset=4)
+    merged = await _run_merge(streams, root="P", select=select, root_after_cursor="3")
     assert all(e.turn_number == 2 for e in merged)
     assert {e.turn_number for e in merged if e.agent_id == "C"} == {2}
     open_i = next(i for i, m in enumerate(merged) if m.event.type == AgentEventType.SUBAGENT_MESSAGE_SENT)
@@ -977,7 +989,7 @@ async def test_resume_inside_subagent_turn_omits_that_subagent_but_parent_flows(
     streams = {
         "P": [
             _ts("P", 1),                                              # 0
-            _ms("P", 1, child="C", child_turn=1, from_offset=0),     # 1
+            _ms("P", 1, child="C", child_turn=1, after_cursor=""),     # 1
             _tool("P", 1, "t", start=True),                          # 2  (resume here — mid C's turn)
             _rr("P", 1, child="C", child_turn=1),                    # 3
             _reply("P", 1),                                          # 4
@@ -985,7 +997,7 @@ async def test_resume_inside_subagent_turn_omits_that_subagent_but_parent_flows(
         ],
         "C": [_ts("C", 1), _reply("C", 1), _te("C", 1)],
     }
-    merged = await _run_merge(streams, root="P", select=select, root_from_offset=2)
+    merged = await _run_merge(streams, root="P", select=select, root_after_cursor="1")
     # Parent's whole tail from offset 2 flows; NO C events; NO unavailable marker.
     assert [e.event.type for e in merged if e.agent_id == "P"] == [
         AgentEventType.TOOL_START,
@@ -1004,9 +1016,9 @@ async def test_redispatched_given_up_child_reenables_its_close_gate():
     streams = {
         "P": [
             _ts("P", 1),                                              # 0
-            _ms("P", 1, child="C", child_turn=1, from_offset=0),     # 1
+            _ms("P", 1, child="C", child_turn=1, after_cursor=""),     # 1
             _rr("P", 1, child="C", child_turn=1),                    # 2 (resume here — C never mounted)
-            _ms("P", 1, child="C", child_turn=2, from_offset=3),     # 3 (re-dispatch C)
+            _ms("P", 1, child="C", child_turn=2, after_cursor="2"),     # 3 (re-dispatch C)
             _rr("P", 1, child="C", child_turn=2),                    # 4
             _te("P", 1),                                             # 5
         ],
@@ -1015,7 +1027,7 @@ async def test_redispatched_given_up_child_reenables_its_close_gate():
             _ts("C", 2), _reply("C", 2), _te("C", 2),                # 3,4,5 (turn 2 — mounts at 3)
         ],
     }
-    merged = await _run_merge(streams, root="P", select=select_replay, root_from_offset=2)
+    merged = await _run_merge(streams, root="P", select=select_replay, root_after_cursor="1")
     # Turn-1 reply_received released (C unmounted), then C turn-2 mounts and its detail nests in the
     # turn-2 bracket — proving the close gate works again after the give-up.
     assert {e.turn_number for e in merged if e.agent_id == "C"} == {2}
@@ -1025,3 +1037,45 @@ async def test_redispatched_given_up_child_reenables_its_close_gate():
     open_i, close_i = ms_positions[-1], rr_positions[-1]
     child_pos = [i for i, m in enumerate(merged) if m.agent_id == "C"]
     assert child_pos and all(open_i < i < close_i for i in child_pos)
+
+
+async def test_a_child_whose_cursor_the_provider_refuses_drops_only_that_child():
+    # The read parses the cursor at the call, so a provider that refuses a child's
+    # after_cursor raises while the child is being mounted, not on its first pull.
+    # Unguarded there, one refused child ends the whole merged stream.
+    streams = {
+        "P": [
+            _ts("P", 1),
+            _ms("P", 1, child="C", child_turn=1),
+            _rr("P", 1, child="C", child_turn=1),
+            _reply("P", 1),
+            _te("P", 1),
+        ],
+        "C": [_ts("C", 1), _reply("C", 1), _te("C", 1)],
+    }
+    merged = await _run_merge(
+        streams,
+        root="P",
+        select=select_replay,
+        refuse_workflows={"C"},
+    )
+    # The parent's whole stream flows, close gate and all.
+    assert [m.event.type for m in merged if m.agent_id == "P"] == [
+        AgentEventType.TURN_STARTED,
+        AgentEventType.SUBAGENT_MESSAGE_SENT,
+        AgentEventType.SUBAGENT_REPLY_RECEIVED,
+        AgentEventType.MESSAGE_HANDLER_END,
+        AgentEventType.TURN_END,
+    ]
+    # The refused child lands on the same marker an unreadable one does.
+    markers = [
+        m for m in merged if m.event.type == AgentEventType.SUBAGENT_STREAM_UNAVAILABLE
+    ]
+    assert len(markers) == 1
+    assert markers[0].event.workflow_id == "C"
+    assert not [
+        m
+        for m in merged
+        if m.agent_id == "C"
+        and m.event.type != AgentEventType.SUBAGENT_STREAM_UNAVAILABLE
+    ]

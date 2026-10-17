@@ -52,7 +52,7 @@ without revisiting this.
 ## Mounting / unmounting + graceful degradation
 
 - **Mount** on `subagent_message_sent` (idempotent — a re-used child mounts once; it carries both
-  the child `workflow_id` and the `from_offset` to position the cursor).
+  the child `workflow_id` and the `after_cursor` to position the cursor).
 - **Unmount** on `subagent_stopped` (and when a child cursor turns out unreadable/exhausted): the
   engine closes that child's cursor and drops it. This is safe because `subagent_stopped` is emitted
   at a quiescent point — by then every one of that child's turns is drained, and a stopped
@@ -103,19 +103,21 @@ recursively), so that's a clean, empty-bracket start.
 
 `attach` resumes from an **arbitrary** offset with **no skip** — and that's still safe without
 bracket reconstruction, because the merge only ever *mounts* a child when it *emits* that child's
-`subagent_message_sent`. A subagent whose turn began before the resume offset is therefore never
+`subagent_message_sent`. A subagent whose turn began before the resume point is therefore never
 mounted: its events are simply absent, and its later `subagent_reply_received` (which would otherwise
 close-gate forever) is released by the **unmounted-stuck give-up** — the engine sees a buffered
 `reply_received` for a child that isn't mounted, knows its `turn_end` can never come, and gives up at
-once. Subagents dispatched at/after the offset mount and bracket-merge normally. So no per-stream
-offset vector is ever needed — just the scalar root offset plus `subagent_message_sent.from_offset`.
+once. Subagents dispatched at/after the point mount and bracket-merge normally. So no per-stream
+position vector is ever needed — just the root point plus `subagent_message_sent.after_cursor`.
 
-The merge yields a `(event, resume_offset)` pair per step; `resume_offset` is a **root-stream**
-offset that advances **only on root events** — every subagent event between two root events carries
-the same value (the position just past the preceding root event). A consumer records the latest and
-hands it back to `attach(from_offset=...)`. Two consequences a consumer must understand:
+The merge yields a `(event, ResumePoint)` pair per step; the point is a **root-stream** position
+that advances **only on root events** — every subagent event between two root events carries
+the same value (the position just past the preceding root event). It pairs the provider's opaque
+cursor for that root record with the root agent's `seq`, encodes to one string, and a consumer
+records the latest and hands it back to `attach(resume=...)`. Two consequences a consumer must
+understand:
 
-- **Any root offset is a *valid* resume point** — the merge never produces a broken ordering or
+- **Any root position is a *valid* resume point** — the merge never produces a broken ordering or
   wedges from one. It is *not* the merged display ordinal (the cross-stream interleaving itself isn't
   a resumable position).
 - **Resume is lossless only at root-event granularity.** A consumer that disconnects *mid a
@@ -123,26 +125,27 @@ hands it back to `attach(from_offset=...)`. Two consequences a consumer must und
   resume the root starts past that subagent's `subagent_message_sent`, so the merge never re-mounts
   it (and emits **no** `subagent_stream_unavailable` marker — it treats the detail as already
   delivered). The parent's reply and everything after it still flow. A consumer that needs every
-  subagent event across a mid-turn reconnect must re-attach from `0`. Making resume *lossless*
-  rather than merely safe would need a vector of offsets, one per live stream — a deferred protocol
-  change, which is why the client contract below is written to avoid needless reconnects.
+  subagent event across a mid-turn reconnect must re-attach with an empty `resume`. Making resume
+  *lossless* rather than merely safe would need a vector of cursors, one per live stream — a deferred
+  protocol change, which is why the client contract below is written to avoid needless reconnects.
 
 ## Entry points
 
-`merge_stream(client, root_workflow_id, root_from_offset, skip_until_turn_id, select, should_stop,
-stall_grace_seconds)` yields `(AgentEvent, resume_offset)` pairs. `AgentClient` wraps it:
-- **send_message** → `root_from_offset = reply.accepted_offset`, `skip_until_turn_id = reply.turn_id`,
-  `select_live`, stop at the root's `turn_end` for that turn.
-- **attach (full replay)** → `from_offset = 0`, no skip, `select_replay`, stop via status re-query
+`merge_stream(client, root_workflow_id, root_resume, skip_until_turn_id, select, should_stop,
+stall_grace_seconds)` yields `(AgentEvent, ResumePoint)` pairs. `AgentClient` wraps it:
+- **send_message** → `root_resume` is the stream's latest position read before the send (the reply
+  carries none: a workflow does not see where its own records land), `skip_until_turn_id =
+  reply.turn_id`, `select_live`, stop at the root's `turn_end` for that turn.
+- **attach (full replay)** → empty `resume`, no skip, `select_replay`, stop via status re-query
   (root idle and all turns through `current_turn` ended).
-- **attach (resume)** → `from_offset = <any resume offset the previous stream handed back>`, no skip,
+- **attach (resume)** → `resume = <any point the previous stream handed back>`, no skip,
   `select_replay`; streams only events after it (a subagent whose turn began earlier is omitted; its
   `reply_received` released by the unmounted-stuck give-up).
 
 > **`send_message` precondition.** It is only valid for a message that gets a **turn of its own**
 > — i.e. a caller that is not already streaming. A `MidTurn.ACCEPT` message that JOINS an open turn
-> has a `turn_started` *behind* its `accepted_offset`, so the skip preamble would never match and
-> the merge would emit nothing. The submit reply's `disposition` says which happened, so that case
+> has a `turn_started` *behind* the position read before the send, so the skip preamble would never
+> match and the merge would emit nothing. The submit reply's `disposition` says which happened, so that case
 > raises `JoinedTurnError` immediately rather than going silent for `DEFAULT_TURN_TIMEOUT` (300s).
 > The message is still *running* — the exception carries the accepted reply so the caller can find
 > it by `message_id` on a stream it opens itself. Mid-turn sends go through the contract below
@@ -155,7 +158,7 @@ rule on every send:
 
 1. **Send with `submit_message`** — the bare update, no stream. It returns `AgentMessageReply`.
 2. **Then ensure a stream is live.** Already open → keep it, untouched. None open (never attached, or
-   the last one ended at quiescence) → `attach(from_offset=<last resume offset>)`.
+   the last one ended at quiescence) → `attach(resume=<last resume point>)`.
 
 The packaged UI implements exactly this as `agentRun.svelte.ts`'s `#ensureStreamLive()`.
 
@@ -167,12 +170,13 @@ agent, the message not yet being admitted. Once `submit_message` returns, the me
 admitted and visible to `agent_status`, so no later `should_stop` evaluation can conclude "idle."
 
 **Keeping the open stream avoids a real loss.** Re-attaching mounts nothing that opened before the
-resume offset, and emits **no** `subagent_stream_unavailable` marker for it (see *Quiescent start*).
+resume point, and emits **no** `subagent_stream_unavailable` marker for it (see *Quiescent start*).
 So tearing down a healthy stream to send a message silently drops the rest of any in-flight
 subagent's turn. Keeping it never re-mounts, so the loss stays confined to genuine disconnects.
 
 **`attach` already spans queued turns, so no turn bookkeeping is needed.** Its stop condition is real
-quiescence (`not turn_active and not pending_turns and highest_completed_turn >= current_turn`), so a
+quiescence (`not turn_active and not pending_turns` and the root's last event carries the agent's
+`last_event_seq`), so a
 message queued behind the open turn makes `pending_turns` non-empty and the live stream continues
 straight through the current `turn_end` into the queued turn. A client never has to decide whether to
 re-attach for a queued message.
@@ -183,10 +187,11 @@ its stream ends naturally should pick a new one up — cheap, and handled where 
 ends rather than guessed at on every send.
 
 And it still terminates at quiescence, which is the point of the bracket: **`turn_end` is where the
-server sheds a client.** That is a resource decision, not an aesthetic one — every open cursor holds a
-long-poll update in flight, Temporal caps concurrent in-flight updates **per workflow at 10**, and a
-client that disconnects mid-poll cannot reclaim the parked update (see the upstream-constraint note
-above). A stream held open forever leaks against a hard cap.
+server sheds a client.** That is a resource decision, not an aesthetic one — on the Workflow Streams
+provider every open read holds a long-poll update in flight, Temporal caps concurrent in-flight
+updates **per workflow at 10**, and a client that disconnects mid-poll cannot reclaim the parked
+update. A stream held open forever leaks against a hard cap there, and costs a live subscription on
+every other provider.
 
 Design discussion, including the alternatives rejected on the way here:
 [`docs/design/per-message-events.md`](../../../docs/design/per-message-events.md).

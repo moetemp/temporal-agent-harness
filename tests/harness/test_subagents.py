@@ -8,13 +8,16 @@ from __future__ import annotations
 import asyncio
 import inspect
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, Field
 from temporalio.exceptions import ApplicationError
+from temporalio.streams import Cursor, RecordKind, StreamCursorError, StreamRecord
 
-from temporal_agent_harness.harness import agent
+from temporal_agent_harness.harness import agent, subagent_activities
 from temporal_agent_harness.harness.agent_protocol import (
+    TURN_EVENTS_TOPIC,
     AgentEvent,
     MessageHandlerEnd,
     MessageHandlerError,
@@ -26,7 +29,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     TurnEnded,
 )
 from temporal_agent_harness.harness.agent_workflow import _SubagentInstance, _WorkflowStatus
-from temporal_agent_harness.harness import subagent_activities
 from temporal_agent_harness.harness.subagent_activities import (
     SubagentActivities,
     _TurnProgress,
@@ -129,7 +131,7 @@ def test_register_keys_by_handle_and_stores_workflow_id():
     assert inst.handle == "a3f9c2"
     assert inst.workflow_id == "sample-subagent-<uuid>"  # the real child id, hidden from the model
     assert inst.agent_key == "sample"
-    assert inst.last_consumed_offset == 0
+    assert inst.last_consumed_cursor == ""
     assert st.subagent("a3f9c2") is inst
     assert st.has_subagent("a3f9c2") and not st.has_subagent("nope")
 
@@ -363,6 +365,64 @@ def test_distinct_subagents_have_independent_gates_and_counters():
     assert b._next_ticket == 0
 
 
+async def test_a_child_cursor_the_provider_refuses_replays_instead_of_failing_the_turn():
+    # `after_cursor` is documented as a hint that can never break correctness, but a
+    # provider mints it and refuses another's synchronously. Left to raise, switching
+    # providers fails every in-flight session's next subagent turn.
+    events = [
+        AgentEvent(
+            agent_id="C",
+            turn_id="turn-1",
+            turn_number=1,
+            timestamp=0.0,
+            message_id="ours",
+            event=MessageHandlerEnd(output={"answer": 42}),
+        ),
+        AgentEvent(
+            agent_id="C",
+            turn_id="turn-1",
+            turn_number=1,
+            timestamp=0.0,
+            event=TurnEnded(turn_number=1),
+        ),
+    ]
+    asked: list[str] = []
+
+    def follow(_client, _workflow_id, *, after=""):
+        asked.append(after)
+        if after:
+            raise StreamCursorError(f"cursor {after!r} was not minted by this provider")
+
+        async def gen():
+            for index, event in enumerate(events):
+                yield StreamRecord(
+                    kind=RecordKind.DATA,
+                    cursor=Cursor(str(index)),
+                    topic=TURN_EVENTS_TOPIC,
+                    value=event,
+                )
+
+        return gen()
+
+    activities = SubagentActivities(client=MagicMock())
+    progress = _TurnProgress(
+        sent=True,
+        turn_id="turn-1",
+        turn_number=1,
+        message_id="ours",
+        consumed_cursor="memory:7",
+    )
+    req = SimpleNamespace(child_workflow_id="C")
+
+    with patch.object(subagent_activities, "follow_turn_events", follow):
+        output, got_reply = await activities._consume_child_turn(req, progress)
+
+    assert got_reply and output == {"answer": 42}
+    # Asked once with the stale hint, then from the beginning.
+    assert asked == ["memory:7", ""]
+    assert progress.consumed_cursor == "1"
+
+
 # ---------------------------------------------------------------------------
 # The activity picks ITS OWN reply out of a shared child turn
 # ---------------------------------------------------------------------------
@@ -375,24 +435,11 @@ def test_distinct_subagents_have_independent_gates_and_counters():
 # scripted child stream, which is the only way to script that interleaving deterministically.
 
 
-class _FakeItem:
-    """One ``WorkflowStreamItem``: an offset plus the decoded ``AgentEvent``."""
-
-    def __init__(self, offset: int, data: AgentEvent) -> None:
-        self.offset = offset
-        self.data = data
-
-
-class _FakeStream:
-    def __init__(self, items: list[_FakeItem]) -> None:
-        self._items = items
-
-    def subscribe(self, **_kwargs):
-        async def gen():
-            for item in self._items:
-                yield item
-
-        return gen()
+def _FakeItem(index: int, event: AgentEvent) -> StreamRecord[AgentEvent]:
+    """One record of the child's stream, as ``follow_turn_events`` yields it."""
+    return StreamRecord(
+        kind=RecordKind.DATA, cursor=Cursor(str(index)), topic=TURN_EVENTS_TOPIC, value=event
+    )
 
 
 def _child_event(payload, *, turn_id: str, message_id: str | None) -> AgentEvent:
@@ -406,7 +453,7 @@ def _child_event(payload, *, turn_id: str, message_id: str | None) -> AgentEvent
     )
 
 
-def _shared_child_turn(*, ours: str, theirs: str) -> list[_FakeItem]:
+def _shared_child_turn(*, ours: str, theirs: str) -> list[StreamRecord[AgentEvent]]:
     """One child turn with two participants — ours replying FIRST, so "last wins" is wrong."""
     turn_id = "child-turn-4"
     payloads = [
@@ -420,14 +467,18 @@ def _shared_child_turn(*, ours: str, theirs: str) -> list[_FakeItem]:
     ]
 
 
-def _consume(items: list[_FakeItem], monkeypatch):
+def _consume(items: list[StreamRecord[AgentEvent]], monkeypatch):
     """Run ``_consume_child_turn`` over ``items``, returning ``(output, got_reply)``."""
-    activities = SubagentActivities(client=None)  # the stream client is patched out
-    monkeypatch.setattr(
-        subagent_activities,
-        "WorkflowStreamClient",
-        SimpleNamespace(create=lambda _client, _wf: _FakeStream(items)),
-    )
+    activities = SubagentActivities(client=None)  # the stream reader is patched out
+
+    def follow(_client, _workflow_id, *, after=""):
+        async def gen():
+            for item in items:
+                yield item
+
+        return gen()
+
+    monkeypatch.setattr(subagent_activities, "follow_turn_events", follow)
     req = RunSubagentTurnInput(
         child_workflow_id="child-wf",
         type="ask",
@@ -443,7 +494,7 @@ def _consume(items: list[_FakeItem], monkeypatch):
         turn_id="child-turn-4",
         turn_number=4,
         message_id="ours",
-        consumed_offset=0,
+        consumed_cursor="",
     )
     return asyncio.run(activities._consume_child_turn(req, progress))
 
