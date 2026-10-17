@@ -1,16 +1,14 @@
-"""Where the stream-backed tests get their provider, their server, and their turn events.
+"""Where the stream-backed tests get their store, their server, and their turn events.
 
-``STREAMS_PROVIDER`` picks the provider the way it does for a worker. The default,
-``workflow_streams``, is today's transport and runs on the time-skipping test server, so the
-suite needs nothing installed. ``native`` needs a server built from the stream branch:
-``TEMPORAL_ADDRESS`` names it and the tests connect there instead. ``redis`` needs a Redis at
-``AI198_REDIS_URL`` and runs on the test server like the default. ``memory`` is the in-process
-reference provider.
+``STREAMS_STORE`` picks the store the way it does for a worker, but the suite defaults to
+``memory``, so it needs nothing installed. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``.
+``TEMPORAL_ADDRESS`` names a running server for the tests to connect to. Without it they start
+the time-skipping test server. ``STREAMS_NOTIFY=1`` needs a server with the stream notifier.
 
-The provider is registered on the test client as a plugin, the way an application registers
-it, so workers built from that client inherit it and every reader goes through
-``client.get_stream_handle()``. One provider serves one test: a provider that holds connections
-binds them to the event loop it first used, and every test has its own loop.
+The store is registered on the test client as a plugin, through ``Client.connect``, the way an
+application registers it. Workers built from that client take it, and every reader goes
+through ``get_stream_handle(client, ...)``. One store serves one client connection, so every
+test builds its own.
 """
 
 from __future__ import annotations
@@ -20,60 +18,63 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from temporalio.client import Client
-from temporalio.streams import StreamProvider
+from temporalio.contrib.streams import StreamStorePlugin
 from temporalio.testing import WorkflowEnvironment
 
 from temporal_agent_harness.harness.agent_protocol import AgentEvent
-from temporal_agent_harness.harness.stream_transport import (
-    follow_turn_events,
-    provider_from_env,
-    provider_name,
-)
+from temporal_agent_harness.harness.stream_transport import follow_turn_events, store_from_env
 
 __all__ = [
-    "close_provider",
-    "provider",
+    "reset_store",
+    "store",
     "streaming_client",
     "turn_events",
     "workflow_environment",
 ]
 
-_current: StreamProvider | None = None
+TEST_DEFAULT_STORE = "memory"
+
+_current: StreamStorePlugin | None = None
 
 
-def provider() -> StreamProvider:
-    """The provider of the running test, built on first use and closed by the suite's fixture."""
+def store() -> StreamStorePlugin:
+    """The store of the running test, built on first use and dropped by the suite's fixture."""
     global _current
     if _current is None:
-        _current = provider_from_env()
+        _current = store_from_env(TEST_DEFAULT_STORE)
     return _current
 
 
-async def close_provider() -> None:
-    """Close the running test's provider, if it built one, so the next test starts fresh."""
+def reset_store() -> None:
+    """Drop the running test's store, so the next test builds one on its own client."""
     global _current
-    current, _current = _current, None
-    if current is not None:
-        await current.close()
+    _current = None
 
 
-def streaming_client(client: Client) -> Client:
-    """``client`` with this test's provider registered, for an environment shared by tests."""
+async def streaming_client(client: Client) -> Client:
+    """A new client on ``client``'s server with a fresh store, for a shared environment.
+
+    A Worker takes a store only from a client that ``Client.connect`` made with it, so this
+    connects again and does not copy ``client``.
+    """
     config = client.config()
-    config["plugins"] = [*config["plugins"], provider()]
-    return Client(**config)
+    return await Client.connect(
+        client.service_client.config.target_host,
+        namespace=client.namespace,
+        data_converter=config["data_converter"],
+        plugins=[*config["plugins"], store_from_env(TEST_DEFAULT_STORE)],
+    )
 
 
 async def workflow_environment(**kwargs: Any) -> WorkflowEnvironment:
-    """A server the configured provider can run on, with the provider on the client.
+    """A server for the test, with the test's store on the client.
 
-    The native provider's streams live in the server, and no released server carries them, so
-    that provider connects to the one ``TEMPORAL_ADDRESS`` names rather than starting the
-    time-skipping one.
+    ``TEMPORAL_ADDRESS`` names a running server, such as one with the stream notifier. Without
+    it, the time-skipping test server starts.
     """
-    plugins = [*kwargs.pop("plugins", []), provider()]
-    if provider_name() == "native":
-        address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
+    plugins = [*kwargs.pop("plugins", []), store()]
+    address = os.environ.get("TEMPORAL_ADDRESS")
+    if address:
         client = await Client.connect(address, plugins=plugins, **kwargs)
         return WorkflowEnvironment.from_client(client)
     return await WorkflowEnvironment.start_time_skipping(plugins=plugins, **kwargs)

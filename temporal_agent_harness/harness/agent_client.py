@@ -1,4 +1,5 @@
-# ABOUTME: Stateless agent-turn client for agent workflows that publish through temporalio.streams.
+# ABOUTME: Stateless agent-turn client for agent workflows that publish through
+# temporalio.contrib.streams.
 #
 # Abstracts a single agent turn — sending a user message to a Temporal workflow,
 # streaming intermediate tool events, and terminating when the turn ends (the
@@ -21,7 +22,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     PROVIDE_CALLBACK_RESULT_UPDATE,
     SEND_AGENT_MESSAGE_UPDATE,
     TOOL_APPROVAL_UPDATE,
-    TURN_EVENTS,
     AcceptedFunction,
     AgentConfig,
     AgentEvent,
@@ -45,7 +45,7 @@ from temporal_agent_harness.harness.stream_merge import (
     select_replay,
 )
 from temporal_agent_harness.harness.stream_merge.cursor import Cursor
-from temporal_agent_harness.harness.stream_transport import cursor, latest_turn_event
+from temporal_agent_harness.harness.stream_transport import check_turn_cursor, latest_turn_event
 
 # Client default: maximum seconds to wait for a turn to complete.
 DEFAULT_TURN_TIMEOUT = 300.0
@@ -152,7 +152,7 @@ class AgentClient:
     stream log). This client is cheap to construct per-request.
 
     Args:
-        temporal: Connected Temporal client, with the stream provider the agent's turn
+        temporal: Connected Temporal client, with the stream store the agent's turn
             events are read through registered on it as a plugin.
         workflow_id: ID of the agent workflow to interact with.
     """
@@ -607,19 +607,18 @@ class AgentClient:
         published (``AgentEvent.seq`` against ``AgentStatus.last_event_seq``). ``turn_end`` is the
         only terminal there is — it fires when the last participant of a turn finishes, so it is a
         true quiescence signal — which is what lets a caller safely disconnect instead of holding
-        the stream open forever. The agent's own count is what makes this provider-independent: a
-        stream position could not say whether anything followed, and asking the provider for one
+        the stream open forever. The agent's own count is what makes this store-independent: a
+        stream position could not say whether anything followed, and asking the store for one
         would tie the client to it.
 
-        A malformed ``resume`` raises ``ValueError`` and one minted under another stream
-        provider raises ``StreamCursorError``, both before anything streams, so a caller can
+        A malformed ``resume`` raises ``ValueError`` and one minted by another stream store
+        raises ``StreamCursorError``, both before anything streams, so a caller can
         answer with a client error and start over.
         """
         point = ResumePoint.decode(resume)
-        # The provider refuses a foreign token when the read is opened, so opening one here and
-        # closing it unread moves that refusal ahead of the response.
-        handle = self._temporal.get_stream_handle(self._workflow_id)
-        await handle.read(topic=TURN_EVENTS, after=cursor(point.cursor)).aclose()
+        # The store refuses a foreign token at the read's first step, so check it here, before
+        # the response starts.
+        await check_turn_cursor(self._temporal, self._workflow_id, point.cursor)
         status = await self.get_status()
         # Already caught up (the point is at or past the agent's last word) and the agent is
         # idle — nothing to stream.

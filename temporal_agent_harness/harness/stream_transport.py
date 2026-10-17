@@ -1,8 +1,7 @@
-# ABOUTME: How the harness reaches its streams: the one place a provider is named, the batched
+# ABOUTME: How the harness reaches its streams: the one place a store is named, the batched
 # publisher an activity uses, and the readers every client-side consumer of turn events shares.
-# The provider is registered once on the client; every context then asks for its stream the
-# same way, and workflow code publishes through ``workflow.stream_writer`` and never names a
-# store.
+# The store is registered once on the client. Every context then asks for its stream the same
+# way, and workflow code publishes through ``workflow_writer`` and never names a store.
 
 from __future__ import annotations
 
@@ -14,17 +13,18 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
-from temporalio import activity
 from temporalio.client import Client
-from temporalio.streams import (
+from temporalio.contrib.streams import (
     BEGINNING,
     Cursor,
     RecordKind,
     StreamProducer,
-    StreamProvider,
     StreamRecord,
+    StreamStorePlugin,
     StreamTopic,
     Supersession,
+    activity_handle,
+    get_stream_handle,
 )
 
 from temporal_agent_harness.harness.agent_protocol import (
@@ -33,50 +33,50 @@ from temporal_agent_harness.harness.agent_protocol import (
     AttemptSuperseded,
 )
 
-PROVIDER_ENV = "STREAMS_PROVIDER"
-DEFAULT_PROVIDER = "workflow_streams"
+STORE_ENV = "STREAMS_STORE"
+REDIS_URL_ENV = "STREAMS_REDIS_URL"
+NOTIFY_ENV = "STREAMS_NOTIFY"
+DEFAULT_STORE = "redis"
+DEFAULT_REDIS_URL = "redis://127.0.0.1:6379"
+# How long ``check_turn_cursor`` waits for the store's answer on a token.
+_CURSOR_CHECK = timedelta(milliseconds=200)
 
 
-def provider_name() -> str:
-    """The provider this process names, read from ``STREAMS_PROVIDER``."""
-    return os.environ.get(PROVIDER_ENV, DEFAULT_PROVIDER)
+def store_name(default: str = DEFAULT_STORE) -> str:
+    """The store this process names, read from ``STREAMS_STORE``."""
+    return os.environ.get(STORE_ENV, default)
 
 
-def provider_from_env() -> StreamProvider:
-    """A stream provider built from ``STREAMS_PROVIDER``.
+def store_from_env(default: str = DEFAULT_STORE) -> StreamStorePlugin:
+    """A stream store built from ``STREAMS_STORE``.
 
-    ``workflow_streams`` (today's Workflow Streams, nothing to run) is the default. ``redis``
-    reads ``AI198_REDIS_URL``; ``native`` needs a Temporal server that carries streams;
-    ``memory`` is the in-process reference the conformance tests use. The Nexus front is not
-    offered: it needs an endpoint name and an HTTP address the harness has no settings for,
-    and it cannot serve a worker.
+    ``redis`` is the default, at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
+    workers are separate processes, and they must all reach one store. ``memory`` keeps the
+    streams in this process, so it suits tests and a single process only. With
+    ``STREAMS_NOTIFY=1`` the store tells each stream's notifier on the server when the stream
+    moves, so an idle reader sleeps on the server and not on a store connection. That needs a
+    server with the stream notifier.
 
-    Register the result once, as ``Client.connect(..., plugins=[provider])``. Workers built
-    from that client inherit it, an activity reaches it through ``activity.stream_handle()``
-    and any other code through ``client.get_stream_handle()``. Two providers share nothing,
-    so a process that needs the same store in two places hands the same object to both.
-    Close it with ``provider.close()`` when the process is done.
+    Register the result once, as ``Client.connect(..., plugins=[store])``. Workers built from
+    that client take it, an activity reaches it through ``activity_handle()`` and any other
+    code through ``get_stream_handle(client, ...)``. One store serves one client connection,
+    so a second connection needs a store of its own.
     """
-    name = provider_name()
-    if name == "workflow_streams":
-        from temporalio.streams.providers.workflow_streams import WorkflowStreamsProvider
-
-        # The shipped transport polls between deliveries; the UI wants deltas within a few
-        # milliseconds of publish.
-        return WorkflowStreamsProvider(poll_cooldown=timedelta(milliseconds=10))
+    name = store_name(default)
+    store: StreamStorePlugin
     if name == "redis":
-        from temporalio.streams.providers.redis import RedisStreams
+        from temporalio.contrib.streams.redis import RedisStreams
 
-        return RedisStreams(url=os.environ.get("AI198_REDIS_URL", "redis://127.0.0.1:6379"))
-    if name == "native":
-        from temporalio.streams.providers.native import NativeStreams
+        store = RedisStreams(os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL))
+    elif name == "memory":
+        from temporalio.contrib.streams.memory import MemoryStreams
 
-        return NativeStreams()
-    if name == "memory":
-        from temporalio.streams.providers.memory import MemoryStreams
-
-        return MemoryStreams()
-    raise ValueError(f"{PROVIDER_ENV}={name!r} names no stream provider")
+        store = MemoryStreams()
+    else:
+        raise ValueError(f"{STORE_ENV}={name!r} names no stream store")
+    if os.environ.get(NOTIFY_ENV) == "1":
+        store.notify_on_append()
+    return store
 
 
 def cursor(token: str) -> Cursor:
@@ -89,10 +89,29 @@ async def latest_turn_event(client: Client, workflow_id: str) -> str:
 
     A client about to send a message reads this first, then follows the stream after it, so
     it sees the turn it started without replaying the agent's history. ``client`` carries the
-    stream provider as a plugin.
+    stream store as a plugin.
     """
-    handle = client.get_stream_handle(workflow_id)
+    handle = get_stream_handle(client, workflow_id)
     return (await handle.latest(topic=TURN_EVENTS)).token
+
+
+async def check_turn_cursor(client: Client, workflow_id: str, after: str) -> None:
+    """Raise ``StreamCursorError`` now if the store refuses ``after`` on ``workflow_id``.
+
+    A read checks its cursor at its first step, not at the call. A caller that must refuse a
+    bad token before it starts a response, such as an SSE route, calls this first. The stream
+    runtime refuses a token before it waits for records, so a short first step is enough. If
+    no record follows ``after``, the step waits for ``_CURSOR_CHECK`` and the token is good.
+    """
+    if not after:
+        return
+    records = get_stream_handle(client, workflow_id).read(topic=TURN_EVENTS, after=cursor(after))
+    try:
+        await asyncio.wait_for(anext(records), _CURSOR_CHECK.total_seconds())
+    except (TimeoutError, StopAsyncIteration):
+        pass
+    finally:
+        await records.aclose()
 
 
 def follow_turn_events(
@@ -104,12 +123,11 @@ def follow_turn_events(
     activity is retried: an activity that streams half an answer and then fails leaves those
     records in the stream, and its retry writes different words, so a consumer that rendered
     the first half has to be told. A producer's finish marker does not come out. Each record
-    carries the cursor to store for a later ``after``. A token another provider minted is
-    refused by this call with ``StreamCursorError``, before anything is read. Closing the
-    generator closes the subscription, which matters on the transport that parks a long poll
-    against the workflow. ``client`` carries the stream provider as a plugin.
+    carries the cursor to store for a later ``after``. A token from another store or stream is
+    refused with ``StreamCursorError`` at the first iteration, before anything is read. Close
+    the generator to stop the read. ``client`` carries the stream store as a plugin.
     """
-    handle = client.get_stream_handle(workflow_id)
+    handle = get_stream_handle(client, workflow_id)
     records = handle.read(topic=TURN_EVENTS, after=cursor(after))
     return _turn_records(records)
 
@@ -128,6 +146,10 @@ async def _turn_records(
     try:
         async for record in records:
             if record.kind is RecordKind.DATA:
+                # A stale record came from an older attempt after a newer one was delivered,
+                # so it is withdrawn as it arrives.
+                if record.stale:
+                    continue
                 previous = record.value
                 yield record
             elif record.kind is RecordKind.SUPERSEDED:
@@ -156,7 +178,7 @@ def _superseded_event(previous: AgentEvent, supersession: Supersession) -> Agent
 
 
 class ActivityPublisher:
-    """A synchronous ``publish`` over the interface's asynchronous producer.
+    """A synchronous ``publish`` over the asynchronous stream producer.
 
     Activities publish from places that cannot await, such as an SDK's streaming callback,
     so ``publish`` only queues. A background task appends what has queued every
@@ -212,12 +234,12 @@ async def publisher_for_activity(
 ) -> AsyncIterator[ActivityPublisher]:
     """A batched publisher onto ``topic`` of the stream this activity's workflow publishes.
 
-    The handle is this activity's own workflow, pinned to its run, through the provider the
-    worker inherited from its client. The producer carries the activity's own id and attempt,
+    The handle is the stream of the workflow that scheduled this activity, through the store
+    the worker took from its client. The producer carries the activity's own id and attempt,
     so a retry's records deduplicate and a new attempt is reported to readers as a
     supersession, and the records land next to the workflow's own for whoever follows the
     topic.
     """
-    producer = activity.stream_handle().producer(topic=topic)
+    producer = activity_handle().producer(topic=topic)
     async with ActivityPublisher(producer, batch_interval=batch_interval) as publisher:
         yield publisher

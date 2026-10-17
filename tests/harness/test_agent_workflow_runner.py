@@ -32,7 +32,7 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.streams import StreamCursorError
+from temporalio.contrib.streams import StreamCursorError
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from tests._streams import turn_events, workflow_environment
@@ -1349,7 +1349,7 @@ def offline_build(monkeypatch):
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
     # Offline there is no provider to bind a writer on; a mock records what the runner publishes.
     # Its publish is synchronous like the real one.
-    monkeypatch.setattr(aw.workflow, "stream_writer", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "workflow_writer", lambda *a, **k: MagicMock())
 
     def build(config: AgentConfig):
         return AgentWorkflowRunner(
@@ -1370,7 +1370,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    monkeypatch.setattr(aw.workflow, "stream_writer", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "workflow_writer", lambda *a, **k: MagicMock())
 
     def build(
         config: AgentConfig,

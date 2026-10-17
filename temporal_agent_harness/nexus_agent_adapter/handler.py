@@ -15,7 +15,7 @@ from nexusrpc import HandlerError, HandlerErrorType
 from nexusrpc.handler import StartOperationContext, service_handler, sync_operation
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError
-from temporalio.streams import StreamCursorError
+from temporalio.contrib.streams import StreamCursorError
 
 from temporal_agent_harness.harness.agent_client import (
     AgentClient,
@@ -128,7 +128,7 @@ class AgentServiceHandler:
     """Exposes an agent session to external callers (e.g. the Slack connector).
 
     The connector calls ``sendAgentMessage`` to deliver user input and ``pollMessages`` to
-    consume the agent's response stream. ``client`` carries the stream provider the agents'
+    consume the agent's response stream. ``client`` carries the stream store the agents'
     turn events are read through as a plugin.
     """
 
@@ -350,12 +350,7 @@ class AgentServiceHandler:
         cursor = input.cursor
         closed = False
         more_ready = False
-        try:
-            # Opened inside the guard: the read parses the cursor at the call, so a token
-            # this provider did not mint is the caller's mistake and not a handler failure.
-            events = follow_turn_events(self._client, workflow_id, after=cursor)
-        except (ValueError, StreamCursorError) as e:
-            raise HandlerError(str(e), type=HandlerErrorType.BAD_REQUEST) from e
+        events = follow_turn_events(self._client, workflow_id, after=cursor)
         try:
             async with asyncio.timeout(timeout) as window:
                 async for record in events:
@@ -375,12 +370,15 @@ class AgentServiceHandler:
                         asyncio.get_running_loop().time() + POLL_BATCH_GRACE_SECONDS
                     )
                 else:
-                    # The subscription ended on its own. The shipped transport ends it when the
-                    # workflow completes, but a transport may also end it quietly on the deadline,
-                    # so the workflow itself is asked rather than the subscription trusted.
+                    # The read ended on its own, which it does when the run chain closes. The
+                    # workflow itself is asked rather than the read trusted.
                     closed = await self._workflow_completed(workflow_id)
         except TimeoutError:
             pass
+        except StreamCursorError as e:
+            # The store refuses a cursor at the read's first step, so a token it did not mint
+            # is the caller's mistake and not a handler failure.
+            raise HandlerError(str(e), type=HandlerErrorType.BAD_REQUEST) from e
         except RPCError as e:
             if not _is_workflow_already_completed(e):
                 raise

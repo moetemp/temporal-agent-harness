@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from temporalio.streams import Cursor, RecordKind, StreamRecord, Supersession
+from temporalio.contrib.streams import Cursor, RecordKind, StreamRecord, Supersession
 
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS,

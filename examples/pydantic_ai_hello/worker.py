@@ -38,7 +38,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import provider_from_env
+from temporal_agent_harness.harness.stream_transport import store_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from .workflow import TASK_QUEUE, PydanticAIHelloAgentWorkflow, _TEMPORAL_AGENT
@@ -60,9 +60,9 @@ async def main() -> None:
     # AgentHarnessPlugin (after it) leaves that converter in place and adds the harness's own
     # requirements — the large-payload offload plus its activities.
     connect_config = ClientConfig.load_client_connect_config()
-    provider = provider_from_env()
+    store = store_from_env()
     client = await Client.connect(
-        **connect_config, plugins=[PydanticAIPlugin(), AgentHarnessPlugin(), provider]
+        **connect_config, plugins=[PydanticAIPlugin(), AgentHarnessPlugin(), store]
     )
 
     worker = Worker(

@@ -25,7 +25,7 @@ from temporalio.converter import ExternalStorage
 from temporalio.envconfig import ClientConfig
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
-from temporalio.streams import StreamCursorError
+from temporalio.contrib.streams import StreamCursorError
 
 from temporal_agent_harness.harness.agent_client import (
     JoinedTurnError,
@@ -45,7 +45,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
 )
 from temporal_agent_harness.harness.stream_merge import ResumePoint
-from temporal_agent_harness.harness.stream_transport import provider_from_env
+from temporal_agent_harness.harness.stream_transport import store_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ui import packaged_ui_dist
 from temporal_agent_harness.utils.large_payload import DEFAULT_PAYLOAD_STORAGE
@@ -151,13 +151,13 @@ def create_agent_harness_app(
         # worker and the session-manager worker get by adding the same plugin. An offloaded
         # payload is only readable by a process using the matching converter, so this app must
         # not spell one out of its own. The plugin's activity registration is a WORKER concern
-        # and this app hosts no worker, so it simply doesn't apply here. The stream provider is the
+        # and this app hosts no worker, so it simply doesn't apply here. The stream store is the
         # one a worker's client carries, because this process reads agent streams.
         app.state.temporal = await Client.connect(
             **connect_config,
             plugins=[
                 AgentHarnessPlugin(large_payload_offload=large_payload_offload),
-                provider_from_env(),
+                store_from_env(),
             ],
         )
 
@@ -293,7 +293,7 @@ def create_agent_harness_app(
         try:
             items = await client.attach(on_item=_yield_item, resume=resume)
         except StreamCursorError as e:
-            # A stale tab after a provider switch. A 400 tells the UI to re-attach from the
+            # A stale tab after a store switch. A 400 tells the UI to re-attach from the
             # beginning; a 500 would tell it nothing. The token itself is the caller's and is
             # not echoed back to it.
             logger.info("attach refused a resume point for %s: %r", session_id, e)

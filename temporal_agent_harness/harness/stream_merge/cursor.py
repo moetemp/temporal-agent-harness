@@ -11,7 +11,7 @@ import logging
 from collections.abc import AsyncIterator
 
 from temporalio.client import Client
-from temporalio.streams import StreamRecord
+from temporalio.contrib.streams import StreamRecord
 
 from temporal_agent_harness.harness.agent_protocol import AgentEvent, AgentEventType
 from temporal_agent_harness.harness.stream_transport import follow_turn_events

@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from temporalio.streams import (
+from temporalio.contrib.streams import (
     Cursor,
     RecordKind,
     StreamCursorError,

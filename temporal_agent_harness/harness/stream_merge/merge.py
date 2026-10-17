@@ -275,9 +275,9 @@ class _Merge:
                             action.workflow_id, after=action.after_cursor, is_child=True
                         )
                     except Exception as exc:  # noqa: BLE001 -- one child, not the merge
-                        # The read parses the child's cursor at the call, so a provider that
-                        # refuses it raises here rather than on the first pull. That is one
-                        # subagent's detail lost, which is what the give-up path is for.
+                        # A store that refuses the child's cursor fails the first pull, which
+                        # gives the child up too. That is one subagent's detail lost, which is
+                        # what the give-up path is for.
                         _log.warning(
                             "stream_merge: giving up on subagent %s, its stream could not be "
                             "mounted: %r",

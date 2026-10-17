@@ -17,7 +17,7 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import provider_from_env
+from temporal_agent_harness.harness.stream_transport import store_from_env
 
 from .handler import AgentServiceHandler, Config
 
@@ -44,7 +44,7 @@ async def main() -> None:
         address,
         namespace=agent_namespace,
         data_converter=pydantic_data_converter,
-        plugins=[provider_from_env()],
+        plugins=[store_from_env()],
     )
 
     config = Config(

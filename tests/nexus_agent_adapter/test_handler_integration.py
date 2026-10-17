@@ -139,7 +139,7 @@ async def env() -> AsyncGenerator[WorkflowEnvironment, None]:
 
 
 async def test_poll_messages_delivers_the_reply(env: WorkflowEnvironment) -> None:
-    client = streaming_client(env.client)
+    client = await streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
@@ -219,7 +219,7 @@ async def test_send_agent_message_survives_handler_worker_restart(
 ) -> None:
     """Handler worker restarts between two sends on the same session; turn count still
     advances — state lives in the workflow, not the handler."""
-    client = streaming_client(env.client)
+    client = await streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
@@ -306,7 +306,7 @@ async def test_poll_messages_closed_when_workflow_already_completed(
     env: WorkflowEnvironment,
 ) -> None:
     """A completed target workflow must produce closed=True synchronously, not an error."""
-    client = streaming_client(env.client)
+    client = await streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"
     completed_task_queue = f"completed-{uuid.uuid4()}"
@@ -544,7 +544,7 @@ async def test_send_agent_message_rejects_malformed_input(
 
 
 async def test_full_operation_surface(env: WorkflowEnvironment) -> None:
-    client = streaming_client(env.client)
+    client = await streaming_client(env.client)
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
     nexus_task_queue = f"nexus-agent-{uuid.uuid4()}"

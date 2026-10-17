@@ -39,6 +39,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
+from temporalio.contrib.streams import workflow_writer
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -295,9 +296,9 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 
 # Harness default publish-flush cadence for activity-side stream publishers (see
 # ``AgentWorkflowRunner.publisher_from_activity``). Each flush is one append to the stream
-# provider (one Signal on Workflow Streams), so this is the knob that trades UI snappiness
-# against write volume. It is only the fallback: a caller that has its own configured
-# cadence (an SDK plugin threading ``streaming_batch_interval``, say) passes that instead.
+# store, so this is the knob that trades UI snappiness against write volume. It is only the
+# fallback: a caller that has its own configured cadence (an SDK plugin threading
+# ``streaming_batch_interval``, say) passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
 
 _InjectedT = TypeVar("_InjectedT")
@@ -1740,8 +1741,8 @@ class AgentWorkflowRunner:
                 approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             )
 
-        The runner publishes its events through ``workflow.stream_writer`` on whichever
-        provider the worker was given as a plugin; the agent names no stream and no store.
+        The runner publishes its events through ``workflow_writer`` onto the store the
+        worker's client carries as a plugin; the agent names no stream and no store.
 
         ``config`` is the standardized agent input; the runner resolves each universal
         knob as *the caller's config value if given, else the agent's default*
@@ -1796,7 +1797,7 @@ class AgentWorkflowRunner:
         # inside another run's activation can tell (``_in_own_run``). Offline construction
         # (unit tests) has no run.
         self._run_id: str | None = workflow.info().run_id if workflow.in_workflow() else None
-        self._events = workflow.stream_writer(TURN_EVENTS)
+        self._events = workflow_writer(TURN_EVENTS)
         _assert_async_auto_mode_evaluator(auto_mode_evaluator)
         _assert_auto_mode_has_an_evaluator(approval_policy, auto_mode_evaluator)
         self._auto_mode_evaluator = auto_mode_evaluator
@@ -2799,8 +2800,7 @@ class AgentWorkflowRunner:
         # refcount is also the same counter that closes the turn bracket, so "the turn ended"
         # and "it is safe to complete" cannot disagree.
         await workflow.wait_condition(lambda: not self._status.turn_active)
-        # The stream provider may still hold a handler against this run (the shipped transport
-        # parks an outside reader's long poll here); returning now would strand it.
+        # An update handler may still run against this run; returning now would strand it.
         await workflow.wait_condition(workflow.all_handlers_finished)
 
     def _spawn_participant(self, agent: object, admitted: _Admission, *, joined: bool) -> None:
@@ -3185,9 +3185,8 @@ class AgentWorkflowRunner:
                 :attr:`AgentWorkflowRunner.current_stream_context` and
                 forwarded opaquely through activity inputs.
             batch_interval: Background flush cadence on the underlying
-                producer — each flush is one append to the provider (one Signal
-                on the Workflow Streams provider), so a longer interval trades UI
-                snappiness for fewer writes. ``None``
+                producer. Each flush is one append to the stream store, so a
+                longer interval trades UI snappiness for fewer writes. ``None``
                 takes :data:`DEFAULT_PUBLISH_BATCH_INTERVAL` (50ms), which keeps
                 the UI feel snappy. An SDK integration should pass its own
                 configured cadence (e.g. the OpenAI plugin's
@@ -3304,8 +3303,9 @@ class AgentWorkflowRunner:
             timestamp=workflow.time(),
             seq=self._status.next_event_seq(),
         )
-        # The record commits with this Workflow Task. An unconvertible value raises here; a
-        # record the provider cannot stage fails the task at commit. Either way it is loud.
+        # The Worker appends the record before it completes this activation. An unconvertible
+        # value raises here, and a record the store refuses fails the Workflow Task. Either
+        # way it is loud.
         self._events.publish(envelope)
 
 

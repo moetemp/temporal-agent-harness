@@ -84,15 +84,9 @@ without revisiting this.
   never spuriously dropped. Once the upstream readable-completed-stream fix lands, a stopped child
   delivers its `turn_end` normally and the backstop simply stops firing.
 
-> **Upstream constraint (not fixable here).** `subscribe()`'s `__temporal_workflow_stream_poll`
-> update blocks server-side in `wait_condition` until new items arrive (or the stream detaches).
-> A client that disconnects mid-poll **cannot reclaim** that parked server-side update — Temporal
-> updates are not client-cancellable — so a subscribe to an **idle** child (one between turns, not
-> stopped) leaves a slot held until that child's next event. Re-attaching repeatedly therefore
-> *accumulates* parked polls on a live subagent. The merge degrades gracefully when the cap is hit,
-> but the real mitigation is on the consumer: don't re-attach an idle session on a fixed tick
-> (the example UIs poll the cheap `agent_status` query while idle and only re-attach on new work).
-> An upstream `workflow_streams` fix for cancel-on-detach is in flight.
+> **Dropped reads hold nothing.** Each cursor reads the stream store, not the child workflow, so
+> a client that disconnects mid-read leaves no parked update on a live subagent, and re-attaching
+> an idle session costs one store read per stream.
 
 ## Quiescent start (why a scalar offset is enough to resume *safely*)
 

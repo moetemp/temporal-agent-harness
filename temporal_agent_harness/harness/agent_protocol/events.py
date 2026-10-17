@@ -24,7 +24,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from temporalio import streams
+from temporalio.contrib import streams
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AutoApprovalVerdict,

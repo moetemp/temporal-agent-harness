@@ -35,7 +35,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -43,7 +43,7 @@ from pydantic import BaseModel
 from temporalio import activity
 from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
-from temporalio.streams import StreamCursorError
+from temporalio.contrib.streams import StreamCursorError, StreamRecord
 
 from temporal_agent_harness.harness.agent_client import (
     MidTurnRejectedError,
@@ -83,12 +83,40 @@ class _TurnProgress(BaseModel):
     consumed_cursor: str
 
 
+async def _follow_from_hint(
+    client: Client, child_workflow_id: str, progress: _TurnProgress
+) -> AsyncGenerator[StreamRecord[AgentEvent], None]:
+    """The child's turn events after ``progress.consumed_cursor``, or from its beginning.
+
+    The cursor is a hint, so a store that will not take it costs a replay and nothing else:
+    the caller filters to this turn's turn_id either way. A switched store must not fail every
+    in-flight session's next subagent turn. The store refuses a cursor at the read's first
+    step, before any record, so the fallback never repeats a record.
+    """
+    events = follow_turn_events(client, child_workflow_id, after=progress.consumed_cursor)
+    try:
+        first = await anext(events)
+    except StreamCursorError:
+        await events.aclose()
+        progress.consumed_cursor = ""
+        events = follow_turn_events(client, child_workflow_id, after="")
+        first = await anext(events)
+    except StopAsyncIteration:
+        return
+    try:
+        yield first
+        async for record in events:
+            yield record
+    finally:
+        await events.aclose()
+
+
 class SubagentActivities:
     """Harness activities for driving subagents, bound to a Temporal :class:`Client`.
 
     ``AgentHarnessPlugin`` constructs this from the worker's own client and registers the
     bound activity method, so agents normally never name this class. Do it by hand only when
-    assembling a worker's activity list yourself, from a client that carries the stream provider
+    assembling a worker's activity list yourself, from a client that carries the stream store
     as a plugin (the activity reads the child's stream through it)::
 
         subagents = SubagentActivities(client)
@@ -199,16 +227,7 @@ class SubagentActivities:
         """
         output: dict[str, Any] = {}
         got_reply = False
-        try:
-            events = follow_turn_events(
-                self._client, req.child_workflow_id, after=progress.consumed_cursor
-            )
-        except StreamCursorError:
-            # The cursor is a hint, so a provider that will not take it costs a replay and
-            # nothing else: the loop filters to this turn's turn_id either way. A switched
-            # provider must not fail every in-flight session's next subagent turn.
-            progress.consumed_cursor = ""
-            events = follow_turn_events(self._client, req.child_workflow_id, after="")
+        events = _follow_from_hint(self._client, req.child_workflow_id, progress)
         try:
             async for record in events:
                 # Advance the resume cursor for EVERY record seen (mutated in place so the
@@ -238,8 +257,7 @@ class SubagentActivities:
                 if payload.type == AgentEventType.TURN_END:
                     break
         finally:
-            # Closed explicitly: on the shipped transport the subscription is a long poll parked
-            # against the child, and leaving it to garbage collection would hold it open.
+            # Closed explicitly, so the read stops now and not at garbage collection.
             await events.aclose()
         return output, got_reply
 

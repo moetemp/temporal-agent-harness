@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 from temporalio.exceptions import ApplicationError
-from temporalio.streams import Cursor, RecordKind, StreamCursorError, StreamRecord
+from temporalio.contrib.streams import Cursor, RecordKind, StreamCursorError, StreamRecord
 
 from temporal_agent_harness.harness import agent, subagent_activities
 from temporal_agent_harness.harness.agent_protocol import (
@@ -365,10 +365,10 @@ def test_distinct_subagents_have_independent_gates_and_counters():
     assert b._next_ticket == 0
 
 
-async def test_a_child_cursor_the_provider_refuses_replays_instead_of_failing_the_turn():
+async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_turn():
     # `after_cursor` is documented as a hint that can never break correctness, but a
-    # provider mints it and refuses another's synchronously. Left to raise, switching
-    # providers fails every in-flight session's next subagent turn.
+    # store mints it and refuses another's. Left to raise, switching stores fails every
+    # in-flight session's next subagent turn.
     events = [
         AgentEvent(
             agent_id="C",
@@ -390,10 +390,11 @@ async def test_a_child_cursor_the_provider_refuses_replays_instead_of_failing_th
 
     def follow(_client, _workflow_id, *, after=""):
         asked.append(after)
-        if after:
-            raise StreamCursorError(f"cursor {after!r} was not minted by this provider")
 
         async def gen():
+            # The stream runtime refuses a cursor at the read's first step, not at the call.
+            if after:
+                raise StreamCursorError(f"cursor {after!r} is not a stream cursor")
             for index, event in enumerate(events):
                 yield StreamRecord(
                     kind=RecordKind.DATA,

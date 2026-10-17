@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from nexusrpc import HandlerError, HandlerErrorType
 from temporalio.converter import DataConverter
-from temporalio.streams import StreamCursorError
+from temporalio.contrib.streams import StreamCursorError
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import CallbackResultAck
 from temporal_agent_harness.nexus_agent_adapter import handler as handler_mod
@@ -96,8 +96,8 @@ def test_is_workflow_already_completed_false_for_unrelated_error() -> None:
 
 
 async def test_poll_messages_answers_bad_request_for_a_foreign_cursor() -> None:
-    # The read parses the cursor at the call, so a token this provider did not mint
-    # raises before any poll. Outside the guard it leaves the operation as an
+    # The store refuses a token it did not mint at the read's first step, before any
+    # record. Outside the guard it leaves the operation as an
     # unhandled exception instead of telling the caller what it got wrong.
     handler = AgentServiceHandler(
         client=MagicMock(),
@@ -109,7 +109,12 @@ async def test_poll_messages_answers_bad_request_for_a_foreign_cursor() -> None:
     )
 
     def refuse(_client, _workflow_id, *, after=""):
-        raise StreamCursorError(f"cursor {after!r} was not minted by this provider")
+        # The stream runtime refuses a cursor at the read's first step, not at the call.
+        async def gen():
+            raise StreamCursorError(f"cursor {after!r} is not a stream cursor")
+            yield
+
+        return gen()
 
     with patch.object(handler_mod, "follow_turn_events", refuse):
         with pytest.raises(HandlerError) as caught:
