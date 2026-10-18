@@ -691,14 +691,14 @@ pydantic_ai_hello) and/or `GEMINI_API_KEY` (monty, wiki, coding). The default co
 
 ### Choosing the stream store
 
-Agents publish their turn events through `workflow_writer` from `temporalio.contrib.streams`,
+Agents publish their turn events through `stream_producer` from `temporalio.contrib.streams`,
 and the store behind it is a per-process choice made from the environment. `store_from_env()`
 in `temporal_agent_harness.harness.stream_transport` builds the store `STREAMS_STORE` names,
 and the process registers it once on its client, `Client.connect(..., plugins=[store])`.
-Workers built from that client take it, so the workflow's writer and the activities' producers
-find the store without being told. An activity asks `activity_handle()`. A process outside a
-worker, such as the web app or the Nexus adapter, reads the turn events through
-`get_stream_handle(client, workflow_id)` on the same kind of client. Agent code names nothing.
+Workers built from that client take it, so the producers of the workflow and its activities
+find the store without being told. Both call `stream_producer`. A process outside a worker,
+such as the web app or the Nexus adapter, reads the turn events through
+`stream_handle(client, workflow_id)` on the same kind of client. Agent code names nothing.
 
 | `STREAMS_STORE` | Where events live | Needs |
 |---|---|---|
@@ -706,9 +706,8 @@ worker, such as the web app or the Nexus adapter, reads the turn events through
 | `memory` | This process | Nothing. For tests and a single process |
 
 The web app, the Nexus adapter and each worker are separate processes, so they need a store they
-all reach, and that is why Redis is the default. With `STREAMS_NOTIFY=1` the store tells each
-stream's notifier on the server when the stream moves, so an idle reader sleeps on the server
-and holds no store connection. That needs a server with the stream notifier.
+all reach, and that is why Redis is the default. Streams need only a stock Temporal server,
+so the dev server is enough.
 
 The test suite honours the same variables, but defaults to `memory` on the time-skipping test
 server, so `uv run pytest` needs nothing installed. `TEMPORAL_ADDRESS` points the tests at a
