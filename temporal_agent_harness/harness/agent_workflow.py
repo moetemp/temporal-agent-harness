@@ -20,7 +20,7 @@ import contextvars
 import inspect
 import textwrap
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -102,7 +102,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     ToolEndEvent,
     ToolErrorEvent,
     ToolStartEvent,
-    TextReply,
     TurnEnded,
     TurnStarted,
     AgentMessageReply,
