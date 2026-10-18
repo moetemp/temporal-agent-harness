@@ -1,7 +1,7 @@
 # ABOUTME: How the harness reaches its streams: the one place a store is named, the batched
 # publisher an activity uses, and the readers every client-side consumer of turn events shares.
 # The store is registered once on the client. Every context then asks for its stream the same
-# way, and workflow code publishes through ``workflow_writer`` and never names a store.
+# way, and workflow code publishes through ``stream_producer`` and never names a store.
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from temporalio.contrib.streams import (
     StreamStorePlugin,
     StreamTopic,
     Supersession,
-    activity_handle,
-    get_stream_handle,
+    stream_handle,
+    stream_producer,
 )
 
 from temporal_agent_harness.harness.agent_protocol import (
@@ -35,7 +35,6 @@ from temporal_agent_harness.harness.agent_protocol import (
 
 STORE_ENV = "STREAMS_STORE"
 REDIS_URL_ENV = "STREAMS_REDIS_URL"
-NOTIFY_ENV = "STREAMS_NOTIFY"
 DEFAULT_STORE = "redis"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379"
 # How long ``check_turn_cursor`` waits for the store's answer on a token.
@@ -52,31 +51,23 @@ def store_from_env(default: str = DEFAULT_STORE) -> StreamStorePlugin:
 
     ``redis`` is the default, at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
     workers are separate processes, and they must all reach one store. ``memory`` keeps the
-    streams in this process, so it suits tests and a single process only. With
-    ``STREAMS_NOTIFY=1`` the store tells each stream's notifier on the server when the stream
-    moves, so an idle reader sleeps on the server and not on a store connection. That needs a
-    server with the stream notifier.
+    streams in this process, so it suits tests and a single process only.
 
     Register the result once, as ``Client.connect(..., plugins=[store])``. Workers built from
-    that client take it, an activity reaches it through ``activity_handle()`` and any other
-    code through ``get_stream_handle(client, ...)``. One store serves one client connection,
+    that client take it, an activity reaches it through ``stream_producer`` and any other
+    code through ``stream_handle(client, ...)``. One store serves one client connection,
     so a second connection needs a store of its own.
     """
     name = store_name(default)
-    store: StreamStorePlugin
     if name == "redis":
         from temporalio.contrib.streams.redis import RedisStreams
 
-        store = RedisStreams(os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL))
-    elif name == "memory":
+        return RedisStreams(os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL))
+    if name == "memory":
         from temporalio.contrib.streams.memory import MemoryStreams
 
-        store = MemoryStreams()
-    else:
-        raise ValueError(f"{STORE_ENV}={name!r} names no stream store")
-    if os.environ.get(NOTIFY_ENV) == "1":
-        store.notify_on_append()
-    return store
+        return MemoryStreams()
+    raise ValueError(f"{STORE_ENV}={name!r} names no stream store")
 
 
 def cursor(token: str) -> Cursor:
@@ -91,7 +82,7 @@ async def latest_turn_event(client: Client, workflow_id: str) -> str:
     it sees the turn it started without replaying the agent's history. ``client`` carries the
     stream store as a plugin.
     """
-    handle = get_stream_handle(client, workflow_id)
+    handle = stream_handle(client, workflow_id)
     return (await handle.latest(topic=TURN_EVENTS)).token
 
 
@@ -105,7 +96,7 @@ async def check_turn_cursor(client: Client, workflow_id: str, after: str) -> Non
     """
     if not after:
         return
-    records = get_stream_handle(client, workflow_id).read(topic=TURN_EVENTS, after=cursor(after))
+    records = stream_handle(client, workflow_id).read(topic=TURN_EVENTS, after=cursor(after))
     try:
         await asyncio.wait_for(anext(records), _CURSOR_CHECK.total_seconds())
     except (TimeoutError, StopAsyncIteration):
@@ -127,7 +118,7 @@ def follow_turn_events(
     refused with ``StreamCursorError`` at the first iteration, before anything is read. Close
     the generator to stop the read. ``client`` carries the stream store as a plugin.
     """
-    handle = get_stream_handle(client, workflow_id)
+    handle = stream_handle(client, workflow_id)
     records = handle.read(topic=TURN_EVENTS, after=cursor(after))
     return _turn_records(records)
 
@@ -240,6 +231,6 @@ async def publisher_for_activity(
     supersession, and the records land next to the workflow's own for whoever follows the
     topic.
     """
-    producer = activity_handle().producer(topic=topic)
+    producer = stream_producer(topic)
     async with ActivityPublisher(producer, batch_interval=batch_interval) as publisher:
         yield publisher

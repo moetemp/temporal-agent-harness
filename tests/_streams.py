@@ -3,11 +3,11 @@
 ``STREAMS_STORE`` picks the store the way it does for a worker, but the suite defaults to
 ``memory``, so it needs nothing installed. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``.
 ``TEMPORAL_ADDRESS`` names a running server for the tests to connect to. Without it they start
-the time-skipping test server. ``STREAMS_NOTIFY=1`` needs a server with the stream notifier.
+the time-skipping test server.
 
 The store is registered on the test client as a plugin, through ``Client.connect``, the way an
 application registers it. Workers built from that client take it, and every reader goes
-through ``get_stream_handle(client, ...)``. One store serves one client connection, so every
+through ``stream_handle(client, ...)``. One store serves one client connection, so every
 test builds its own.
 """
 
@@ -69,8 +69,8 @@ async def streaming_client(client: Client) -> Client:
 async def workflow_environment(**kwargs: Any) -> WorkflowEnvironment:
     """A server for the test, with the test's store on the client.
 
-    ``TEMPORAL_ADDRESS`` names a running server, such as one with the stream notifier. Without
-    it, the time-skipping test server starts.
+    ``TEMPORAL_ADDRESS`` names a running server. Without it, the time-skipping test server
+    starts.
     """
     plugins = [*kwargs.pop("plugins", []), store()]
     address = os.environ.get("TEMPORAL_ADDRESS")

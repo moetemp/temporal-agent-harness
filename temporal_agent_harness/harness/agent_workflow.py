@@ -39,7 +39,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
-from temporalio.contrib.streams import workflow_writer
+from temporalio.contrib.streams import stream_producer
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -1741,7 +1741,7 @@ class AgentWorkflowRunner:
                 approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             )
 
-        The runner publishes its events through ``workflow_writer`` onto the store the
+        The runner publishes its events through ``stream_producer`` onto the store the
         worker's client carries as a plugin; the agent names no stream and no store.
 
         ``config`` is the standardized agent input; the runner resolves each universal
@@ -1797,7 +1797,7 @@ class AgentWorkflowRunner:
         # inside another run's activation can tell (``_in_own_run``). Offline construction
         # (unit tests) has no run.
         self._run_id: str | None = workflow.info().run_id if workflow.in_workflow() else None
-        self._events = workflow_writer(TURN_EVENTS)
+        self._events = stream_producer(TURN_EVENTS)
         _assert_async_auto_mode_evaluator(auto_mode_evaluator)
         _assert_auto_mode_has_an_evaluator(approval_policy, auto_mode_evaluator)
         self._auto_mode_evaluator = auto_mode_evaluator
@@ -3306,7 +3306,7 @@ class AgentWorkflowRunner:
         # The Worker appends the record before it completes this activation. An unconvertible
         # value raises here, and a record the store refuses fails the Workflow Task. Either
         # way it is loud.
-        self._events.publish(envelope)
+        self._events.append(envelope)
 
 
 # ---------------------------------------------------------------------------

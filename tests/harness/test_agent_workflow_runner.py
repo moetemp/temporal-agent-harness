@@ -1290,7 +1290,7 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, outcome="error"
     )
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = [c.args[0] for c in runner._events.append.call_args_list]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event
@@ -1300,22 +1300,22 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
     assert rr.subagent_id == "aaaaaa-bbbbbb"
 
 
-def test_publish_reaches_the_writer_in_order(offline_build):
-    """A publish is one synchronous call on the writer, so the writer sees the envelopes in
-    the order the runner published them, with the sequence numbers it stamped."""
+def test_publish_reaches_the_producer_in_order(offline_build):
+    """A publish is one synchronous append on the producer, so the producer sees the envelopes
+    in the order the runner published them, with the sequence numbers it stamped."""
     runner = offline_build(AgentConfig())
     runner._pub("turn-1", 1, TurnEnded())
     runner._pub("turn-2", 2, TurnEnded())
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = [c.args[0] for c in runner._events.append.call_args_list]
     assert [e.turn_id for e in published] == ["turn-1", "turn-2"]
     assert [e.seq for e in published] == [1, 2]
 
 
 def test_refused_publish_raises_at_the_call(offline_build):
-    """A publish the provider refuses fails the caller right there, not somewhere later."""
+    """A publish the store refuses fails the caller right there, not somewhere later."""
     runner = offline_build(AgentConfig())
-    runner._events.publish.side_effect = [None, RuntimeError("store refused it")]
+    runner._events.append.side_effect = [None, RuntimeError("store refused it")]
     runner._pub("turn-1", 1, TurnEnded())
 
     with pytest.raises(RuntimeError, match="store refused it"):
@@ -1347,9 +1347,9 @@ def offline_build(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    # Offline there is no provider to bind a writer on; a mock records what the runner publishes.
-    # Its publish is synchronous like the real one.
-    monkeypatch.setattr(aw, "workflow_writer", lambda *a, **k: MagicMock())
+    # Offline there is no store to bind a producer on; a mock records what the runner publishes.
+    # Its append is synchronous like the real one.
+    monkeypatch.setattr(aw, "stream_producer", lambda *a, **k: MagicMock())
 
     def build(config: AgentConfig):
         return AgentWorkflowRunner(
@@ -1370,7 +1370,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    monkeypatch.setattr(aw, "workflow_writer", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "stream_producer", lambda *a, **k: MagicMock())
 
     def build(
         config: AgentConfig,
