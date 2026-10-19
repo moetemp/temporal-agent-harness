@@ -175,6 +175,9 @@ class SubagentActivities:
             # Only on the fresh-send branch: a heartbeat-resume retry skips both the re-send and
             # this publish, so the memo dedupes the event exactly as it dedupes the send.
             await self._publish_dispatch(req, progress)
+        # The memo path writes no Record, so a follow gets no SUPERSEDED and reads the subagent
+        # on. A retry that writes any Record must write the same OPEN again, since its first
+        # Record withdraws the OPEN of the attempt before it.
         # Record/refresh the memo immediately (covers both the fresh-send and resume paths),
         # then let the background task keep it alive at a steady cadence.
         activity.heartbeat(progress)

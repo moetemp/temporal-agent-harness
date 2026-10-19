@@ -240,6 +240,9 @@ def _unavailable(item: FollowedItem[Any]) -> AgentEvent | None:
     elif state.kind is LinkStateKind.SKIPPED and state.reason != _SKIP_WITH_NO_LOSS:
         reason = f"subagent stream not followed: {state.reason}"
     else:
+        # OPENED and DONE give no event. A DONE with reason ``withdrawn`` is a pause, not the
+        # subagent's end. The dispatch Activity's retry writes the same OPEN again, and the
+        # OPENED with reason ``resumed`` reads the subagent on under the retry's marker.
         return None
     link = state.link
     subagent_id = link.name.rpartition("#")[0] or link.name

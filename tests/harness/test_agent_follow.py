@@ -23,6 +23,8 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.streams import (
     Cursor,
+    LinkEvent,
+    StreamLink,
     StreamProducer,
     StreamRef,
     StreamStorePlugin,
@@ -339,6 +341,51 @@ async def test_single_subagent_turn_is_nested_in_its_bracket(streams):
 
     merged = _events(await _take(streams.follow(), _all(streams)))
     assert_valid(merged, streams.written)
+
+
+async def test_an_activity_retry_that_writes_the_same_open_shows_each_child_event_once(streams):
+    # The dispatch Activity's first attempt writes the marker and its OPEN, and the child turn
+    # starts. The retry writes both again. The follow pauses the child at the SUPERSEDED and
+    # resumes it at the retry's OPEN, so no child event shows twice.
+    await streams.start("P", "C")
+    await streams.emit(_ts("P", 1))
+    marker = _ev(
+        "P",
+        1,
+        SubagentMessageSent(
+            subagent_id="C",
+            agent_key="k",
+            workflow_id=streams.wf("C"),
+            handler="f",
+            subagent_turn=1,
+        ),
+    )
+    link = StreamLink(
+        LinkEvent.OPEN,
+        StreamRef.for_workflow(streams.wf("C"), topic=TURN_EVENTS),
+        link_name("C", 1),
+    )
+    parent = stream_handle(streams.client, streams.wf("P"))
+    for attempt in (1, 2):
+        dispatch = parent.producer(topic=TURN_EVENTS, producer_id="dispatch", attempt=attempt)
+        await dispatch.append(marker, link)
+        if attempt == 1:
+            await streams.emit(_ts("C", 1), _tool("C", 1, "t1", start=True))
+    end = await streams.emit(_reply("C", 1), _te("C", 1))
+    await streams.received("P", 1, "C", 1, end)
+    await streams.emit(_te("P", 1))
+
+    merged = _events(await _take(streams.follow(), 10))
+    assert [e for e in merged if e.agent_id == "C"] == streams.written["C"]
+    assert _names([e for e in merged if e.agent_id == "P"]) == [
+        "P:1:turn_started",
+        "P:1:subagent_message_sent",
+        "P:1:attempt_superseded",
+        "P:1:subagent_message_sent",
+        "P:1:subagent_reply_received",
+        "P:1:turn_end",
+    ]
+    assert not _markers(merged), "a paused child is not unavailable"
 
 
 async def test_child_state_registered_before_any_turn_comes_after_the_first_open(streams):
