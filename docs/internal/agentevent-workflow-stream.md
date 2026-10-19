@@ -140,8 +140,8 @@ Durable does **not** mean retained forever, or free:
   period (default 15 min) is dropped in the handoff.
 - **Completed-stream replay is a known gap.** While the workflow is live, replay-by-offset is solid;
   once it completes/detaches, cold replay isn't fully there yet — an upstream `workflow_streams` fix
-  is in flight (`events.py`, `stream_merge/README.md`). In normal operation the session workflow is
-  long-running (it parks awaiting the next message), so it *is* alive and replay works.
+  is in flight (`events.py`, `unified-subagent-event-stream.md`). In normal operation the session
+  workflow is long-running (it parks awaiting the next message), so it *is* alive and replay works.
 - **Tuned for progress feeds, not real-time.** ~100ms per roundtrip; "*not designed for … real-time
   voice*" (README). Cost scales with durable batches (each is a real Signal in history), not with
   tokens.

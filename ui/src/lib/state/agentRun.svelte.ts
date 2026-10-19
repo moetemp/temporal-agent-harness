@@ -1272,12 +1272,10 @@ export class AgentRunController {
   /**
    * Ensure a merged stream is live, WITHOUT disturbing one that already is.
    *
-   * The second half of the client contract (`stream_merge/README.md`): submit, then
-   * ensure. Re-attaching instead would be actively lossy — the merge starts at the
-   * resume point with no skip, so a subagent whose turn began earlier is never
-   * re-mounted and the rest of its turn is dropped with no marker. Keeping the open
-   * stream never re-mounts anything, so that loss stays confined to genuine
-   * reconnects.
+   * The second half of the client contract
+   * (`docs/internal/unified-subagent-event-stream.md`): submit, then check that a
+   * stream is live. Keeping the open stream costs nothing, and a re-attach repeats
+   * the rest of the last follow batch.
    *
    * A stream between attempts in its backoff counts as live — it will re-open by
    * itself — but it is woken so the wait does not add to the round trip.

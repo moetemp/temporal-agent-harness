@@ -729,6 +729,19 @@ What the choice costs, beyond the table:
 - A stream keeps records for the store's retention (7 days by default). A resume point past
   that fails with `StreamExpiredError`.
 
+### Subagents on one stream
+
+`AgentClient.send_message` and `attach` show an agent and every subagent it drives as one stream.
+The agents write Link Records for it. The activity that sends a subagent its message writes an
+`OPEN` right after `subagent_message_sent`, and the parent writes a `JOIN` right before
+`subagent_reply_received`, with the subagent's `turn_end` as its `until`. The client reads it all
+with one `follow()` of the root's stream, which keeps each stream's own order and puts each
+subagent turn between its two markers. The resume point holds the cursor of each open subagent
+stream, so a reconnect inside a subagent's turn loses nothing. `subagent_max_depth` (4) and
+`subagent_max_open` (16) bound the follow. A subagent past them, or one whose stream can't be read,
+shows as a `subagent_stream_unavailable` event with the reason. See
+[`docs/internal/unified-subagent-event-stream.md`](docs/internal/unified-subagent-event-stream.md).
+
 ### One example, standalone
 
 Each example runs on its own from its directory — [`examples/monty`](examples/monty) (a
