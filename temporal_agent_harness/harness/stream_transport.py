@@ -21,7 +21,6 @@ from temporalio.contrib.streams import (
     FollowPosition,
     StreamProducer,
     StreamRecord,
-    StreamRef,
     StreamStorePlugin,
     StreamTopic,
     Supersession,
@@ -213,24 +212,17 @@ class ActivityPublisher:
         # append would unwind ``flush`` with the batch it had already taken off ``_pending``.
         self._wake = asyncio.Event()
 
-    def publish(self, value: Any) -> None:
+    def publish(self, *values: Any) -> None:
+        """Queue ``values``. They go out in one append, so a ``StreamLink`` among them lands
+        in the same batch as the record next to it."""
         if self._closed:
             raise RuntimeError("publisher is closed")
-        self._pending.append(value)
+        self._pending.extend(values)
 
     async def flush(self) -> None:
         batch, self._pending = self._pending, []
         if batch:
             await self._producer.append(*batch)
-
-    async def link(self, ref: StreamRef, *, name: str, after: str = "") -> None:
-        """Append what has queued, then a ``LINK`` that opens ``ref``'s stream after ``after``.
-
-        The link goes on the same producer right after the queued records, so a follower
-        reads the stream it opens after them.
-        """
-        await self.flush()
-        await self._producer.link(ref, name=name, after=Cursor(after) if after else None)
 
     async def _run(self) -> None:
         while not self._closed:

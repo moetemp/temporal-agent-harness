@@ -32,7 +32,7 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.streams import Cursor, StreamCursorError
+from temporalio.contrib.streams import Cursor, LinkEvent, StreamCursorError, StreamLink
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from tests._streams import turn_events, workflow_environment
@@ -1298,14 +1298,13 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, consumed, outcome="error"
     )
 
-    # The JOIN goes right before the marker, in the same activation.
-    names = [c[0] for c in runner._events.mock_calls]
-    assert names == ["join", "append"]
-    assert runner._events.join.call_args.kwargs == {
-        "name": "aaaaaa-bbbbbb#7",
-        "until": Cursor("memory:child:9"),
-    }
-    published = [c.args[0] for c in runner._events.append.call_args_list]
+    # The JOIN goes right before the marker, in the same append.
+    (call,) = runner._events.append.call_args_list
+    join, marker = call.args
+    assert join == StreamLink(
+        LinkEvent.JOIN, None, "aaaaaa-bbbbbb#7", until=Cursor("memory:child:9")
+    )
+    published = [marker]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event

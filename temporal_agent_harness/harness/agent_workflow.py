@@ -39,7 +39,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
-from temporalio.contrib.streams import Cursor, StreamRef, stream_producer
+from temporalio.contrib.streams import Cursor, LinkEvent, StreamLink, stream_producer
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -1068,8 +1068,11 @@ class TurnEventPublisher:
         self._events = events
         self._context = context
 
-    def publish(self, event: AgentStreamItem) -> None:
+    def publish(self, event: AgentStreamItem, *, link: StreamLink | None = None) -> None:
         """Wrap ``event`` in an :class:`AgentEvent` envelope and publish it.
+
+        ``link``, when given, goes right after the event in the same append batch, so a
+        retried append dedupes the two together.
 
         Producers build the typed payload (e.g. ``ReplyDelta(text=…)``); the
         envelope adds the routing metadata only the harness controls — ``turn_id``
@@ -1083,20 +1086,15 @@ class TurnEventPublisher:
         context, so an activity streaming a model call attributes its deltas to the right
         message without ever knowing there is such a thing.
         """
-        self._events.publish(
-            AgentEvent(
-                event=event,
-                agent_id=self._context.agent_id,
-                turn_id=self._context.turn_id,
-                turn_number=self._context.turn_number,
-                message_id=self._context.message_id,
-                timestamp=time.time(),
-            )
+        envelope = AgentEvent(
+            event=event,
+            agent_id=self._context.agent_id,
+            turn_id=self._context.turn_id,
+            turn_number=self._context.turn_number,
+            message_id=self._context.message_id,
+            timestamp=time.time(),
         )
-
-    async def link(self, ref: StreamRef, *, name: str, after: str = "") -> None:
-        """Append what has queued, then a ``LINK`` that opens ``ref``'s stream after ``after``."""
-        await self._events.link(ref, name=name, after=after)
+        self._events.publish(envelope, *([link] if link is not None else []))
 
 
 # ---------------------------------------------------------------------------
@@ -3155,15 +3153,23 @@ class AgentWorkflowRunner:
         ``subagent_message_sent`` (which must survive activity retries). Mirrors
         ``SubagentMessageSent``'s correlation fields.
 
-        The ``JOIN`` of the turn's link goes first, in the same activation, with ``until`` the
-        child's ``turn_end`` cursor. A follower then holds this marker, and everything after it,
+        The ``JOIN`` of the turn's link goes right before it, in the same append, with ``until``
+        the child's ``turn_end`` cursor. A follower then holds this marker, and everything after it,
         until the child's turn is delivered.
         """
-        if until:
-            self._events.join(
-                name=link_name(inst.handle, subagent_turn), until=Cursor(until)
+        join = (
+            StreamLink(
+                LinkEvent.JOIN, None, link_name(inst.handle, subagent_turn), until=Cursor(until)
             )
-        self.publish(
+            if until
+            else None
+        )
+        ctx = self.current_stream_context
+        if ctx is None:
+            raise RuntimeError("publish() called with no active turn")
+        self._pub(
+            ctx.turn_id,
+            ctx.turn_number,
             SubagentReplyReceived(
                 subagent_id=inst.handle,
                 agent_key=inst.agent_key,
@@ -3171,7 +3177,8 @@ class AgentWorkflowRunner:
                 handler=handler,
                 subagent_turn=subagent_turn,
                 outcome=outcome,
-            )
+            ),
+            before=join,
         )
 
     def publish(self, event: AgentStreamItem) -> None:
@@ -3305,8 +3312,11 @@ class AgentWorkflowRunner:
         event: AgentStreamItem,
         *,
         message_id: str | None | _Ambient = _AMBIENT,
+        before: StreamLink | None = None,
     ) -> None:
         """Wrap ``event`` in an :class:`AgentEvent` envelope and publish it.
+
+        ``before`` is a ``LINK`` that goes right before the event in the same append.
 
         ``message_id`` defaults to the AMBIENT one — the message whose participant task is
         running right now (:data:`_CURRENT_MESSAGE_ID`) — which is what makes envelope-side
@@ -3333,7 +3343,7 @@ class AgentWorkflowRunner:
         # The Worker appends the record before it completes this activation. An unconvertible
         # value raises here, and a record the store refuses fails the Workflow Task. Either
         # way it is loud.
-        self._events.append(envelope)
+        self._events.append(*([before] if before is not None else []), envelope)
 
 
 # ---------------------------------------------------------------------------

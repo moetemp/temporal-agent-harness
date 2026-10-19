@@ -9,7 +9,15 @@ from typing import Any
 
 import pytest
 
-from temporalio.contrib.streams import Cursor, RecordKind, StreamRecord, Supersession
+from temporalio.contrib.streams import (
+    Cursor,
+    LinkEvent,
+    RecordKind,
+    StreamLink,
+    StreamRecord,
+    StreamRef,
+    Supersession,
+)
 
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS,
@@ -53,6 +61,17 @@ async def test_exit_sends_the_tail_without_waiting_for_the_interval():
         publisher.publish("a")
         publisher.publish("b")
     assert producer.appended == [["a", "b"]]
+
+
+async def test_a_record_and_its_link_go_out_in_one_append():
+    # The interval flusher runs often, and still can't split what one publish call queued.
+    producer = _SlowProducer()
+    link = StreamLink(LinkEvent.OPEN, StreamRef.for_workflow("child"), "sub#1")
+    publisher = ActivityPublisher(producer, batch_interval=timedelta(0))  # type: ignore[arg-type]
+    async with publisher:
+        publisher.publish("sent", link)
+        await producer.entered.wait()
+    assert producer.appended == [["sent", link]]
 
 
 async def test_publish_after_exit_is_refused():

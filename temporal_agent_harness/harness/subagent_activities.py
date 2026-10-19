@@ -44,7 +44,14 @@ from pydantic import BaseModel
 from temporalio import activity
 from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
-from temporalio.contrib.streams import StreamCursorError, StreamRecord, StreamRef
+from temporalio.contrib.streams import (
+    Cursor,
+    LinkEvent,
+    StreamCursorError,
+    StreamLink,
+    StreamRecord,
+    StreamRef,
+)
 
 from temporal_agent_harness.harness.agent_client import (
     MidTurnRejectedError,
@@ -350,8 +357,8 @@ class SubagentActivities:
     async def _publish_dispatch(
         req: RunSubagentTurnInput, progress: _TurnProgress
     ) -> None:
-        """Publish the :class:`SubagentMessageSent` marker onto the PARENT's stream, then the
-        ``OPEN`` Link Record of this turn.
+        """Publish the :class:`SubagentMessageSent` marker onto the PARENT's stream, with the
+        ``OPEN`` Link Record of this turn right after it in the same append batch.
 
         The link opens the child's stream after ``req.after_cursor``, the previous turn's
         ``turn_end``, so a follower reads this turn's child events after the marker. Called once
@@ -374,12 +381,13 @@ class SubagentActivities:
                     # the parent resumed after) — lets a client merging the parent + child streams
                     # mount the child cursor at the right spot when resuming mid-session.
                     after_cursor=req.after_cursor,
-                )
-            )
-            await publisher.link(
-                StreamRef.for_workflow(req.child_workflow_id, topic=TURN_EVENTS),
-                name=link_name(req.handle, progress.turn_number),
-                after=req.after_cursor,
+                ),
+                link=StreamLink(
+                    LinkEvent.OPEN,
+                    StreamRef.for_workflow(req.child_workflow_id, topic=TURN_EVENTS),
+                    link_name(req.handle, progress.turn_number),
+                    after=Cursor(req.after_cursor) if req.after_cursor else None,
+                ),
             )
 
     @staticmethod

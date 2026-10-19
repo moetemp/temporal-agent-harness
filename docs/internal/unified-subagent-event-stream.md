@@ -32,12 +32,13 @@ never changes. No clock decides anything, so the same store content always gives
 
 ## The record rules
 
-- **`OPEN`.** The activity writes it right after `subagent_message_sent`, on the same producer, when
-  it sends the message (`_publish_dispatch`). The link name is `<handle>#<subagent_turn>`, the ref
-  is the child's `turn_events` topic, and `after` is the previous turn's `turn_end` cursor
+- **`OPEN`.** The activity writes it right after `subagent_message_sent`, in the same append
+  batch, when it sends the message (`_publish_dispatch`). A retried append dedupes the two
+  together. The link name is `<handle>#<subagent_turn>`, the ref is the child's `turn_events`
+  topic, and `after` is the previous turn's `turn_end` cursor
   (`RunSubagentTurnInput.after_cursor`). A heartbeat-resumed attempt writes neither record again.
 - **`JOIN`.** The workflow writes it right before `subagent_reply_received`, in the same
-  activation, for each accepted child turn (`ok` or `error`). `until` is the `consumed_cursor` the
+  append, for each accepted child turn (`ok` or `error`). `until` is the `consumed_cursor` the
   activity returns. On `SubagentTurnError` and `SubagentNoReply` the activity reads on to the
   turn's `turn_end` and puts `consumed_cursor` in the error details next to `subagent_turn`. The
   parent then writes the `JOIN` and moves `last_consumed_cursor`, so the next turn's segment does
@@ -90,8 +91,6 @@ stream with no exception, and a new `attach` recovers.
 
 ## Known limits
 
-- `subagent_message_sent` and its `OPEN` are two appends on the activity's producer, one right after
-  the other. A crash between them leaves the marker with no link until the retry writes both again.
 - An idle follow holds one store wait for each open subagent stream.
 - The resume point is longer than the older form. The UI and the web app treat it as opaque.
 - A `JOIN` needs the activity's `consumed_cursor`. An error with none (from an older worker) writes
