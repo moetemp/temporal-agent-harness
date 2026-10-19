@@ -44,7 +44,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentStatus,
     SEND_AGENT_MESSAGE_UPDATE,
 )
-from temporal_agent_harness.harness.stream_merge import ResumePoint
+from temporal_agent_harness.harness.agent_follow import ResumePoint
 from temporal_agent_harness.harness.stream_transport import store_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ui import packaged_ui_dist
