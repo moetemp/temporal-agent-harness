@@ -32,7 +32,7 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.streams import StreamCursorError
+from temporalio.contrib.streams import Cursor, StreamCursorError
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from tests._streams import turn_events, workflow_environment
@@ -401,7 +401,9 @@ async def test_attach_resuming_from_a_point_yields_exactly_what_follows_it(
     Resume-after-a-cursor is the property every consumer of this stream depends on,
     and proving it on a fake proves the fake. This drives a real provider: it reads
     a session's events, takes the point handed back with the k-th one, and asserts
-    the resumed stream is exactly what came after it.
+    the resumed stream is exactly what came after the point. The point moves at the end
+    of each follow batch, so the resumed stream starts after the event that moved it, at
+    or before the k-th one.
     """
     client, task_queue = client_and_queue
     handle = await _start(client, task_queue, TypedProbeAgent)
@@ -435,7 +437,10 @@ async def test_attach_resuming_from_a_point_yields_exactly_what_follows_it(
     def identity(event: AgentEvent) -> tuple:
         return (event.agent_id, event.turn_number, event.event.type, event.seq)
 
-    assert [identity(e) for e in resumed] == [identity(e) for e, _ in seen[k + 1 :]]
+    first = next(i for i, (_, p) in enumerate(seen) if p == point)
+    start = 0 if point == "" else first + 1
+    assert start <= k + 1
+    assert [identity(e) for e in resumed] == [identity(e) for e, _ in seen[start:]]
 
 
 async def test_attach_refuses_a_foreign_resume_point_before_streaming(client_and_queue):
@@ -1277,19 +1282,29 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
     runner._status.open_next_turn()
     inst = runner._status.register_subagent("aaaaaa-bbbbbb", "child-wf-1", "k")
 
-    # The activity raises with the child's ACTUAL accepted turn number (7) in the details.
+    # The activity raises with the child's ACTUAL accepted turn number (7) in the details, and
+    # the cursor of the child's turn_end, which the JOIN waits for.
     err = ApplicationError(
         "subagent turn failed",
-        {"subagent_turn": 7},
+        {"subagent_turn": 7, "consumed_cursor": "memory:child:9"},
         type="SubagentTurnError",
         non_retryable=True,
     )
     accepted = runner._accepted_turn_from_error(err)
     assert accepted == 7
+    consumed = runner._consumed_cursor_from_error(err)
+    assert consumed == "memory:child:9"
     runner._publish_subagent_reply_received(
-        inst, "run_script", accepted, outcome="error"
+        inst, "run_script", accepted, consumed, outcome="error"
     )
 
+    # The JOIN goes right before the marker, in the same activation.
+    names = [c[0] for c in runner._events.mock_calls]
+    assert names == ["join", "append"]
+    assert runner._events.join.call_args.kwargs == {
+        "name": "aaaaaa-bbbbbb#7",
+        "until": Cursor("memory:child:9"),
+    }
     published = [c.args[0] for c in runner._events.append.call_args_list]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
@@ -1325,7 +1340,7 @@ def test_refused_publish_raises_at_the_call(offline_build):
 def test_accepted_turn_from_error_raises_when_detail_absent():
     """An accepted-but-errored turn with no ``subagent_turn`` detail is a broken activity
     contract. The parent raises loudly rather than closing the bracket on an invented number
-    that the client merge's close gate would never match."""
+    whose ``JOIN`` would name no open link."""
     err = ApplicationError("no reply", type="SubagentNoReply", non_retryable=True)
     with pytest.raises(ApplicationError) as excinfo:
         AgentWorkflowRunner._accepted_turn_from_error(err)
@@ -1655,7 +1670,7 @@ async def test_send_message_fast_fails_on_a_join_instead_of_hanging(client_and_q
     """``send_message`` is one message → one turn → one stream, and says so immediately.
 
     A joining message has its turn's ``turn_started`` BEHIND the position read before the send, so the
-    merge's skip preamble never matches and the caller would sit in silence until the turn
+    follow's skip preamble never matches and the caller would sit in silence until the turn
     timeout (300s) for a single ``AgentTurnTimeout``. The reply's ``disposition`` makes that
     knowable at submit time, so it raises instead — and the message is still running, which is
     what the carried reply is for.

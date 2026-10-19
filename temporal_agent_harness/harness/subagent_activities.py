@@ -19,9 +19,10 @@
 # DESIGN — stream isolation: this activity reads the CHILD's stream ONLY to capture the reply
 # and detect turn_end. It mirrors NONE of the child's content onto the parent agent's stream.
 # (It does publish ONE marker of its own onto the PARENT's stream — the SubagentMessageSent
-# dispatch event, when it actually sends the message — but that is the parent's own record, not
-# any of the child's events; see _publish_dispatch.) A subagent's stream is never mirrored onto
-# a parent's. Collecting multiple agents' streams for a UI is a future client concern.
+# dispatch event and the Link Record that opens the child's stream, when it actually sends the
+# message. Those are the parent's own records, not any of the child's events; see
+# _publish_dispatch.) A subagent's stream is never mirrored onto a parent's. A client follows the
+# links to read the parent and its subagents as one stream (``agent_follow``).
 #
 # DESIGN — Temporal Client: the activity needs a ``Client`` to talk to
 # the *child* (both the ``send_agent_message`` update and the stream consumer). The activity's
@@ -43,7 +44,7 @@ from pydantic import BaseModel
 from temporalio import activity
 from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
-from temporalio.contrib.streams import StreamCursorError, StreamRecord
+from temporalio.contrib.streams import StreamCursorError, StreamRecord, StreamRef
 
 from temporal_agent_harness.harness.agent_client import (
     MidTurnRejectedError,
@@ -52,6 +53,7 @@ from temporal_agent_harness.harness.agent_client import (
 from temporal_agent_harness.harness.agent_protocol import (
     DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT,
     RUN_SUBAGENT_TURN_ACTIVITY,
+    TURN_EVENTS,
     AgentEvent,
     AgentEventType,
     RunSubagentTurnInput,
@@ -59,7 +61,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     SubagentTurnResult,
 )
 from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
-from temporal_agent_harness.harness.stream_transport import follow_turn_events
+from temporal_agent_harness.harness.stream_transport import follow_turn_events, link_name
 
 
 class _TurnProgress(BaseModel):
@@ -184,7 +186,10 @@ class SubagentActivities:
             # AgentWorkflowRunner._accepted_turn_from_error).
             raise ApplicationError(
                 f"subagent turn {progress.turn_number} ended without a reply",
-                {"subagent_turn": progress.turn_number},
+                {
+                    "subagent_turn": progress.turn_number,
+                    "consumed_cursor": progress.consumed_cursor,
+                },
                 type="SubagentNoReply",
                 non_retryable=True,
             )
@@ -205,7 +210,9 @@ class SubagentActivities:
         ``progress.consumed_cursor`` (mutating it as events pass, so the auto-heartbeat memo stays
         current for a resume), captures OUR message's ``message_handler_end`` output, and stops at
         the turn's ``turn_end``. Our message's ``message_handler_error`` is surfaced as a
-        non-retryable ``SubagentTurnError``.
+        non-retryable ``SubagentTurnError`` once the turn's ``turn_end`` is read, with the
+        ``turn_end`` cursor in the details. The parent's ``JOIN`` needs that cursor, and the next
+        turn starts after it.
 
         SELECT BY ``message_id``, NOT BY TURN. A child turn is refcounted: a human (or anything
         else) sending the child a ``MidTurn.ACCEPT`` message mid-turn JOINS the turn this activity
@@ -215,18 +222,16 @@ class SubagentActivities:
         this call's error — silent corruption, not a rendering gap. ``turn_id`` is still checked
         first, but only as a cheap filter; ``message_id`` is what decides.
 
-        Stopping is still the turn's ``turn_end``, not our own terminal: the parent publishes
-        ``subagent_reply_received`` once this returns, and the client-side merge holds that marker
-        until the child's ``turn_end`` has been emitted (``stream_merge/gates.py``). Returning
-        early would just move the same wait to the consumer.
+        Stopping is still the turn's ``turn_end``, not our own terminal: the parent's ``JOIN``
+        names the ``turn_end`` cursor, so a follower holds ``subagent_reply_received`` until the
+        child's whole turn is delivered.
 
-        Deliberately reads ONLY the child's stream — NO recursion into grandchildren and NO bracket
-        gates. That is correct precisely because of stream isolation: coalescing the parent +
-        subagent streams into one logical view is a separate CLIENT-side concern (``stream_merge``);
-        an activity that gated on a grandchild's ``turn_end`` (a turn it never mounts) would wedge.
+        Deliberately reads ONLY the child's stream, with NO recursion into grandchildren. A
+        client that follows the links reads the parent and its subagents as one stream.
         """
         output: dict[str, Any] = {}
         got_reply = False
+        error: str | None = None
         events = _follow_from_hint(self._client, req.child_workflow_id, progress)
         try:
             async for record in events:
@@ -242,15 +247,7 @@ class SubagentActivities:
                 # call's result.
                 ours = envelope.message_id == progress.message_id
                 if ours and payload.type == AgentEventType.MESSAGE_HANDLER_ERROR:
-                    # Carry the child's ACTUAL accepted turn number so the parent closes the
-                    # bracket on the same turn the dispatch marker opened (see
-                    # _accepted_turn_from_error).
-                    raise ApplicationError(
-                        payload.message or "subagent turn failed",
-                        {"subagent_turn": progress.turn_number},
-                        type="SubagentTurnError",
-                        non_retryable=True,
-                    )
+                    error = payload.message or "subagent turn failed"
                 if ours and payload.type == AgentEventType.MESSAGE_HANDLER_END:
                     output = payload.output
                     got_reply = True
@@ -259,6 +256,18 @@ class SubagentActivities:
         finally:
             # Closed explicitly, so the read stops now and not at garbage collection.
             await events.aclose()
+        if error is not None:
+            # Carry the child's ACTUAL accepted turn number so the parent closes the bracket on
+            # the same turn the dispatch marker opened (see _accepted_turn_from_error).
+            raise ApplicationError(
+                error,
+                {
+                    "subagent_turn": progress.turn_number,
+                    "consumed_cursor": progress.consumed_cursor,
+                },
+                type="SubagentTurnError",
+                non_retryable=True,
+            )
         return output, got_reply
 
     @asynccontextmanager
@@ -341,9 +350,12 @@ class SubagentActivities:
     async def _publish_dispatch(
         req: RunSubagentTurnInput, progress: _TurnProgress
     ) -> None:
-        """Publish the :class:`SubagentMessageSent` marker onto the PARENT's stream.
+        """Publish the :class:`SubagentMessageSent` marker onto the PARENT's stream, then the
+        ``OPEN`` Link Record of this turn.
 
-        Called once per fresh send (see the caller's dedup note). Uses
+        The link opens the child's stream after ``req.after_cursor``, the previous turn's
+        ``turn_end``, so a follower reads this turn's child events after the marker. Called once
+        per fresh send (see the caller's dedup note). Uses
         ``AgentWorkflowRunner.publisher_from_activity``, which targets THIS activity's own parent
         workflow (the agent that dispatched the activity) — so the event lands on the parent's
         stream, never the child's (stream isolation). ``subagent_turn`` is the child's actual
@@ -363,6 +375,11 @@ class SubagentActivities:
                     # mount the child cursor at the right spot when resuming mid-session.
                     after_cursor=req.after_cursor,
                 )
+            )
+            await publisher.link(
+                StreamRef.for_workflow(req.child_workflow_id, topic=TURN_EVENTS),
+                name=link_name(req.handle, progress.turn_number),
+                after=req.after_cursor,
             )
 
     @staticmethod

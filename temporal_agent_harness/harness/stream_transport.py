@@ -18,8 +18,10 @@ from temporalio.contrib.streams import (
     BEGINNING,
     Cursor,
     RecordKind,
+    FollowPosition,
     StreamProducer,
     StreamRecord,
+    StreamRef,
     StreamStorePlugin,
     StreamTopic,
     Supersession,
@@ -70,6 +72,11 @@ def store_from_env(default: str = DEFAULT_STORE) -> StreamStorePlugin:
     raise ValueError(f"{STORE_ENV}={name!r} names no stream store")
 
 
+def link_name(handle: str, subagent_turn: int) -> str:
+    """The name of the link that one subagent turn opens and joins on the parent's stream."""
+    return f"{handle}#{subagent_turn}"
+
+
 def cursor(token: str) -> Cursor:
     """The cursor a stored token names, or the beginning when the token is empty."""
     return Cursor(token) if token else BEGINNING
@@ -86,17 +93,25 @@ async def latest_turn_event(client: Client, workflow_id: str) -> str:
     return (await handle.latest(topic=TURN_EVENTS)).token
 
 
-async def check_turn_cursor(client: Client, workflow_id: str, after: str) -> None:
+async def check_turn_cursor(
+    client: Client, workflow_id: str, after: str, *, state: str = ""
+) -> None:
     """Raise ``StreamCursorError`` now if the store refuses ``after`` on ``workflow_id``.
 
-    A read checks its cursor at its first step, not at the call. A caller that must refuse a
-    bad token before it starts a response, such as an SSE route, calls this first. The stream
-    runtime refuses a token before it waits for records, so a short first step is enough. If
-    no record follows ``after``, the step waits for ``_CURSOR_CHECK`` and the token is good.
+    With ``state``, the follow state of a unified stream, a follow checks both. A read checks
+    its cursor at its first step, not at the call. A caller that must refuse a bad token before
+    it starts a response, such as an SSE route, calls this first. The stream runtime refuses a
+    token before it waits for records, so a short first step is enough. If no record follows
+    ``after``, the step waits for ``_CURSOR_CHECK`` and the token is good.
     """
-    if not after:
+    if not (after or state):
         return
-    records = stream_handle(client, workflow_id).read(topic=TURN_EVENTS, after=cursor(after))
+    handle = stream_handle(client, workflow_id)
+    records: AsyncGenerator[Any, None] = (
+        handle.follow(topic=TURN_EVENTS, after=FollowPosition(after, state))
+        if state
+        else handle.read(topic=TURN_EVENTS, after=cursor(after))
+    )
     try:
         await asyncio.wait_for(anext(records), _CURSOR_CHECK.total_seconds())
     except (TimeoutError, StopAsyncIteration):
@@ -126,31 +141,42 @@ def follow_turn_events(
 async def _turn_records(
     records: AsyncGenerator[StreamRecord[AgentEvent], None],
 ) -> AsyncGenerator[StreamRecord[AgentEvent], None]:
-    """Data and supersession records, every one of them carrying an event.
-
-    A supersession is synthesized with no value of its own, and it names a producer and an
-    attempt rather than a turn. Stamping it here with the envelope of the last event this
-    stream produced is what makes it actionable: those are the records the retired attempt
-    wrote. Every consumer then reads ``record.value`` the same way, whatever the kind.
-    """
+    """Data and supersession records, every one of them carrying an event."""
     previous: AgentEvent | None = None
     try:
         async for record in records:
+            event = turn_event(record, previous)
+            if event is None:
+                continue
             if record.kind is RecordKind.DATA:
-                # A stale record came from an older attempt after a newer one was delivered,
-                # so it is withdrawn as it arrives.
-                if record.stale:
-                    continue
-                previous = record.value
+                previous = event
                 yield record
-            elif record.kind is RecordKind.SUPERSEDED:
-                # Nothing was delivered on this stream yet, so the retired attempt's records
-                # are behind the caller's own start point and it holds none of them.
-                if previous is None or record.supersession is None:
-                    continue
-                yield replace(record, value=_superseded_event(previous, record.supersession))
+            else:
+                yield replace(record, value=event)
     finally:
         await records.aclose()
+
+
+def turn_event(record: StreamRecord[Any], previous: AgentEvent | None) -> Any:
+    """The event ``record`` gives a turn-event consumer, or ``None`` when it gives none.
+
+    A supersession is synthesized with no value of its own, and it names a producer and an
+    attempt rather than a turn. Stamping it with the envelope of ``previous``, the last event
+    the same stream gave, is what makes it actionable: those are the records the retired
+    attempt wrote. A data record gives its value as it was decoded. Link records and finish
+    markers give nothing.
+    """
+    if record.kind is RecordKind.DATA:
+        # A stale record came from an older attempt after a newer one was delivered, so it is
+        # withdrawn as it arrives.
+        return None if record.stale else record.value
+    if record.kind is RecordKind.SUPERSEDED:
+        # Nothing was delivered on this stream yet, so the retired attempt's records are
+        # behind the caller's own start point and it holds none of them.
+        if previous is None or record.supersession is None:
+            return None
+        return _superseded_event(previous, record.supersession)
+    return None
 
 
 def _superseded_event(previous: AgentEvent, supersession: Supersession) -> AgentEvent:
@@ -196,6 +222,15 @@ class ActivityPublisher:
         batch, self._pending = self._pending, []
         if batch:
             await self._producer.append(*batch)
+
+    async def link(self, ref: StreamRef, *, name: str, after: str = "") -> None:
+        """Append what has queued, then a ``LINK`` that opens ``ref``'s stream after ``after``.
+
+        The link goes on the same producer right after the queued records, so a follower
+        reads the stream it opens after them.
+        """
+        await self.flush()
+        await self._producer.link(ref, name=name, after=Cursor(after) if after else None)
 
     async def _run(self) -> None:
         while not self._closed:

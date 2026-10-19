@@ -11,12 +11,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
 
 import pytest_asyncio
 from temporalio.client import Client
+from temporalio.contrib.streams import LinkEvent, RecordKind, stream_handle
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
@@ -25,6 +27,7 @@ from tests._streams import turn_events, workflow_environment
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_ID_LENGTH,
     SEND_AGENT_MESSAGE_UPDATE,
+    TURN_EVENTS,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -298,10 +301,51 @@ async def test_merged_send_message_nests_live_subagent_events_in_brackets(client
     # publish + AgentEvent.agent_id) + W3 (the merge engine) against real workflows. The subagent
     # is left ALIVE (stop=False) so its stream is readable throughout (see the xfail twin below).
     client, task_queue = client_and_queue
-    _parent_id, merged = await _merged_send(
+    parent_id, merged = await _merged_send(
         client, task_queue, [_const_script(42), _const_script(99)], stop=False
     )
     _assert_subagent_turns_nested_in_brackets(merged, expected_child_turns=2)
+    await _assert_links_written_next_to_markers(client, parent_id, turns=2)
+
+
+async def _assert_links_written_next_to_markers(
+    client: Client, workflow_id: str, *, turns: int
+) -> None:
+    """The parent's own stream holds an ``OPEN`` right after each ``subagent_message_sent`` and
+    a ``JOIN`` right before each ``subagent_reply_received``, with the same link name."""
+    records = []
+    reads = stream_handle(client, workflow_id).read(topic=TURN_EVENTS)
+    try:
+        async with asyncio.timeout(10):
+            async for record in reads:
+                records.append(record)
+                replies = [
+                    r
+                    for r in records
+                    if r.kind is RecordKind.DATA
+                    and r.value.event.type == AgentEventType.SUBAGENT_REPLY_RECEIVED
+                ]
+                if len(replies) == turns:
+                    break
+    finally:
+        await reads.aclose()
+    assert sum(1 for r in records if r.kind is RecordKind.LINK) == 2 * turns
+    for i, record in enumerate(records):
+        if record.kind is not RecordKind.LINK:
+            continue
+        assert record.link is not None
+        name = record.link.name
+        if record.link.event is LinkEvent.OPEN:
+            sent = records[i - 1].value.event
+            assert sent.type == AgentEventType.SUBAGENT_MESSAGE_SENT
+            assert name == f"{sent.subagent_id}#{sent.subagent_turn}"
+            assert record.link.ref is not None
+            assert record.link.ref.workflow_id == sent.workflow_id
+        else:
+            received = records[i + 1].value.event
+            assert received.type == AgentEventType.SUBAGENT_REPLY_RECEIVED
+            assert name == f"{received.subagent_id}#{received.subagent_turn}"
+            assert record.link.until is not None
 
 
 async def test_human_can_message_a_live_subagent_directly(client_and_queue):
@@ -414,9 +458,7 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     # Reattach from the start: the parent's backlog still references the now-completed subagent.
     agent_client = AgentClient(client, parent_id)
     attached: list[AgentEvent] = []
-    async for item in await agent_client.attach(
-        on_item=lambda it, _resume: it, subagent_stall_grace_seconds=2.0
-    ):
+    async for item in await agent_client.attach(on_item=lambda it, _resume: it):
         if isinstance(item, AgentEvent):
             attached.append(item)
 
@@ -449,8 +491,8 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     ]
     # Every provider can read a completed workflow's stream (the stores outlive the workflow,
     # and the Workflow Streams provider serves the final log by Query), so the replay carries
-    # the child's own detail and needs no marker. The give-up path that emits the marker is
-    # exercised against scripted unreadable streams in tests/harness/test_stream_merge.py.
+    # the child's own detail and needs no marker. tests/harness/test_agent_follow.py covers the
+    # marker for a stream that can't be read.
     assert child_detail
     assert not markers
 

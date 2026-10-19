@@ -39,7 +39,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
-from temporalio.contrib.streams import stream_producer
+from temporalio.contrib.streams import Cursor, StreamRef, stream_producer
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -113,6 +113,7 @@ from temporal_agent_harness.harness.agent_protocol import (
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
 from temporal_agent_harness.harness.stream_transport import (
     ActivityPublisher,
+    link_name,
     publisher_for_activity,
 )
 
@@ -1092,6 +1093,10 @@ class TurnEventPublisher:
                 timestamp=time.time(),
             )
         )
+
+    async def link(self, ref: StreamRef, *, name: str, after: str = "") -> None:
+        """Append what has queued, then a ``LINK`` that opens ``ref``'s stream after ``after``."""
+        await self._events.link(ref, name=name, after=after)
 
 
 # ---------------------------------------------------------------------------
@@ -3078,21 +3083,25 @@ class AgentWorkflowRunner:
                     # ``(workflow_id, subagent_turn)``; using one source on both sides makes
                     # the key match by construction.
                     accepted_turn = self._accepted_turn_from_error(e)
+                    consumed = self._consumed_cursor_from_error(e)
+                    if consumed:
+                        inst.last_consumed_cursor = consumed
                     # The child ran (and errored on) that turn — it still emitted its own
                     # turn_end — so we MUST close the [message_sent … reply_received] bracket on
-                    # OUR stream, or a client merge would wedge waiting on a reply that never
-                    # comes. (A pre-acceptance rejection ran no child turn → no bracket → no
+                    # OUR stream. (A pre-acceptance rejection ran no child turn → no bracket → no
                     # publish.) outcome="error" since this turn produced no usable reply.
                     self._publish_subagent_reply_received(
-                        inst, msg_type, accepted_turn, outcome="error"
+                        inst, msg_type, accepted_turn, consumed, outcome="error"
                     )
                 raise
             inst.last_consumed_cursor = result.consumed_cursor
             # Close the bracket on OUR stream now that the agent (this workflow) actually holds
-            # the reply — BEFORE ``release_gate()`` in the finally, so this turn's reply_received
-            # is published ahead of the next gathered turn's message_sent (the merge relies on
-            # per-subagent brackets never overlapping; see run_subagent_turn's FIFO gate).
-            self._publish_subagent_reply_received(inst, msg_type, result.turn_number, outcome="ok")
+            # the reply, and BEFORE ``release_gate()`` in the finally, so this turn's JOIN is
+            # published ahead of the next gathered turn's OPEN. A follower opens a stream only
+            # once at a time, so the brackets to one subagent must not overlap.
+            self._publish_subagent_reply_received(
+                inst, msg_type, result.turn_number, result.consumed_cursor, outcome="ok"
+            )
             return result.output
         finally:
             inst.release_gate()
@@ -3103,9 +3112,9 @@ class AgentWorkflowRunner:
 
         On an accepted-but-errored child turn the ``run_subagent_turn`` activity raises an
         ``ApplicationError`` carrying ``{"subagent_turn": <the child's real accepted turn>}`` — the
-        SAME number the activity stamped on the opening ``subagent_message_sent``. We close the
-        bracket on that exact key so the client merge's close gate (keyed on
-        ``(workflow_id, subagent_turn)``) always matches. The activity is the only source of
+        SAME number the activity stamped on the opening ``subagent_message_sent`` and on the name of
+        the turn's ``OPEN``. We close the bracket on that exact key, so the ``JOIN`` names the
+        same link and the marker matches. The activity is the only source of
         that number on the parent side, so its absence is a contract violation, raised loudly
         rather than guessed around."""
         for detail in e.details or ():
@@ -3117,11 +3126,23 @@ class AgentWorkflowRunner:
             non_retryable=True,
         ) from e
 
+    @staticmethod
+    def _consumed_cursor_from_error(e: ApplicationError) -> str:
+        """The cursor of the child's ``turn_end``, from the activity's error details.
+
+        Empty when the details carry none. Then no ``JOIN`` is written, since a ``JOIN`` with no
+        ``until`` would hold the parent until the child's stream ends."""
+        for detail in e.details or ():
+            if isinstance(detail, dict) and detail.get("consumed_cursor"):
+                return str(detail["consumed_cursor"])
+        return ""
+
     def _publish_subagent_reply_received(
         self,
         inst: _SubagentInstance,
         handler: str,
         subagent_turn: int,
+        until: str,
         *,
         outcome: Literal["ok", "error"],
     ) -> None:
@@ -3132,9 +3153,16 @@ class AgentWorkflowRunner:
         ``run_subagent_turn`` activity (potentially on another machine) returned. In-workflow is
         also deterministic and needs no heartbeat dedup, unlike the activity-published
         ``subagent_message_sent`` (which must survive activity retries). Mirrors
-        ``SubagentMessageSent``'s correlation fields so a client stream-merge can match the
-        bracket on ``(workflow_id, subagent_turn)``.
+        ``SubagentMessageSent``'s correlation fields.
+
+        The ``JOIN`` of the turn's link goes first, in the same activation, with ``until`` the
+        child's ``turn_end`` cursor. A follower then holds this marker, and everything after it,
+        until the child's turn is delivered.
         """
+        if until:
+            self._events.join(
+                name=link_name(inst.handle, subagent_turn), until=Cursor(until)
+            )
         self.publish(
             SubagentReplyReceived(
                 subagent_id=inst.handle,

@@ -548,12 +548,22 @@ def test_our_own_error_still_fails_the_tool_call(monkeypatch):
                 message_id="ours",
             ),
         ),
-        _FakeItem(1, _child_event(TurnEnded(), turn_id=turn_id, message_id=None)),
+        _FakeItem(
+            1,
+            _child_event(
+                MessageHandlerEnd(output={"text": "theirs"}),
+                turn_id=turn_id,
+                message_id="theirs",
+            ),
+        ),
+        _FakeItem(2, _child_event(TurnEnded(), turn_id=turn_id, message_id=None)),
     ]
     with pytest.raises(ApplicationError) as excinfo:
         _consume(items, monkeypatch)
     assert excinfo.value.type == "SubagentTurnError"
     assert "ours blew up" in str(excinfo.value)
+    # The error waits for the turn's turn_end, whose cursor the parent's JOIN needs.
+    assert excinfo.value.details == ({"subagent_turn": 4, "consumed_cursor": "2"},)
 
 
 def test_turn_end_with_no_reply_for_us_reports_no_reply(monkeypatch):
