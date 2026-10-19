@@ -166,9 +166,9 @@ include = ["temporal_agent_harness*"]
 ]
 
 [tool.uv.sources]
-# Pinned to the AI-198 Brook build of the Python SDK (`moe/brook/v2/h10-sdk-streams`):
+# Pinned to the AI-198 Brook build of the Python SDK (`moe/brook/v2/h11-links`):
 # `temporalio.contrib.streams` on the sdk-streams stream runtime is not released.
-temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "c0dedbe2cc2ef5d7c2cbfaa9e926068fc58b1fb0" }
+temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "21bf8be4c6e2ad1b90d700b9f3859d4125671f84" }
 temporal-nexus-mcp = { path = "nexus/mcp", editable = true }
 
 [tool.pytest.ini_options]
