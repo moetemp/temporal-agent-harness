@@ -102,4 +102,8 @@ harness_client_sdk(
     name = "client_sdk",
     srcs = ["client_sdk/TicTacToeAgent.ts"],
     agents = [":TicTacToeAgent"],
+    visibility = [
+        ":__subpackages__",
+        "//typescript:__subpackages__",
+    ],
 )
