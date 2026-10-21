@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
+from pydantic import BaseModel
 from fastapi.testclient import TestClient
 from temporalio.api.enums.v1 import EventType
 from temporalio.api.history.v1 import HistoryEvent
@@ -36,6 +37,7 @@ from temporal_agent_harness.web import (
     create_agent_harness_app,
     create_session_manager_worker,
 )
+from temporal_agent_harness.web import app as app_module
 from temporal_agent_harness.web.app import (
     _discover_untracked_sessions,
     _ensure_session_manager_workflow,
@@ -115,6 +117,75 @@ def test_chat_request_rejects_client_supplied_from_offset() -> None:
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert any("from_offset" in item.get("loc", []) for item in detail)
+
+
+@pytest.mark.parametrize("resume", ["garbage", "x@7", "@7"])
+def test_attach_rejects_a_bad_resume_point_before_touching_temporal(resume: str) -> None:
+    app = create_agent_harness_app(registry=AgentRegistry())
+    # The point is refused before any call reaches Temporal or the store, so a bare object stands
+    # in for the client the lifespan would have connected.
+    app.state.temporal = SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/attach", params={"session_id": "agent-session-test", "resume": resume}
+    )
+
+    assert response.status_code == 400
+    assert "invalid resume point" in response.json()["detail"]
+
+
+def test_attach_does_not_echo_the_caller_s_token_back_to_it() -> None:
+    app = create_agent_harness_app(registry=AgentRegistry())
+    app.state.temporal = SimpleNamespace()
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/attach",
+        params={"session_id": "agent-session-test", "resume": "smuggled-marker-7"},
+    )
+
+    assert response.status_code == 400
+    assert "smuggled-marker-7" not in response.text
+
+
+def test_attach_does_not_report_a_model_skew_as_the_caller_s_mistake() -> None:
+    # `pydantic_core.ValidationError` is a `ValueError`, so a catch around the whole
+    # attach turns a version skew between this process and the workflow into a 400
+    # telling the browser to re-attach, which it will do forever.
+    class _Skewed(BaseModel):
+        needed: int
+
+    class _Client:
+        async def attach(self, **_kw: object):
+            _Skewed.model_validate({})
+
+    app = create_agent_harness_app(registry=AgentRegistry())
+    app.state.temporal = SimpleNamespace()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch.object(app_module, "AgentClient", lambda **_kw: _Client()):
+        response = client.get(
+            "/api/attach", params={"session_id": "agent-session-test", "resume": ""}
+        )
+
+    assert response.status_code != 400
+
+
+def test_packaged_ui_resumes_by_point_rather_than_by_offset() -> None:
+    # The built assets are what the wheel serves. The handler takes `resume`, so a
+    # bundle still sending `from_offset` replays the whole session on every reconnect.
+    dist = packaged_ui_dist()
+    assert dist is not None
+    bundles = [
+        asset.read_text(errors="ignore") for asset in (dist / "assets").glob("*.js")
+    ]
+    assert bundles
+    joined = "\n".join(bundles)
+    assert "attach?session_id=" in joined
+    assert "resume=" in joined
+    assert "from_offset" not in joined
+    assert "resume_offset" not in joined
 
 
 def test_submit_message_request_rejects_client_supplied_from_offset() -> None:

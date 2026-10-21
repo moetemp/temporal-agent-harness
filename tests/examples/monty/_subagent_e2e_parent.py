@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 
 with workflow.unsafe.imports_passed_through():
     from pydantic import BaseModel, Field
@@ -55,8 +54,8 @@ class DriveSubagent(BaseModel):
         default=True,
         description="If true (default), stop the subagent at the end of the turn. Set false to "
         "leave it alive+idle — needed by the client stream-merge test, since a stopped subagent "
-        "is a COMPLETED workflow whose stream can't yet be read post-completion (a known "
-        "workflow_streams limitation with an upstream fix in flight).",
+        "is a COMPLETED workflow whose stream the Workflow Streams provider cannot read after "
+        "completion.",
     )
 
 
@@ -79,7 +78,6 @@ class SubagentE2EParentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # The handler calls the runner's subagent methods directly (not via run_tool), so
             # tool approval never enters the picture; any policy works.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
@@ -136,7 +134,6 @@ class ApprovalGatedSubagentParentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
 

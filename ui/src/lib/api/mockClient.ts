@@ -183,12 +183,17 @@ export class MockAgentApi implements AgentApi {
 
   async *attach(
     _sessionId: WorkflowId,
-    fromOffset = 0,
+    resume = "",
     signal?: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
-    for (const item of realisticQaScenario.frames) {
+    // The point is opaque, so resuming means finding the frame that minted it
+    // and starting after that one. An unknown point replays from the beginning,
+    // which is what the server does with an empty one.
+    const frames = realisticQaScenario.frames;
+    const seen = frames.findIndex((item) => item.data.resume === resume);
+    const start = resume && seen !== -1 ? seen + 1 : 0;
+    for (const item of frames.slice(start)) {
       if (signal?.aborted) return;
-      if (item.data.resume_offset <= fromOffset) continue;
       await sleep(40);
       if (signal?.aborted) return;
       yield item;
@@ -206,13 +211,12 @@ export class MockAgentApi implements AgentApi {
       turn_number: turn,
       turn_id: `mock-turn-${turn}`,
       message_id: `mock-msg-${turn}`,
-      accepted_offset: 0,
       disposition: "opened"
     };
   }
 
   async *chat(_request: ChatRequest, signal?: AbortSignal): AsyncIterable<AgentSseFrame> {
-    yield* this.attach("agent-session-mock-qa", 0, signal);
+    yield* this.attach("agent-session-mock-qa", "", signal);
   }
 
   async approve(request: ToolApprovalRequest): Promise<ToolApprovalResponse> {

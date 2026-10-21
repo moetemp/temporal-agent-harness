@@ -27,7 +27,7 @@ class FakeTransport implements SessionTransport {
   readonly scripts = new Map<string, Step[][]>();
   open = 0;
 
-  async *attach(sessionId: string, _from: number, signal: AbortSignal): AsyncIterable<AgentSseFrame> {
+  async *attach(sessionId: string, _resume: string, signal: AbortSignal): AsyncIterable<AgentSseFrame> {
     this.attaches.push(sessionId);
     this.open += 1;
     try {
@@ -45,7 +45,7 @@ class FakeTransport implements SessionTransport {
     }
   }
   async submitMessage(): Promise<SubmitMessageResponse> {
-    return { turn_number: 1, turn_id: "t", message_id: "m-sent", accepted_offset: 0, disposition: "opened" };
+    return { turn_number: 1, turn_id: "t", message_id: "m-sent", disposition: "opened" };
   }
   async approveTool(): Promise<void> {}
   async provideCallbackResult(): Promise<void> {}
@@ -69,7 +69,8 @@ function frame(event: string, data: Record<string, unknown>, env: { agent_id?: s
       turn_number: 1,
       message_id: env.message_id ?? null,
       timestamp: ++offset,
-      resume_offset: offset,
+      seq: null,
+      resume: `${offset}@c${offset}`,
       ...data
     }
   } as unknown as AgentSseFrame;
@@ -229,7 +230,7 @@ describe("useAgentSession", () => {
       [
         frame("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, root),
         frame("subagent_message_sent", {
-          subagent_id: "root.s1", agent_key: "helper", workflow_id: "wf-s1", handler: "ask", subagent_turn: 1, from_offset: 0
+          subagent_id: "root.s1", agent_key: "helper", workflow_id: "wf-s1", handler: "ask", subagent_turn: 1, after_cursor: ""
         }, root),
         frame("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, child),
         frame("tool_approval_requested", { tool_id: "gate", tool_name: "rm", tool_input: { path: "/" } }, child),

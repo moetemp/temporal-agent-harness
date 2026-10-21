@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import timedelta
 from typing import Any, cast
 
 import pytest
@@ -28,9 +27,9 @@ from mcp import types
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.ai_sdks.openai_agents_harness import as_harness_mcp_server
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
@@ -38,7 +37,6 @@ from temporal_agent_harness.harness.agent import ToolApprovalPolicy
 from temporal_agent_harness.harness.agent_client import AgentClient
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -114,7 +112,6 @@ class GatedMCPProbeAgent(_BaseMCPProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
         self._server_calls: list[Any] = []
@@ -137,7 +134,6 @@ class UngatedMCPProbeAgent(_BaseMCPProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._server_calls: list[Any] = []
@@ -153,7 +149,7 @@ class UngatedMCPProbeAgent(_BaseMCPProbe):
 
 @pytest_asyncio.fixture
 async def env_and_client():
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"mcp-governance-test-{uuid.uuid4()}"
@@ -187,13 +183,7 @@ async def _send(handle, text: str) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_events(client, workflow_id)
 
 
 def _types_for(events: list[AgentEvent], tool_id: str) -> list[str]:
@@ -211,7 +201,7 @@ async def _run_turn(client: Client, handle, *, approve: bool | None) -> list[Age
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
         async for item in _subscribe(client, handle.id):
-            ev = item.data
+            ev = item
             events.append(ev)
             if (
                 approve is not None

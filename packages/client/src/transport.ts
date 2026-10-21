@@ -7,7 +7,6 @@ export interface SubmitMessageResponse {
   turn_number: number;
   turn_id: string;
   message_id: string;
-  accepted_offset: number;
   disposition: MessageDisposition;
 }
 
@@ -32,9 +31,9 @@ export interface ToolApprovalDecision {
 }
 
 export interface SessionTransport {
-  /** Replay the session's merged event stream from `fromOffset`, then tail it. Ends when the
-   *  agent is idle and caught up. */
-  attach(sessionId: string, fromOffset: number, signal: AbortSignal): AsyncIterable<AgentSseFrame>;
+  /** Replay the session's merged event stream after `resume` (empty for the beginning), then
+   *  tail it. Ends when the agent is idle and caught up. */
+  attach(sessionId: string, resume: string, signal: AbortSignal): AsyncIterable<AgentSseFrame>;
   submitMessage(
     sessionId: string,
     message: { type: string; payload: unknown },
@@ -85,10 +84,10 @@ export class HttpTransport implements SessionTransport {
 
   async *attach(
     sessionId: string,
-    fromOffset: number,
+    resume: string,
     signal: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
-    const query = `session_id=${encodeURIComponent(sessionId)}&from_offset=${fromOffset}`;
+    const query = `session_id=${encodeURIComponent(sessionId)}&resume=${encodeURIComponent(resume)}`;
     const response = await this.#request(`attach?${query}`, { signal });
     yield* readSse(response);
   }

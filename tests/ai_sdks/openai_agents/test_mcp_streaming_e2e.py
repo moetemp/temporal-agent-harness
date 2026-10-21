@@ -41,9 +41,9 @@ from openai.types.responses import (
 )
 from openai.types.responses.response import Response
 from temporalio.client import Client
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.ai_sdks.openai_agents import ModelActivityParameters
 from temporal_agent_harness.ai_sdks.openai_agents._mcp import StatelessMCPServerProvider
@@ -57,7 +57,6 @@ from temporal_agent_harness.ai_sdks.openai_agents_harness import (
 )
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -242,7 +241,7 @@ async def client_and_queue():
         ],
         observer_factory=harness_observer_factory,
     )
-    env = await WorkflowEnvironment.start_time_skipping(plugins=[plugin])
+    env = await workflow_environment(plugins=[plugin])
     task_queue = f"mcp-streaming-{uuid.uuid4()}"
     # NOTE: the default sandboxed workflow runner, deliberately. See the module docstring.
     async with Worker(
@@ -266,17 +265,11 @@ async def _turn_events(client: Client, task_queue: str) -> list[AgentEvent]:
         AgentMessage(type="ask", payload={"text": "hi"}, expected_turn=1),
         result_type=AgentMessageReply,
     )
-    stream = WorkflowStreamClient.create(client, handle.id)
     events: list[AgentEvent] = []
     async with asyncio.timeout(60):
-        async for item in stream.subscribe(
-            topics=[TURN_EVENTS_TOPIC],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
-        ):
-            events.append(item.data)
-            if item.data.event.type == AgentEventType.TURN_END:
+        async for item in turn_events(client, handle.id):
+            events.append(item)
+            if item.event.type == AgentEventType.TURN_END:
                 break
     return events
 

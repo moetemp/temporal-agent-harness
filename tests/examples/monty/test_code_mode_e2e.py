@@ -13,13 +13,12 @@ import uuid
 import pytest_asyncio
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from tests._streams import turn_events, workflow_environment
 
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -33,7 +32,7 @@ from ._code_mode_e2e_parent import CODE_MODE_TOOLS, CodeModeE2EParentWorkflow
 
 @pytest_asyncio.fixture
 async def client_and_queue():
-    env = await WorkflowEnvironment.start_time_skipping(
+    env = await workflow_environment(
         data_converter=pydantic_data_converter
     )
     task_queue = f"code-mode-e2e-{uuid.uuid4()}"
@@ -68,13 +67,9 @@ async def _run(
         result_type=AgentMessageReply,
     )
 
-    stream = WorkflowStreamClient.create(client, handle.id)
     reply: str | None = None
     events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
-    ):
-        envelope: AgentEvent = item.data
+    async for envelope in turn_events(client, handle.id):
         events.append(envelope)
         if envelope.event.type == AgentEventType.MESSAGE_HANDLER_END:
             reply = envelope.event.output.get("text")

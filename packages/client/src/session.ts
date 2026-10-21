@@ -102,7 +102,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
   readonly #dispatchedCalls = new Set<string>();
   #buffer: AgentSseFrame[] = [];
   #flushScheduled = false;
-  #resumeOffset = 0;
+  #resume = "";
   #observed = false;
   #run: AbortController | null = null;
   #wake: (() => void) | null = null;
@@ -246,7 +246,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
     while (!signal.aborted) {
       let delivered = false;
       try {
-        for await (const frame of this.#transport.attach(this.sessionId, this.#resumeOffset, signal)) {
+        for await (const frame of this.#transport.attach(this.sessionId, this.#resume, signal)) {
           if (signal.aborted) return;
           if (!delivered) {
             delivered = true;
@@ -350,12 +350,13 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
   // -- frames ----------------------------------------------------------------
 
   #receive(frame: AgentSseFrame): void {
-    // A re-attach resumes from a root-stream offset that several subagent frames share, so
+    // A re-attach resumes after a root-stream point that several subagent frames share, so
     // some frames arrive twice.
     const key = frameKey(frame);
     if (this.#frameKeys.has(key)) return;
     this.#frameKeys.add(key);
-    this.#resumeOffset = Math.max(this.#resumeOffset, frame.data.resume_offset);
+    // The point is opaque, so the newest one wins; the stream already hands them out in order.
+    if (typeof frame.data.resume === "string") this.#resume = frame.data.resume;
     this.#buffer.push(frame);
     this.#projection.apply(frame);
     this.#scheduleFlush();
@@ -459,7 +460,7 @@ export function frameKey(frame: AgentSseFrame): string {
   if (typeof data.event_offset === "number" && data.event_offset >= 0 && "agent_id" in data) {
     return `${String(data.agent_id)}|${data.event_offset}`;
   }
-  const { resume_offset: _resume, event_offset: _event, ...identity } = data;
+  const { resume: _resume, event_offset: _event, ...identity } = data;
   return `${frame.event}|${JSON.stringify(identity)}`;
 }
 

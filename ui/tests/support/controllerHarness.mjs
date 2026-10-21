@@ -119,7 +119,7 @@ export function session(id, over = {}) {
  *
  * Started as a copy of the one in projectionCost.test.mjs and has since drifted
  * from it in two ways, so the two are not interchangeable: this one numbers
- * `resume_offset` from 1 rather than from 0, and it carries a `replay` flag its
+ * `resume` from 1 rather than from 0, and it carries a `replay` flag its
  * callers switch. Consolidating them means reconciling those first.
  * @param {number} i
  * @param {{ replay?: boolean }} [opts]
@@ -147,7 +147,7 @@ export function variedFrame(i, { replay = true } = {}) {
       turn_id: `t${(i / 50) | 0}`,
       turn_number: 1 + ((i / 50) | 0),
       timestamp: i * 0.01,
-      resume_offset: i + 1,
+      resume: `${i + 1}@c`,
       event_offset: i,
       delta: `token ${i}`,
       user_message: `ask ${i}`,

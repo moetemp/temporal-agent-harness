@@ -41,12 +41,14 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AgentMessageReply,
 )
 from temporal_agent_harness.harness.agent_protocol.events import (
+    TURN_EVENTS,
     TURN_EVENTS_TOPIC,
     AgentEvent,
     AgentEventType,
     AgentStatePatch,
     AgentStateSnapshot,
     AgentStreamItem,
+    AttemptSuperseded,
     CallbackRequested,
     CallbackResolved,
     EventTypeT,
@@ -125,6 +127,7 @@ __all__ = [
     "ToolApprovalResult",
     "AgentMessageReply",
     # Stream-event vocabulary
+    "TURN_EVENTS",
     "TURN_EVENTS_TOPIC",
     "AgentEventType",
     "EventTypeT",
@@ -156,6 +159,7 @@ __all__ = [
     "SubagentMessageSent",
     "SubagentReplyReceived",
     "SubagentStreamUnavailable",
+    "AttemptSuperseded",
     "ReplyDelta",
     "ThoughtSummaryDelta",
     "TextAnnotationDelta",

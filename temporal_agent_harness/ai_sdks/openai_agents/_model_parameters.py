@@ -77,12 +77,12 @@ class ModelActivityParameters:
     """Stream topic to publish raw model stream events to when the workflow
     calls ``Runner.run_streamed``. Required for ``Runner.run_streamed``;
     if left as ``None``, ``run_streamed`` raises before scheduling any
-    activity. The workflow must host a
-    :class:`temporalio.contrib.workflow_streams.WorkflowStream` to receive
-    the publishes; otherwise the signals are unhandled and dropped.
+    activity. The worker's client must carry a stream provider (see
+    ``temporal_agent_harness.harness.stream_transport``); the activity
+    publishes onto this topic of its workflow's stream through it.
 
     Streaming is incompatible with ``use_local_activity`` (local activities
-    do not support heartbeats or the workflow stream signal channel).
+    do not support heartbeats or an activity stream producer).
 
     .. warning::
         Streaming support is experimental and may change in future

@@ -257,7 +257,6 @@ class QaAgentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(   # discovers @agent.accepts methods on this class
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
         )
 

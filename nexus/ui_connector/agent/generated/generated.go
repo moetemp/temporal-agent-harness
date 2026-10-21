@@ -38,10 +38,8 @@ var AgentService = struct {
 	// is active, pending tool approvals, and message-queuing configuration. Mirrors
 	// AgentClient.get_status().
 	QueryAgentStatus nexus.OperationReference[QuerySessionInput, AgentStatusOutput]
-	// Async operation - attaches a completion callback to WorkflowStream's built-in poll
-	// update so reply_delta events published from the agent workflow are delivered.
-	// Returns a batch of stream items (WorkflowStream PollResult wire format) plus the
-	// next cursor.
+	// Waits for turn events after the caller's cursor and returns a batch of them plus the
+	// next opaque cursor.
 	PollMessages nexus.OperationReference[PollMessagesInput, PollMessagesOutput]
 	// Fulfill a pending callback tool call (a tool with no worker-side body - an attached
 	// client executes it and submits the outcome here). Mirrors
@@ -1335,10 +1333,9 @@ func (m PendingTurn) MarshalJSON() ([]byte, error) {
 type PollMessagesInput struct {
 	// SessionId Provider-prefixed session identifier
 	SessionId string `json:"sessionId"`
-	// Cursor corresponds to the "cursor" JSON property.
-	Cursor int64 `json:"cursor"`
-	// TimeoutSeconds How long the WorkflowStream poll update waits for new events before
-	// returning empty
+	// Cursor Opaque token of the last item the caller handled; empty for the beginning
+	Cursor string `json:"cursor"`
+	// TimeoutSeconds How long the poll waits for new events before returning empty
 	TimeoutSeconds *float64 `json:"timeoutSeconds,omitempty"`
 }
 
@@ -1346,9 +1343,6 @@ type PollMessagesInput struct {
 // listing any violations.
 func (m PollMessagesInput) Validate() error {
 	var errs []Violation
-	if (m.Cursor < -integerCap || m.Cursor > integerCap) {
-		errs = append(errs, Violation{"cursor", "exceeds ±(2^53-1) integer cap"})
-	}
 	if m.TimeoutSeconds != nil {
 		if math.IsNaN(*m.TimeoutSeconds) || math.IsInf(*m.TimeoutSeconds, 0) {
 			errs = append(errs, Violation{"timeoutSeconds", fmt.Sprintf("must be a finite number, got %v", *m.TimeoutSeconds)})
@@ -1385,7 +1379,7 @@ func (m *PollMessagesInput) UnmarshalJSON(data []byte) error {
 	if v, ok := parseStringField(get("sessionId"), "sessionId", true, false, &errs); ok {
 		m.SessionId = v
 	}
-	if v, ok := parseIntegerField(get("cursor"), "cursor", true, false, &errs); ok {
+	if v, ok := parseStringField(get("cursor"), "cursor", true, false, &errs); ok {
 		m.Cursor = v
 	}
 	if v, ok := parseNumberField(get("timeoutSeconds"), "timeoutSeconds", false, false, &errs); ok {
@@ -1415,13 +1409,12 @@ func (m PollMessagesInput) MarshalJSON() ([]byte, error) {
 }
 
 
-// PollMessagesOutput Mirrors WorkflowStream PollResult wire format so the async
-// update-with-callback payload decodes correctly without transformation.
+// PollMessagesOutput One batch of turn events after the caller's cursor.
 type PollMessagesOutput struct {
-	// Items Stream events since cursor; decode each as TurnEvent and map to Slack output
+	// Items Stream events after cursor; decode each as TurnEvent and map to Slack output
 	Items []StreamItem `json:"items"`
-	// NextOffset Next cursor value to use in the following pollMessages call
-	NextOffset int64 `json:"next_offset"`
+	// NextOffset Opaque cursor to use in the following pollMessages call
+	NextOffset string `json:"next_offset"`
 	// MoreReady True when more items are immediately available (batch was capped)
 	MoreReady bool `json:"more_ready"`
 	// Closed True only in the sync error path when the agent workflow has already
@@ -1436,9 +1429,6 @@ func (m PollMessagesOutput) Validate() error {
 	for i0, v0 := range m.Items {
 		p0 := fmt.Sprintf("%s[%d]", "items", i0)
 		mergeNested(&errs, p0, v0.Validate())
-	}
-	if (m.NextOffset < -integerCap || m.NextOffset > integerCap) {
-		errs = append(errs, Violation{"next_offset", "exceeds ±(2^53-1) integer cap"})
 	}
 	if len(errs) > 0 {
 		return &ValidationError{Violations: errs}
@@ -1493,7 +1483,7 @@ func (m *PollMessagesOutput) UnmarshalJSON(data []byte) error {
 			}
 		}
 	}
-	if v, ok := parseIntegerField(get("next_offset"), "next_offset", true, false, &errs); ok {
+	if v, ok := parseStringField(get("next_offset"), "next_offset", true, false, &errs); ok {
 		m.NextOffset = v
 	}
 	if v, ok := parseBoolField(get("more_ready"), "more_ready", true, false, &errs); ok {
@@ -1971,9 +1961,6 @@ type SendMessageOutput struct {
 	TurnNumber int64 `json:"turnNumber"`
 	// TurnId Unique ID for this turn
 	TurnId string `json:"turnId"`
-	// StreamHeadOffset Stream log offset at message-accept time; start the first
-	// pollMessages call from this offset to skip prior-turn history
-	StreamHeadOffset *int64 `json:"streamHeadOffset,omitempty"`
 	// Pending True if the message was queued behind an active turn rather than dispatched
 	// immediately
 	Pending *bool `json:"pending,omitempty"`
@@ -1985,9 +1972,6 @@ func (m SendMessageOutput) Validate() error {
 	var errs []Violation
 	if (m.TurnNumber < -integerCap || m.TurnNumber > integerCap) {
 		errs = append(errs, Violation{"turnNumber", "exceeds ±(2^53-1) integer cap"})
-	}
-	if m.StreamHeadOffset != nil && (*m.StreamHeadOffset < -integerCap || *m.StreamHeadOffset > integerCap) {
-		errs = append(errs, Violation{"streamHeadOffset", "exceeds ±(2^53-1) integer cap"})
 	}
 	if len(errs) > 0 {
 		return &ValidationError{Violations: errs}
@@ -2005,7 +1989,7 @@ func (m *SendMessageOutput) UnmarshalJSON(data []byte) error {
 	var errs []Violation
 	for k := range all {
 		switch k {
-		case "turnNumber", "turnId", "streamHeadOffset", "pending":
+		case "turnNumber", "turnId", "pending":
 		default:
 			errs = append(errs, Violation{k, "unknown field"})
 		}
@@ -2022,9 +2006,6 @@ func (m *SendMessageOutput) UnmarshalJSON(data []byte) error {
 	}
 	if v, ok := parseStringField(get("turnId"), "turnId", true, false, &errs); ok {
 		m.TurnId = v
-	}
-	if v, ok := parseIntegerField(get("streamHeadOffset"), "streamHeadOffset", false, false, &errs); ok {
-		m.StreamHeadOffset = &v
 	}
 	if v, ok := parseBoolField(get("pending"), "pending", false, false, &errs); ok {
 		m.Pending = &v
@@ -2043,9 +2024,6 @@ func (m SendMessageOutput) MarshalJSON() ([]byte, error) {
 	out := map[string]json.RawMessage{}
 	marshalField(out, "turnNumber", m.TurnNumber, &errs)
 	marshalField(out, "turnId", m.TurnId, &errs)
-	if m.StreamHeadOffset != nil {
-		marshalField(out, "streamHeadOffset", *m.StreamHeadOffset, &errs)
-	}
 	if m.Pending != nil {
 		marshalField(out, "pending", *m.Pending, &errs)
 	}
@@ -2056,24 +2034,21 @@ func (m SendMessageOutput) MarshalJSON() ([]byte, error) {
 }
 
 
-// StreamItem One event from WorkflowStream._log. Data is base64(proto
-// Payload{encoding:json/plain, data:TurnEvent JSON}).
+// StreamItem One turn event. Data is base64(proto Payload{encoding:json/plain,
+// data:TurnEvent JSON}).
 type StreamItem struct {
 	// Topic Stream topic name (turn_events)
 	Topic string `json:"topic"`
 	// Data base64-encoded proto Payload containing a TurnEvent
 	Data string `json:"data"`
-	// Offset Absolute position of this item in the stream
-	Offset int64 `json:"offset"`
+	// Offset Opaque cursor of this item; the stream provider's own token
+	Offset string `json:"offset"`
 }
 
 // Validate checks m against every constraint and returns a *ValidationError
 // listing any violations.
 func (m StreamItem) Validate() error {
 	var errs []Violation
-	if (m.Offset < -integerCap || m.Offset > integerCap) {
-		errs = append(errs, Violation{"offset", "exceeds ±(2^53-1) integer cap"})
-	}
 	if len(errs) > 0 {
 		return &ValidationError{Violations: errs}
 	}
@@ -2108,7 +2083,7 @@ func (m *StreamItem) UnmarshalJSON(data []byte) error {
 	if v, ok := parseStringField(get("data"), "data", true, false, &errs); ok {
 		m.Data = v
 	}
-	if v, ok := parseIntegerField(get("offset"), "offset", true, false, &errs); ok {
+	if v, ok := parseStringField(get("offset"), "offset", true, false, &errs); ok {
 		m.Offset = v
 	}
 	if len(errs) > 0 {

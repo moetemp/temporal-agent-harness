@@ -45,8 +45,8 @@
 # last, and would trip the AI SDK's own check if it ran first. See :func:`_data_converter`.
 #
 # DESIGN — client-bound activities: ``SubagentActivities.run_subagent_turn`` must close over
-# the worker's ``Client`` (it talks to CHILD workflows, which
-# ``WorkflowStreamClient.from_within_activity()`` cannot reach). ``SimplePlugin``'s
+# the worker's ``Client`` (it talks to CHILD workflows, which the activity's own stream
+# producer cannot reach). ``SimplePlugin``'s
 # ``activities`` hook only sees the existing activity list, not the worker config, so this
 # plugin overrides :meth:`AgentHarnessPlugin.configure_worker` to read ``config["client"]``
 # and bind there. That is the reason this is a ``SimplePlugin`` SUBCLASS rather than a

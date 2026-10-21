@@ -32,9 +32,10 @@ class MountChild:
     """A "mount this subagent stream" instruction returned by :meth:`Gates.on_emit`.
 
     ``on_emit`` stays pure — it never touches cursors or I/O — so instead of mounting a child
-    itself it hands the engine the child ``workflow_id`` to mount and the ``from_offset`` (in the
-    CHILD's own stream) to position the new cursor at, both lifted off the ``subagent_message_sent``
-    that opened the bracket. The engine performs the actual (idempotent) mount.
+    itself it hands the engine the child ``workflow_id`` to mount and the ``after_cursor`` (on the
+    CHILD's own stream) to resume the new cursor after, both lifted off the
+    ``subagent_message_sent`` that opened the bracket. The engine performs the actual (idempotent)
+    mount.
 
     ``subagent_id`` (the child's short id, also off the ``subagent_message_sent``) lets the engine
     remember ``workflow_id → subagent_id``, so if it later has to give up on this child it can label
@@ -43,7 +44,7 @@ class MountChild:
     """
 
     workflow_id: str
-    from_offset: int
+    after_cursor: str
     subagent_id: str
 
 
@@ -150,7 +151,7 @@ class Gates:
             self.opened.add((ev.event.workflow_id, ev.event.subagent_turn))
             return MountChild(
                 workflow_id=ev.event.workflow_id,
-                from_offset=ev.event.from_offset,
+                after_cursor=ev.event.after_cursor,
                 subagent_id=ev.event.subagent_id,
             )
         if isinstance(ev.event, SubagentStopped):

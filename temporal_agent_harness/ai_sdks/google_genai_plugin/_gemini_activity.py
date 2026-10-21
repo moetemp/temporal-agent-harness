@@ -119,7 +119,7 @@ class GeminiApiCaller:
 
             When ``req.stream_turn_id`` is set, each chunk's text content is
             republished as a ``reply_delta`` event on the parent workflow's
-            :class:`WorkflowStream` as soon as it arrives — fine-grained,
+            ``turn_events`` topic as soon as it arrives — fine-grained,
             visible to the UI in real time. Function-call chunks (no text
             parts) are silently skipped.
             """

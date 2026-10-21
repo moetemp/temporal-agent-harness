@@ -53,14 +53,15 @@ class RunSubagentTurnInput(BaseModel):
         description="The send_agent_message envelope 'payload': the JSON of the target "
         "handler's input model.",
     )
-    from_offset: int = Field(
-        default=0,
-        description="Where to begin consuming the child's stream — the caller's last-known "
-        "offset (the previous turn's returned consumed_offset). A PERFORMANCE HINT ONLY, never "
-        "correctness-critical: the streamer filters to this turn's turn_id, so a stale (smaller) "
-        "offset merely replays a few already-seen events, and it can never be too large (the next "
-        "turn's events always follow the prior turn's turn_end, where the prior consumed_offset "
-        "points). So the caller need not — and must not — fetch the live stream head.",
+    after_cursor: str = Field(
+        default="",
+        description="Where to resume consuming the child's stream: the cursor of the last "
+        "record the caller consumed (the previous turn's returned consumed_cursor), or empty "
+        "for the beginning. A PERFORMANCE HINT ONLY, never correctness-critical: the streamer "
+        "filters to this turn's turn_id, so a stale cursor merely replays a few already-seen "
+        "events, and it can never be too far ahead (the next turn's events always follow the "
+        "prior turn's turn_end, which is where the prior consumed_cursor points). The token is "
+        "opaque and belongs to the stream provider; the caller stores and hands it back.",
     )
     # The following identify the dispatch for the SubagentMessageSent event the activity
     # publishes onto the PARENT's stream when it actually sends the message (see the activity).
@@ -94,8 +95,8 @@ class SubagentTurnResult(BaseModel):
     turn_number: int = Field(
         description="The number of the turn the child actually ran."
     )
-    consumed_offset: int = Field(
-        description="The child stream position just past this turn's turn_end. The caller "
-        "stores it and threads it back as the next turn's from_offset, so each turn streams "
+    consumed_cursor: str = Field(
+        description="The cursor of this turn's turn_end on the child's stream. The caller "
+        "stores it and threads it back as the next turn's after_cursor, so each turn streams "
         "from where the last one ended (cheap resume, no full-history replay)."
     )

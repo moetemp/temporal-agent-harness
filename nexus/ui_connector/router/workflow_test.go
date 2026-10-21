@@ -24,7 +24,7 @@ func (f *fakeBackend) StartTurn(ctx workflow.Context, input Input) (StartResult,
 	return f.startResult, f.startErr
 }
 
-func (f *fakeBackend) PollTurn(ctx workflow.Context, handle TurnHandle, cursor int64) (PollResult, error) {
+func (f *fakeBackend) PollTurn(ctx workflow.Context, handle TurnHandle, cursor string) (PollResult, error) {
 	if f.pollCalls >= len(f.pollResults) {
 		if f.pollErr != nil {
 			return PollResult{}, f.pollErr

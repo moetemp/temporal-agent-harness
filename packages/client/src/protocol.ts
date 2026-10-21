@@ -75,6 +75,10 @@ export interface AgentEvent {
    */
   timestamp: number;
   /**
+   * The publishing agent's own count of the events it has published from workflow code, starting at 1, or None for an event an activity published on the agent's behalf. A client uses it with `AgentStatus.last_event_seq` to know when it has caught up with everything the agent has said, which a stream position cannot tell it because positions belong to the stream provider.
+   */
+  seq: number | null;
+  /**
    * The wrapped stream-event payload — a discriminated union over `type` that Temporal's Pydantic converter reconstructs to the concrete payload subtype on read.
    */
   event:
@@ -104,6 +108,7 @@ export interface AgentEvent {
     | SubagentMessageSent
     | SubagentReplyReceived
     | SubagentStreamUnavailable
+    | AttemptSuperseded
     | ReplyDelta
     | ThoughtSummaryDelta
     | TextAnnotationDelta
@@ -157,6 +162,31 @@ export interface AgentStateSnapshot {
   value: {
     [k: string]: unknown | undefined;
   };
+}
+/**
+ * A newer attempt of one streaming producer supersedes everything the last one wrote.
+ *
+ * SYNTHESIZED CLIENT-SIDE by the stream reader, never workflow-published. An activity that
+ * streams half an answer and then fails leaves those records in the stream; its retry calls
+ * the model again and writes different words. No provider can undo the first half, so the
+ * reader says a new generation began and the consumer decides. The enclosing
+ * `AgentEvent` carries the `agent_id` and `turn_id` of the records being
+ * superseded, so a consumer drops that turn's deltas received before this marker.
+ */
+export interface AttemptSuperseded {
+  type: "attempt_superseded";
+  /**
+   * The producer whose attempt advanced, as the stream records carry it (inside an activity, the activity id).
+   */
+  producer_id: string;
+  /**
+   * The attempt whose records are stale. Everything this producer wrote under it on this turn is replaced by what follows.
+   */
+  superseded_attempt: number;
+  /**
+   * The attempt now writing. Records after this marker belong to it.
+   */
+  attempt: number;
 }
 /**
  * An automatic approval evaluator returned a verdict, closing its bracket.
@@ -459,9 +489,9 @@ export interface SubagentMessageSent {
    */
   subagent_turn: number;
   /**
-   * The offset in the SUBAGENT's OWN stream at which this turn's events begin (the child stream position the parent resumes consumption from for this turn). A client merging the parent + subagent streams positions the child cursor here the first time it mounts the child — so a merge that starts mid-session (resuming at a parent turn that is not the child's first) skips the child's pre-resume history, whose own message_sent markers are not on the merged stream and could otherwise never be ordered. Unrelated address space from the parent stream's offsets.
+   * The cursor on the SUBAGENT's OWN stream that this turn's events follow (the child position the parent resumed consumption after for this turn; empty means the beginning). A client merging the parent + subagent streams positions the child cursor here the first time it mounts the child — so a merge that starts mid-session (resuming at a parent turn that is not the child's first) skips the child's pre-resume history, whose own message_sent markers are not on the merged stream and could otherwise never be ordered. An opaque provider token, unrelated to the parent stream's cursors.
    */
-  from_offset: number;
+  after_cursor: string;
 }
 /**
  * This agent received a subagent's reply for one turn it dispatched.
@@ -838,6 +868,7 @@ export type AgentStreamItem =
   | SubagentMessageSent
   | SubagentReplyReceived
   | SubagentStreamUnavailable
+  | AttemptSuperseded
   | ReplyDelta
   | ThoughtSummaryDelta
   | TextAnnotationDelta

@@ -1359,14 +1359,15 @@ class _PollMessagesInputTransferTypeConverter(
             else:
                 session_id_value = session_id_value_raw
 
-        cursor_value: int = typing.cast("typing.Any", None)
+        cursor_value: str = typing.cast("typing.Any", None)
         if "cursor" not in raw or raw["cursor"] is None:
             violations.append(Violation(path="cursor", reason="required"))
         else:
             cursor_value_raw = raw["cursor"]
-            cursor_value_parsed = _parse_spec_integer(cursor_value_raw, "cursor", violations)
-            if cursor_value_parsed is not None:
-                cursor_value = cursor_value_parsed
+            if not isinstance(cursor_value_raw, str):
+                violations.append(Violation(path="cursor", reason="expected string"))
+            else:
+                cursor_value = cursor_value_raw
 
         timeout_seconds_value: float | None = None
         if "timeoutSeconds" in raw:
@@ -1414,10 +1415,11 @@ class PollMessagesInput:
     session_id: str
     """Provider-prefixed session identifier"""
 
-    cursor: int
+    cursor: str
+    """Opaque token of the last item the caller handled; empty for the beginning"""
 
     timeout_seconds: float | None = None
-    """How long the WorkflowStream poll update waits for new events before returning empty"""
+    """How long the poll waits for new events before returning empty"""
 
 
 class _PollMessagesOutputTransferTypeConverter(
@@ -1453,14 +1455,15 @@ class _PollMessagesOutputTransferTypeConverter(
                         items_value_list.append(items_value_item)
                 items_value = items_value_list
 
-        next_offset_value: int = typing.cast("typing.Any", None)
+        next_offset_value: str = typing.cast("typing.Any", None)
         if "next_offset" not in raw or raw["next_offset"] is None:
             violations.append(Violation(path="next_offset", reason="required"))
         else:
             next_offset_value_raw = raw["next_offset"]
-            next_offset_value_parsed = _parse_spec_integer(next_offset_value_raw, "next_offset", violations)
-            if next_offset_value_parsed is not None:
-                next_offset_value = next_offset_value_parsed
+            if not isinstance(next_offset_value_raw, str):
+                violations.append(Violation(path="next_offset", reason="expected string"))
+            else:
+                next_offset_value = next_offset_value_raw
 
         more_ready_value: bool = typing.cast("typing.Any", None)
         if "more_ready" not in raw or raw["more_ready"] is None:
@@ -1518,15 +1521,13 @@ class _PollMessagesOutputTransferTypeConverter(
 @_transfer_type_convertible(_PollMessagesOutputTransferTypeConverter)
 @dataclasses.dataclass(slots=True, kw_only=True)
 class PollMessagesOutput:
-    """Mirrors WorkflowStream PollResult wire format so the async update-with-callback
-    payload decodes correctly without transformation.
-    """
+    """One batch of turn events after the caller's cursor."""
 
     items: list[StreamItem]
-    """Stream events since cursor; decode each as TurnEvent and map to Slack output"""
+    """Stream events after cursor; decode each as TurnEvent and map to Slack output"""
 
-    next_offset: int
-    """Next cursor value to use in the following pollMessages call"""
+    next_offset: str
+    """Opaque cursor to use in the following pollMessages call"""
 
     more_ready: bool
     """True when more items are immediately available (batch was capped)"""
@@ -1959,16 +1960,6 @@ class _SendMessageOutputTransferTypeConverter(
             else:
                 turn_id_value = turn_id_value_raw
 
-        stream_head_offset_value: int | None = None
-        if "streamHeadOffset" in raw:
-            stream_head_offset_value_raw = raw["streamHeadOffset"]
-            if stream_head_offset_value_raw is None:
-                violations.append(Violation(path="streamHeadOffset", reason="explicit null not allowed"))
-            else:
-                stream_head_offset_value_parsed = _parse_spec_integer(stream_head_offset_value_raw, "streamHeadOffset", violations)
-                if stream_head_offset_value_parsed is not None:
-                    stream_head_offset_value = stream_head_offset_value_parsed
-
         pending_value: bool | None = None
         if "pending" in raw:
             pending_value_raw = raw["pending"]
@@ -1981,14 +1972,13 @@ class _SendMessageOutputTransferTypeConverter(
                     pending_value = pending_value_raw
 
         for key in raw:
-            if key != "turnNumber" and key != "turnId" and key != "streamHeadOffset" and key != "pending":
+            if key != "turnNumber" and key != "turnId" and key != "pending":
                 violations.append(Violation(path=key, reason="unknown field"))
         if violations:
             raise ValidationError(violations)
         return SendMessageOutput(
             turn_number=turn_number_value,
             turn_id=turn_id_value,
-            stream_head_offset=stream_head_offset_value,
             pending=pending_value,
         )
 
@@ -1997,8 +1987,6 @@ class _SendMessageOutputTransferTypeConverter(
         out: dict[str, typing.Any] = {}
         out["turnNumber"] = value.turn_number
         out["turnId"] = value.turn_id
-        if value.stream_head_offset is not None:
-            out["streamHeadOffset"] = value.stream_head_offset
         if value.pending is not None:
             out["pending"] = value.pending
         return out
@@ -2013,11 +2001,6 @@ class SendMessageOutput:
 
     turn_id: str
     """Unique ID for this turn"""
-
-    stream_head_offset: int | None = None
-    """Stream log offset at message-accept time; start the first pollMessages call from
-    this offset to skip prior-turn history
-    """
 
     pending: bool | None = None
     """True if the message was queued behind an active turn rather than dispatched
@@ -2057,14 +2040,15 @@ class _StreamItemTransferTypeConverter(
             else:
                 data_value = data_value_raw
 
-        offset_value: int = typing.cast("typing.Any", None)
+        offset_value: str = typing.cast("typing.Any", None)
         if "offset" not in raw or raw["offset"] is None:
             violations.append(Violation(path="offset", reason="required"))
         else:
             offset_value_raw = raw["offset"]
-            offset_value_parsed = _parse_spec_integer(offset_value_raw, "offset", violations)
-            if offset_value_parsed is not None:
-                offset_value = offset_value_parsed
+            if not isinstance(offset_value_raw, str):
+                violations.append(Violation(path="offset", reason="expected string"))
+            else:
+                offset_value = offset_value_raw
 
         for key in raw:
             if key != "topic" and key != "data" and key != "offset":
@@ -2089,8 +2073,8 @@ class _StreamItemTransferTypeConverter(
 @_transfer_type_convertible(_StreamItemTransferTypeConverter)
 @dataclasses.dataclass(slots=True, kw_only=True)
 class StreamItem:
-    """One event from WorkflowStream._log. Data is base64(proto
-    Payload{encoding:json/plain, data:TurnEvent JSON}).
+    """One turn event. Data is base64(proto Payload{encoding:json/plain, data:TurnEvent
+    JSON}).
     """
 
     topic: str
@@ -2099,8 +2083,8 @@ class StreamItem:
     data: str
     """base64-encoded proto Payload containing a TurnEvent"""
 
-    offset: int
-    """Absolute position of this item in the stream"""
+    offset: str
+    """Opaque cursor of this item; the stream provider's own token"""
 
 
 class _SubagentInfoTransferTypeConverter(
