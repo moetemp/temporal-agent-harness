@@ -16,6 +16,8 @@ import temporal_agent_harness.harness.stream_transport as transport
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentEvent,
+    AgentStream,
+    AgentStreamRef,
     AttemptSuperseded,
     ReplyDelta,
     subagent_topic,
@@ -110,7 +112,7 @@ def _superseded(offset: int, attempt: int) -> Superseded:
 
 async def _drain(items: list[Any], *, topic: str = TURN_EVENTS_TOPIC, **kw: Any):
     stream = _FakeStream(items)
-    located = TurnStream(stream, topic, root=None)  # type: ignore[arg-type]
+    located = TurnStream(stream, topic)  # type: ignore[arg-type]
     out = [record async for record in read_turn_events(located, **kw)]
     return out, stream
 
@@ -212,7 +214,21 @@ async def test_the_next_cursor_of_a_stream_not_written_yet_is_the_beginning(monk
             raise StreamNotFoundError("no Stream yet", reason="stream_not_found")
 
     async def fake_turn_stream(_client: Any, _workflow_id: str, **_: Any) -> TurnStream:
-        return TurnStream(_Unwritten([]), TURN_EVENTS_TOPIC, root=None)  # type: ignore[arg-type]
+        return TurnStream(_Unwritten([]), TURN_EVENTS_TOPIC)  # type: ignore[arg-type]
 
     monkeypatch.setattr(transport, "turn_stream", fake_turn_stream)
     assert await next_turn_cursor(None, "wf") == ""  # type: ignore[arg-type]
+
+
+def test_the_subagent_stream_ref_uses_the_proto_json_names():
+    # A memo or a config outlives this SDK, so the ref is stored as the proto JSON that every
+    # SDK reads. A ref stored with snake case names still decodes.
+    place = AgentStream(
+        ref=AgentStreamRef(id="wf:run", workflow_id="wf", first_execution_run_id="run"),
+        topic=subagent_topic("abc"),
+    )
+    stored = place.model_dump(mode="json")
+    assert stored["ref"] == {"id": "wf:run", "workflowId": "wf", "firstExecutionRunId": "run"}
+    assert AgentStream.model_validate(stored) == place
+    old = {"ref": {"id": "wf:run", "workflow_id": "wf", "first_execution_run_id": "run"}}
+    assert AgentStream.model_validate({**old, "topic": place.topic}) == place

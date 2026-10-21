@@ -69,6 +69,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentStatus,
     AgentStream,
     AgentStreamItem,
+    AgentStreamRef,
     AutoApprovalVerdict,
     AutoApprovalDecision,
     CallbackRequested,
@@ -1807,15 +1808,25 @@ class AgentWorkflowRunner:
         # own, so one read of the Stream gives the whole tree in order. A parent passes the place
         # down in ``config.stream``; a top-level agent's place is its own default Stream.
         if config.stream is not None:
-            stream = workflow_stream(StreamRef(config.stream.stream_id))
+            ref = config.stream.ref
+            stream = workflow_stream(
+                StreamRef(
+                    ref.id,
+                    workflow_id=ref.workflow_id,
+                    first_execution_run_id=ref.first_execution_run_id,
+                )
+            )
             self._stream = config.stream
         else:
             stream = workflow_stream()
-            # Offline construction (unit tests) has no run and so no Stream id.
-            in_run = workflow.in_workflow()
+            # Offline construction (unit tests) has no run and so no Stream ref.
+            own = stream.ref if workflow.in_workflow() else StreamRef("")
             self._stream = AgentStream(
-                stream_id=stream.ref.id if in_run else "",
-                root_workflow_id=workflow.info().workflow_id if in_run else "",
+                ref=AgentStreamRef(
+                    id=own.id,
+                    workflow_id=own.workflow_id,
+                    first_execution_run_id=own.first_execution_run_id,
+                ),
                 topic=TURN_EVENTS_TOPIC,
             )
         self._workflow_stream = stream
@@ -2813,7 +2824,7 @@ class AgentWorkflowRunner:
                 "message_id": _CURRENT_MESSAGE_ID.get(),
                 # A subagent's activities publish on the root's Stream, not on the default
                 # Stream of the subagent that scheduled them.
-                "stream_id": self._stream.stream_id or None,
+                "stream_id": self._stream.ref.id or None,
                 "topic": self._stream.topic,
             }
         )
@@ -3039,11 +3050,7 @@ class AgentWorkflowRunner:
         # passes through unchanged); a caller-supplied agent_id would not match the handle.
         # The child publishes on this tree's Stream, on a Topic of its own. The memo says where,
         # so a client that knows only the child's workflow id can read it.
-        child_stream = AgentStream(
-            stream_id=self._stream.stream_id,
-            root_workflow_id=self._stream.root_workflow_id,
-            topic=subagent_topic(handle),
-        )
+        child_stream = AgentStream(ref=self._stream.ref, topic=subagent_topic(handle))
         child_config = (config if config is not None else AgentConfig()).model_copy(
             update={"agent_id": handle, "stream": child_stream}
         )
@@ -3052,7 +3059,7 @@ class AgentWorkflowRunner:
             child_config,
             id=workflow_id,
             task_queue=task_queue,
-            memo={AGENT_STREAM_MEMO: child_stream.model_dump()},
+            memo={AGENT_STREAM_MEMO: child_stream.model_dump(mode="json")},
             # EXPLICIT: a subagent is owned by its parent and must never outlive it. If the
             # parent closes for ANY reason (its own `close` signal, completion, failure,
             # cancellation, or termination) before `stop_subagent` was called, the Temporal

@@ -29,6 +29,7 @@ from temporalio.contrib.streams import (
     Topic,
     activity_stream,
     for_handle,
+    for_ref,
 )
 from temporalio.contrib.streams.redis import RedisStreamPlugin, StreamPlugin
 from temporalio.contrib.streams.testing import MemoryStreamPlugin
@@ -110,11 +111,10 @@ def cursor_after(item: Record[Any]) -> str:
 
 @dataclass(frozen=True)
 class TurnStream:
-    """The Stream an agent publishes on, the Topic that is its own, and the root's handle."""
+    """The Stream an agent publishes on, and the Topic that is its own."""
 
     stream: ClientStream
     topic: str
-    root: WorkflowHandle[Any, Any]
 
     def turn_events(self) -> Topic[AgentEvent]:
         """The agent's own Topic, typed."""
@@ -125,19 +125,29 @@ async def turn_stream(client: Client, workflow_id: str, *, wait: bool = True) ->
     """The Stream and Topic of the agent ``workflow_id``. ``client`` carries the Stream plugin.
 
     A top-level agent publishes on its own default Stream. A subagent publishes on its root's,
-    and its memo says where, so a client that knows only the subagent finds the Stream with one
-    Describe call. With ``wait``, a read of a Stream that does not exist yet waits for it, and
-    ends when the root's run ends.
+    and its memo carries the root's ``StreamRef``, so a client that knows only the subagent finds
+    the Stream with one Describe call. With ``wait``, a read of a Stream that does not exist yet
+    waits for it. Either way the read ends when the root's run ends.
     """
     description = await client.get_workflow_handle(workflow_id).describe()
     located = await description.memo_value(AGENT_STREAM_MEMO, None)
     if located is not None:
         place = AgentStream.model_validate(located)
-        root = client.get_workflow_handle(place.root_workflow_id)
-        return TurnStream(_open(root, wait), place.topic, root)
+        ref = StreamRef(
+            place.ref.id,
+            workflow_id=place.ref.workflow_id,
+            first_execution_run_id=place.ref.first_execution_run_id,
+        )
+        stream = for_ref(
+            client,
+            ref,
+            wait_for_create=_WAIT_FOR_CREATE if wait else None,
+            end_with_run=wait,
+        )
+        return TurnStream(stream, place.topic)
     first_run_id = description.raw_description.workflow_execution_info.first_run_id
     root = client.get_workflow_handle(workflow_id, first_execution_run_id=first_run_id or None)
-    return TurnStream(_open(root, wait), TURN_EVENTS_TOPIC, root)
+    return TurnStream(_open(root, wait), TURN_EVENTS_TOPIC)
 
 
 def _open(handle: WorkflowHandle[Any, Any], wait: bool) -> ClientStream:
