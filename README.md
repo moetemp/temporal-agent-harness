@@ -702,6 +702,7 @@ reads through `for_handle(handle)` on the same kind of client. Agent code names 
 
 | Variable | Meaning | Default |
 |---|---|---|
+| `STREAMS_STORE` | `redis`, or `memory` for tests and a single process (`MemoryStreamPlugin`) | `redis` |
 | `STREAMS_REDIS_URL` | The Redis that holds the Streams. Use `maxmemory-policy noeviction`. | `redis://127.0.0.1:6379` |
 | `STREAMS_KEY_PREFIX` | A prefix for every key, to keep two deployments on one Redis apart | `temporal-streams` |
 
@@ -716,17 +717,20 @@ root's Stream gives every agent of the tree in one order, and `AgentClient.send_
 the parent's `subagent_message_sent` as it admits the message, before any event of its own turn,
 and the parent writes `subagent_reply_received` only after it read the child's `turn_end`. A
 subagent's memo names the Stream and the Topic, so a client that knows only the subagent's
-workflow id reads its Topic directly.
+workflow id reads its Topic directly. A read of an agent and its subagents asks for the agent's
+Topic and the Topic prefix of its subagents (`topic_prefixes=`), so the Stream runtime filters.
 
 A resume point is a position on that one Stream, so a resume loses nothing: a consumer that
 disconnects in the middle of a subagent's turn gets the rest of that turn when it resumes.
 
-The test suite uses the same variables. It needs a Redis, and it puts its keys under a prefix of
-its own. Without `TEMPORAL_ADDRESS` it runs on the time-skipping test server. For example:
+The test suite uses the same variables, but defaults to `memory` on the time-skipping test
+server, so `uv run pytest` needs nothing installed. On Redis it puts its keys under a prefix of
+its own. `TEMPORAL_ADDRESS` points the tests at a running server. For example:
 
 ```bash
-STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest
-STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 TEMPORAL_ADDRESS=127.0.0.1:7233 uv run pytest
+uv run pytest
+STREAMS_STORE=redis STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 \
+  TEMPORAL_ADDRESS=127.0.0.1:7233 uv run pytest
 ```
 
 What it costs:
