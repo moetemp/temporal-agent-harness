@@ -43,18 +43,15 @@ from temporalio.contrib.streams import StreamRef, workflow_stream
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
-from temporal_agent_harness.harness.state import StateRef
-from temporal_agent_harness.harness.state.decl import declared_states, state_ref
-from temporal_agent_harness.harness.state.events import StateEvent, StateSnapshot
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_ID_LENGTH,
-    APPROVAL_SHORT_ID_LENGTH,
     AGENT_INTERFACE_QUERY,
     AGENT_STATUS_QUERY,
     AGENT_STREAM_MEMO,
-    PROVIDE_CALLBACK_RESULT_UPDATE,
+    APPROVAL_SHORT_ID_LENGTH,
     DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT,
     DEFAULT_SUBAGENT_START_TO_CLOSE_TIMEOUT,
+    PROVIDE_CALLBACK_RESULT_UPDATE,
     RUN_SUBAGENT_TURN_ACTIVITY,
     SEND_AGENT_MESSAGE_UPDATE,
     SEND_SUBAGENT_MESSAGE_UPDATE,
@@ -64,13 +61,20 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentConfig,
     AgentEvent,
     AgentMessage,
+    AgentMessageReply,
     AgentStatePatch,
     AgentStateSnapshot,
     AgentStatus,
     AgentStream,
     AgentStreamItem,
-    AutoApprovalVerdict,
+    AutoApprovalContext,
+    AutoApprovalCriteria,
     AutoApprovalDecision,
+    AutoApprovalEvaluationEnded,
+    AutoApprovalEvaluationError,
+    AutoApprovalEvaluationStarted,
+    AutoApprovalEvaluationSuperseded,
+    AutoApprovalVerdict,
     CallbackRequested,
     CallbackResolved,
     CallbackResult,
@@ -86,21 +90,15 @@ from temporal_agent_harness.harness.agent_protocol import (
     PendingCallback,
     PendingTurn,
     RunSubagentTurnInput,
-    SubagentInfo,
     SubagentDispatch,
+    SubagentInfo,
     SubagentMessage,
     SubagentMessageSent,
     SubagentReplyReceived,
     SubagentStarted,
     SubagentStopped,
     SubagentTurnResult,
-    AutoApprovalContext,
-    AutoApprovalCriteria,
     ToolApprovalDecision,
-    AutoApprovalEvaluationEnded,
-    AutoApprovalEvaluationError,
-    AutoApprovalEvaluationStarted,
-    AutoApprovalEvaluationSuperseded,
     ToolApprovalPolicy,
     ToolApprovalRequested,
     ToolApprovalResolved,
@@ -110,9 +108,11 @@ from temporal_agent_harness.harness.agent_protocol import (
     ToolStartEvent,
     TurnEnded,
     TurnStarted,
-    AgentMessageReply,
     subagent_topic,
 )
+from temporal_agent_harness.harness.state import StateRef
+from temporal_agent_harness.harness.state.decl import declared_states, state_ref
+from temporal_agent_harness.harness.state.events import StateEvent, StateSnapshot
 
 # TurnStreamContext (the activity-side stream-publishing carrier this runner builds + consumes)
 # lives in its own leaf module so the sandbox-safe activity contracts in agent_protocol can embed
