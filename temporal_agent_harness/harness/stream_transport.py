@@ -133,14 +133,9 @@ async def turn_stream(client: Client, workflow_id: str, *, wait: bool = True) ->
     located = await description.memo_value(AGENT_STREAM_MEMO, None)
     if located is not None:
         place = AgentStream.model_validate(located)
-        ref = StreamRef(
-            place.ref.id,
-            workflow_id=place.ref.workflow_id,
-            first_execution_run_id=place.ref.first_execution_run_id,
-        )
         stream = for_ref(
             client,
-            ref,
+            place.ref,
             wait_for_create=_WAIT_FOR_CREATE if wait else None,
             end_with_run=wait,
         )

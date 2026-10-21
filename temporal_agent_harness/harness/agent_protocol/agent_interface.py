@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from temporalio.contrib.streams import StreamRef
 
 # ---------------------------------------------------------------------------
 # Protocol constants — workflow must use these exact names
@@ -629,28 +630,6 @@ class ToolApprovalPolicy(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class AgentStreamRef(BaseModel):
-    """A ``StreamRef`` in its proto JSON form (``temporal.api.streamservice.v1.StreamRef``).
-
-    It serializes with the proto names, so any SDK reads a ref that this one stored. Snake case
-    names still decode.
-    """
-
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    id: str = Field(description="The Stream id.")
-    workflow_id: str | None = Field(
-        default=None,
-        alias="workflowId",
-        description="The id of the Workflow that owns the Stream.",
-    )
-    first_execution_run_id: str | None = Field(
-        default=None,
-        alias="firstExecutionRunId",
-        description="The first run id of the owning run chain.",
-    )
-
-
 class AgentStream(BaseModel):
     """Where a subagent publishes its turn events: on its root agent's Stream, on its own Topic.
 
@@ -659,8 +638,9 @@ class AgentStream(BaseModel):
     one agent only.
     """
 
-    ref: AgentStreamRef = Field(
-        description="The root agent's default Stream. A client opens it with ``for_ref``."
+    ref: StreamRef = Field(
+        description="The root agent's default Stream, in its proto JSON form. A client opens it "
+        "with ``for_ref``."
     )
     topic: str = Field(description="The Topic this agent publishes its turn events on.")
 

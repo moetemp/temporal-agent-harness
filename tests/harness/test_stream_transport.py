@@ -9,7 +9,15 @@ from typing import Any
 
 import pytest
 from temporalio.api.streamservice.v1 import ProducerKind
-from temporalio.contrib.streams import Closed, Idle, Record, StreamNotFoundError, Superseded, Topic
+from temporalio.contrib.streams import (
+    Closed,
+    Idle,
+    Record,
+    StreamNotFoundError,
+    StreamRef,
+    Superseded,
+    Topic,
+)
 from temporalio.contrib.streams.system import models
 
 import temporal_agent_harness.harness.stream_transport as transport
@@ -17,7 +25,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentEvent,
     AgentStream,
-    AgentStreamRef,
     AttemptSuperseded,
     ReplyDelta,
     subagent_topic,
@@ -224,7 +231,7 @@ def test_the_subagent_stream_ref_uses_the_proto_json_names():
     # A memo or a config outlives this SDK, so the ref is stored as the proto JSON that every
     # SDK reads. A ref stored with snake case names still decodes.
     place = AgentStream(
-        ref=AgentStreamRef(id="wf:run", workflow_id="wf", first_execution_run_id="run"),
+        ref=StreamRef("wf:run", workflow_id="wf", first_execution_run_id="run"),
         topic=subagent_topic("abc"),
     )
     stored = place.model_dump(mode="json")
@@ -232,3 +239,6 @@ def test_the_subagent_stream_ref_uses_the_proto_json_names():
     assert AgentStream.model_validate(stored) == place
     old = {"ref": {"id": "wf:run", "workflow_id": "wf", "first_execution_run_id": "run"}}
     assert AgentStream.model_validate({**old, "topic": place.topic}) == place
+    # A ref with no owner, such as a standalone Stream's, keeps only its id.
+    standalone = AgentStream(ref=StreamRef("solo"), topic=TURN_EVENTS_TOPIC)
+    assert standalone.model_dump(mode="json")["ref"] == {"id": "solo"}

@@ -69,7 +69,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentStatus,
     AgentStream,
     AgentStreamItem,
-    AgentStreamRef,
     AutoApprovalVerdict,
     AutoApprovalDecision,
     CallbackRequested,
@@ -1808,27 +1807,13 @@ class AgentWorkflowRunner:
         # own, so one read of the Stream gives the whole tree in order. A parent passes the place
         # down in ``config.stream``; a top-level agent's place is its own default Stream.
         if config.stream is not None:
-            ref = config.stream.ref
-            stream = workflow_stream(
-                StreamRef(
-                    ref.id,
-                    workflow_id=ref.workflow_id,
-                    first_execution_run_id=ref.first_execution_run_id,
-                )
-            )
+            stream = workflow_stream(config.stream.ref)
             self._stream = config.stream
         else:
             stream = workflow_stream()
             # Offline construction (unit tests) has no run and so no Stream ref.
             own = stream.ref if workflow.in_workflow() else StreamRef("")
-            self._stream = AgentStream(
-                ref=AgentStreamRef(
-                    id=own.id,
-                    workflow_id=own.workflow_id,
-                    first_execution_run_id=own.first_execution_run_id,
-                ),
-                topic=TURN_EVENTS_TOPIC,
-            )
+            self._stream = AgentStream(ref=own, topic=TURN_EVENTS_TOPIC)
         self._workflow_stream = stream
         self._events = stream.topic(self._stream.topic, type=AgentEvent)
         _assert_async_auto_mode_evaluator(auto_mode_evaluator)
