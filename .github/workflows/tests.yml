@@ -35,6 +35,13 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      STREAMS_REDIS_URL: redis://127.0.0.1:6379
+    # The Streams live in Redis, so the suite needs one.
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
 
