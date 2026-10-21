@@ -453,16 +453,16 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 client = await Client.connect(
     **ClientConfig.load_client_connect_config(),
-    # Your AI SDK's plugin first, then the harness plugin, then the stream store.
+    # Your AI SDK's plugin first, then the harness plugin, then the Stream plugin.
     plugins=[
         OpenAIAgentsPlugin(model_params=...),
         AgentHarnessPlugin(tools=MY_TOOLS),
-        store_from_env(),
+        streams_from_env(),
     ],
 )
 
@@ -478,9 +478,9 @@ The worker declares only its workflows. Adding the plugin brings:
   whole toolset — tools with no worker-side body are skipped);
 - the **subagent** and **Code Mode** activities.
 
-Order it after any AI SDK's plugin, so that SDK's payload converter wins. The stream store
-(see [Choosing the stream store](#choosing-the-stream-store)) only wraps the codec it finds, so
-it can sit anywhere in the list. Registering both on the client is enough — Temporal applies a
+Order it after any AI SDK's plugin, so that SDK's payload converter wins. The Stream plugin
+(see [Streams](#streams)) takes the converter the client ends up with, so it can sit anywhere in
+the list. Registering both on the client is enough — Temporal applies a
 client's plugins to workers built from it.
 
 ## Code Mode
@@ -689,45 +689,97 @@ Set the creds for whichever agents you'll run: `OPENAI_API_KEY` (react_agent, op
 pydantic_ai_hello) and/or `GEMINI_API_KEY` (monty, wiki, coding). The default committed
 `temporal.local.toml` profile points at a local Temporal dev server.
 
-### Choosing the stream store
+### Streams
 
-Agents publish their turn events through `stream_producer` from `temporalio.contrib.streams`,
-and the store behind it is a per-process choice made from the environment. `store_from_env()`
-in `temporal_agent_harness.harness.stream_transport` builds the store `STREAMS_STORE` names,
-and the process registers it once on its client, `Client.connect(..., plugins=[store])`.
-Workers built from that client take it, so the producers of the workflow and its activities
-find the store without being told. Both call `stream_producer`. A process outside a worker,
-such as the web app or the Nexus adapter, reads the turn events through
-`stream_handle(client, workflow_id)` on the same kind of client. Agent code names nothing.
+Agents publish their turn events through `temporalio.contrib.streams`, the Brook build of the
+Python SDK. The Stream runtime lives in the SDK's bridge and keeps the Streams in Redis.
+`streams_from_env()` in `temporal_agent_harness.harness.stream_transport` builds the
+`RedisStreamPlugin` for the Redis at `STREAMS_REDIS_URL` (`redis://127.0.0.1:6379`), and the
+process registers it once on its client, `Client.connect(..., plugins=[streams])`. Workers built
+from that client take it. Workflow code writes through `workflow_stream()`, activities through
+`activity_stream()`, and a process outside a worker, such as the web app or the Nexus adapter,
+reads through `for_handle(handle)` on the same kind of client. Agent code names nothing.
 
-| `STREAMS_STORE` | Where events live | Needs |
+| Variable | Meaning | Default |
 |---|---|---|
-| `redis` (default) | A Redis 7 named by `STREAMS_REDIS_URL` (`redis://127.0.0.1:6379`) | A Redis with `maxmemory-policy noeviction` |
-| `memory` | This process | Nothing. For tests and a single process |
+| `STREAMS_REDIS_URL` | The Redis that holds the Streams. Use `maxmemory-policy noeviction`. | `redis://127.0.0.1:6379` |
+| `STREAMS_KEY_PREFIX` | A prefix for every key, to keep two deployments on one Redis apart | `temporal-streams` |
 
-The web app, the Nexus adapter and each worker are separate processes, so they need a store they
-all reach, and that is why Redis is the default. Streams need only a stock Temporal server,
-so the dev server is enough.
+The web app, the Nexus adapter and each worker are separate processes, so they all need the same
+Redis. Streams need only a stock Temporal server, so the dev server is enough.
 
-The test suite honours the same variables, but defaults to `memory` on the time-skipping test
-server, so `uv run pytest` needs nothing installed. `TEMPORAL_ADDRESS` points the tests at a
-running server. For example:
+**One Stream per agent tree.** A top-level agent publishes on its own default Stream, on the
+Topic `turn_events`. When it starts a subagent, it passes its Stream down, and the subagent
+publishes on it too, on a Topic of its own (`turn_events/<subagent id>`). So one read of the
+root's Stream gives every agent of the tree in one order, and `AgentClient.send_message` and
+`attach` need no merge. The order keeps the subagent brackets by construction. The child writes
+the parent's `subagent_message_sent` as it admits the message, before any event of its own turn,
+and the parent writes `subagent_reply_received` only after it read the child's `turn_end`. A
+subagent's memo names the Stream and the Topic, so a client that knows only the subagent's
+workflow id reads its Topic directly.
+
+A resume point is a position on that one Stream, so a resume loses nothing: a consumer that
+disconnects in the middle of a subagent's turn gets the rest of that turn when it resumes.
+
+The test suite uses the same variables. It needs a Redis, and it puts its keys under a prefix of
+its own. Without `TEMPORAL_ADDRESS` it runs on the time-skipping test server. For example:
 
 ```bash
-STREAMS_STORE=redis STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 \
-  TEMPORAL_ADDRESS=127.0.0.1:7233 uv run pytest
+STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest
+STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 TEMPORAL_ADDRESS=127.0.0.1:7233 uv run pytest
 ```
 
-What the choice costs, beyond the table:
+What it costs:
 
-- Records never pass through Temporal. A workflow's own publish goes to the store when its
-  activation completes and adds nothing to History. A publish from an activity is one append
-  per batch, which is why the activity-side publisher buffers.
-- Every store keeps the record as the `temporal.sdk.streams.v1.StreamRecord` proto with the
-  value as an ordinary payload, so the payload converter and the client's codec chain both apply
-  to it.
-- A stream keeps records for the store's retention (7 days by default). A resume point past
-  that fails with `StreamExpiredError`.
+- Records never pass through Temporal. A workflow's own publish goes to Redis when its Workflow
+  Task completes and adds nothing to History. A publish from an activity is buffered and goes out
+  in batches.
+- The value is an ordinary payload, so the payload converter and the client's codec chain both
+  apply to it.
+- A Stream keeps records for its Retention (7 days by default). A resume point past that fails
+  with `TurnCursorError`.
+- An activity's retry withdraws what the failed attempt wrote. The reader turns that into an
+  `attempt_superseded` event stamped with the withdrawn turn, so a UI drops the stale deltas.
+
+#### The client contract: one stream, and how to keep it
+
+A client renders an agent from **at most one** stream, and that stream is an `attach`. The
+rule on every send:
+
+1. **Send with `submit_message`** — the bare update, no stream. It returns `AgentMessageReply`.
+2. **Then ensure a stream is live.** Already open → keep it, untouched. None open (never attached, or
+   the last one ended at quiescence) → `attach(resume=<last resume point>)`.
+
+The packaged UI implements exactly this as `agentRun.svelte.ts`'s `#ensureStreamLive()`.
+
+Three things make this the right shape rather than merely a convenient one.
+
+**Ordering is load-bearing: send first, then ensure.** Checking for a live stream *before* the send
+is racy — the open stream can stop at the current `turn_end` because its status re-query sees an idle
+agent, the message not yet being admitted. Once `submit_message` returns, the message is durably
+admitted and visible to `agent_status`, so no later `should_stop` evaluation can conclude "idle."
+
+**Keeping the open stream is cheaper.** A re-attach starts a new read and re-queries the agent's
+status. Keeping the open one costs nothing, so a send never tears it down.
+
+**`attach` already spans queued turns, so no turn bookkeeping is needed.** Its stop condition is real
+quiescence (`not turn_active and not pending_turns` and the root's last event carries the agent's
+`last_event_seq`), so a
+message queued behind the open turn makes `pending_turns` non-empty and the live stream continues
+straight through the current `turn_end` into the queued turn. A client never has to decide whether to
+re-attach for a queued message.
+
+One residual race the ordering cannot close: the server may have *already* decided to stop at the
+current `turn_end` before the submit returned. So a client that still has outstanding messages when
+its stream ends naturally should pick a new one up — cheap, and handled where the stream actually
+ends rather than guessed at on every send.
+
+And it still terminates at quiescence, which is the point of the bracket: **`turn_end` is where the
+server sheds a client.** Every open read holds a long poll on the Stream runtime, so a stream held
+open forever costs a live read for nothing.
+
+Design discussion, including the alternatives rejected on the way here:
+[`docs/design/per-message-events.md`](docs/design/per-message-events.md).
 
 ### One example, standalone
 
@@ -793,7 +845,7 @@ UI. `create_session_manager_worker` builds the same agent-agnostic worker that
 from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.web import (
     create_agent_harness_app,
@@ -804,7 +856,7 @@ from temporal_agent_harness.web import (
 async def run_session_manager() -> None:
     connect_config = ClientConfig.load_client_connect_config()
     client = await Client.connect(
-        **connect_config, plugins=[AgentHarnessPlugin(), store_from_env()]
+        **connect_config, plugins=[AgentHarnessPlugin(), streams_from_env()]
     )
     worker = create_session_manager_worker(client)
     await worker.run()

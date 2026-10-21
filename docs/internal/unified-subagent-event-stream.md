@@ -1,5 +1,10 @@
 # Unified Subagent Event Stream (client-side stream merge)
 
+> **Replaced on the Brook build.** Every agent of a tree publishes on its root's Stream, each on a
+> Topic of its own, so one read gives the whole tree in order and the client-side merge below is
+> gone. See the README, [Streams](../../README.md#streams). This page keeps the merge design for
+> the record.
+
 **Status:** ✅ **Implemented** (W1–W4 landed; see [Workstreams](#workstreams)). The merge layer
 lives in [`harness/stream_merge/`](../temporal_agent_harness/harness/stream_merge) and is wired into
 `AgentClient.send_message` / `attach`; the protocol deltas + the in-workflow `subagent_reply_received`

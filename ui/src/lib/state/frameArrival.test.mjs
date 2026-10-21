@@ -130,11 +130,10 @@ const frame = (agentId, offset, { replay = true } = {}) => ({
 });
 
 /**
- * The two parent-stream frames a client sees for a child the merge could not
- * mount. `subagent_started` is the parent's, so it carries the parent's
- * `agent_id`; the marker is synthesized (hence `event_offset: -1`) and stamped
- * with the child's `agent_id`, matching `_unavailable_event` in
- * `stream_merge/merge.py`.
+ * The two parent-stream frames a client sees for a child whose events it could not
+ * obtain. `subagent_started` is the parent's, so it carries the parent's `agent_id`;
+ * the marker is synthesized (hence `event_offset: -1`) and stamped with the child's
+ * `agent_id`.
  */
 const subagentStarted = (subagentId, workflowId, offset) => ({
   event: "subagent_started",
