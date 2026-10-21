@@ -44,7 +44,7 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
 )
 from temporal_agent_harness.harness.agent_protocol.events import (
     TURN_EVENTS_TOPIC,
-    in_subtree,
+    subtree_prefix,
     subagent_topic,
     AgentEvent,
     AgentEventType,
@@ -136,7 +136,7 @@ __all__ = [
     "AgentMessageReply",
     # Stream-event vocabulary
     "TURN_EVENTS_TOPIC",
-    "in_subtree",
+    "subtree_prefix",
     "subagent_topic",
     "AgentEventType",
     "EventTypeT",

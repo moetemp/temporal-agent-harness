@@ -5,20 +5,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from temporalio.api.streamservice.v1 import ProducerKind
-from temporalio.client import WorkflowExecutionStatus
-from temporalio.contrib.streams import (
-    Closed,
-    Idle,
-    Record,
-    StreamNotFoundError,
-    Superseded,
-    Topic,
-)
+from temporalio.contrib.streams import Closed, Idle, Record, StreamNotFoundError, Superseded, Topic
 from temporalio.contrib.streams.system import models
 
 import temporal_agent_harness.harness.stream_transport as transport
@@ -27,13 +18,14 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentEvent,
     AttemptSuperseded,
     ReplyDelta,
-    in_subtree,
     subagent_topic,
+    subtree_prefix,
 )
 from temporal_agent_harness.harness.stream_transport import (
     TurnCursorError,
     TurnStream,
     cursor_after,
+    next_turn_cursor,
     parse_cursor,
     publisher_for_activity,
     read_turn_events,
@@ -62,11 +54,18 @@ class _FakeStream:
         self,
         *,
         topics: Sequence[Topic[Any]] | None = None,
+        topic_prefixes: Sequence[str] = (),
         from_offset: int | None = None,
+        type: Any = None,
         **_: Any,
     ) -> AsyncIterator[Any]:
         self.reads.append(
-            {"topics": [t.name for t in topics] if topics else None, "from": from_offset}
+            {
+                "topics": [t.name for t in topics] if topics else None,
+                "prefixes": list(topic_prefixes),
+                "from": from_offset,
+                "type": type,
+            }
         )
 
         async def items() -> AsyncIterator[Any]:
@@ -154,44 +153,26 @@ async def test_an_idle_or_closed_item_ends_the_read(end: Any):
 
 async def test_the_own_read_filters_to_the_agents_topic():
     _, stream = await _drain([], after="7")
-    assert stream.reads == [{"topics": [TURN_EVENTS_TOPIC], "from": 7}]
+    assert stream.reads == [
+        {"topics": [TURN_EVENTS_TOPIC], "prefixes": [], "from": 7, "type": AgentEvent}
+    ]
 
 
-async def test_the_subtree_read_keeps_the_agent_and_its_subagents_only():
+async def test_the_subtree_read_asks_for_the_agent_and_its_subagents_only():
     child = subagent_topic("root-aaaaaa")
-    grandchild = subagent_topic("root-aaaaaa-bbbbbb")
-    sibling = subagent_topic("root-cccccc")
-    out, stream = await _drain(
-        [
-            _record(1, _event("root", "parent"), topic=TURN_EVENTS_TOPIC),
-            _record(2, _event("root-aaaaaa", "child"), topic=child),
-            _record(3, _event("root-aaaaaa-bbbbbb", "grandchild"), topic=grandchild),
-            _record(4, _event("root-cccccc", "sibling"), topic=sibling),
-        ],
-        topic=child,
-        subtree=True,
-    )
-    assert stream.reads == [{"topics": None, "from": None}]
-    assert [r.data.agent_id for r in out] == ["root-aaaaaa", "root-aaaaaa-bbbbbb"]
+    _, stream = await _drain([], topic=child, subtree=True)
+    assert stream.reads == [
+        {"topics": [child], "prefixes": [f"{child}-"], "from": None, "type": AgentEvent}
+    ]
 
 
-async def test_a_read_of_every_topic_types_each_record():
-    # A Topic named at run time has no type on the read, so it decodes to plain JSON.
-    raw = _event("root-aaaaaa", "child").model_dump(mode="json")
-    out, _ = await _drain(
-        [Record(topic=subagent_topic("root-aaaaaa"), data=raw, offset=1, producer=None)],
-        subtree=True,
-    )
-    assert isinstance(out[0].data, AgentEvent)
-
-
-def test_in_subtree():
-    root = TURN_EVENTS_TOPIC
+def test_subtree_prefix():
+    root = subtree_prefix(TURN_EVENTS_TOPIC)
     child = subagent_topic("abc")
-    assert in_subtree(child, root)
-    assert in_subtree(subagent_topic("abc-def"), child)
-    assert not in_subtree(subagent_topic("abcdef"), child)
-    assert not in_subtree(root, child)
+    assert subagent_topic("abc").startswith(root)
+    assert subagent_topic("abc-def").startswith(subtree_prefix(child))
+    assert not subagent_topic("abcdef").startswith(subtree_prefix(child))
+    assert not TURN_EVENTS_TOPIC.startswith(subtree_prefix(child))
 
 
 def test_cursors():
@@ -222,33 +203,16 @@ async def test_the_activity_publisher_flushes_the_tail_when_the_activity_fails(m
     assert opened[0][0].id == "wf:run"
 
 
-class _MissingStream(_FakeStream):
-    """A Stream that no agent wrote: every read fails with ``StreamNotFoundError``."""
 
-    def subscribe(self, **kw: Any) -> AsyncIterator[Any]:
-        self.reads.append(kw)
+async def test_the_next_cursor_of_a_stream_not_written_yet_is_the_beginning(monkeypatch):
+    # A Workflow's default Stream does not exist until its first write, and get_offset()
+    # raises until then. A client that sends the first message reads from the beginning.
+    class _Unwritten(_FakeStream):
+        async def get_offset(self) -> int:
+            raise StreamNotFoundError("no Stream yet", reason="stream_not_found")
 
-        async def items() -> AsyncIterator[Any]:
-            raise StreamNotFoundError("no Stream", reason="stream_not_found")
-            yield
+    async def fake_turn_stream(_client: Any, _workflow_id: str, **_: Any) -> TurnStream:
+        return TurnStream(_Unwritten([]), TURN_EVENTS_TOPIC, root=None)  # type: ignore[arg-type]
 
-        return items()
-
-
-class _Root:
-    def __init__(self, statuses: list[WorkflowExecutionStatus]) -> None:
-        self._statuses = statuses
-
-    async def describe(self) -> Any:
-        return SimpleNamespace(status=self._statuses.pop(0))
-
-
-async def test_a_read_of_a_stream_never_written_ends_with_the_run():
-    # The read's own wait for the Stream does not look at the run, so a session that ended
-    # before its first event would otherwise hold the reader forever.
-    stream = _MissingStream([])
-    root = _Root([WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.COMPLETED])
-    located = TurnStream(stream, TURN_EVENTS_TOPIC, root=root)  # type: ignore[arg-type]
-    out = [record async for record in read_turn_events(located)]
-    assert out == []
-    assert len(stream.reads) == 2
+    monkeypatch.setattr(transport, "turn_stream", fake_turn_stream)
+    assert await next_turn_cursor(None, "wf") == ""  # type: ignore[arg-type]

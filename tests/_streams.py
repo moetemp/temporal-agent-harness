@@ -1,13 +1,15 @@
 """Where the stream-backed tests get their Stream plugin, their server, and their turn events.
 
-The Streams live in a Redis at ``STREAMS_REDIS_URL`` (``redis://127.0.0.1:6379`` by default),
-so the suite needs one. The suite puts its keys under a prefix of its own, ``STREAMS_KEY_PREFIX``
-unless it is set, so two runs on one Redis never meet. ``TEMPORAL_ADDRESS`` names a running server
-for the tests to connect to. Without it they start the time-skipping test server.
+``STREAMS_STORE`` picks the store the way it does for a worker, but the suite defaults to
+``memory``, so it needs nothing installed. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``, and
+the suite puts its keys under a prefix of its own, ``STREAMS_KEY_PREFIX`` unless it is set, so two
+runs on one Redis never meet. ``TEMPORAL_ADDRESS`` names a running server for the tests to connect
+to. Without it they start the time-skipping test server.
 
 The plugin is registered on the test client, through ``Client.connect``, the way an application
 registers it. Workers built from that client take it, and every reader goes through
-``for_handle``. One plugin serves one client connection, so every test builds its own.
+``for_handle``. A Redis plugin serves one client connection, so every test builds its own. The
+memory plugin is one for the process, so the web app's client sees the workers' Streams.
 """
 
 from __future__ import annotations
@@ -18,12 +20,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from temporalio.client import Client
-from temporalio.contrib.streams.redis import RedisStreamPlugin
+from temporalio.contrib.streams.redis import StreamPlugin
 from temporalio.testing import WorkflowEnvironment
 
 from temporal_agent_harness.harness.agent_protocol import AgentEvent
 from temporal_agent_harness.harness.stream_transport import (
     KEY_PREFIX_ENV,
+    STORE_ENV,
     follow_turn_events,
     streams_from_env,
 )
@@ -36,13 +39,14 @@ __all__ = [
     "workflow_environment",
 ]
 
-# Every plugin of this process reads the prefix from the environment, the web app's too.
+# Every plugin of this process reads these from the environment, the web app's too.
+os.environ.setdefault(STORE_ENV, "memory")
 os.environ.setdefault(KEY_PREFIX_ENV, f"harness-test-{uuid.uuid4().hex[:12]}")
 
-_current: RedisStreamPlugin | None = None
+_current: StreamPlugin | None = None
 
 
-def store() -> RedisStreamPlugin:
+def store() -> StreamPlugin:
     """The plugin of the running test, built on first use and dropped by the suite's fixture."""
     global _current
     if _current is None:
@@ -67,7 +71,10 @@ async def streaming_client(client: Client) -> Client:
         client.service_client.config.target_host,
         namespace=client.namespace,
         data_converter=config["data_converter"],
-        plugins=[*config["plugins"], streams_from_env()],
+        plugins=[
+            *(p for p in config["plugins"] if not isinstance(p, StreamPlugin)),
+            streams_from_env(),
+        ],
     )
 
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from temporalio.client import Client, WorkflowExecutionStatus, WorkflowHandle
+from temporalio.client import Client, WorkflowHandle
 from temporalio.contrib.streams import (
     ClientStream,
     Closed,
@@ -30,7 +30,8 @@ from temporalio.contrib.streams import (
     activity_stream,
     for_handle,
 )
-from temporalio.contrib.streams.redis import RedisStreamPlugin
+from temporalio.contrib.streams.redis import RedisStreamPlugin, StreamPlugin
+from temporalio.contrib.streams.testing import MemoryStreamPlugin
 
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_STREAM_MEMO,
@@ -38,34 +39,47 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentEvent,
     AgentStream,
     AttemptSuperseded,
-    in_subtree,
+    subtree_prefix,
 )
 
+STORE_ENV = "STREAMS_STORE"
 REDIS_URL_ENV = "STREAMS_REDIS_URL"
 KEY_PREFIX_ENV = "STREAMS_KEY_PREFIX"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379"
-# How long one read waits for a Stream that no agent has written yet, before it looks at the
-# root's run again. A fresh session has no Stream until its first event, and a client may start
-# reading before that.
-_CREATE_WINDOW = timedelta(seconds=5)
+# How long a read waits for a Stream that no agent has written yet. A fresh session has no
+# Stream until its first event, and a client may start reading before that. The read also ends
+# when the root's run ends.
+_WAIT_FOR_CREATE = timedelta(hours=1)
+# Every client of this process shares one memory plugin, so they all see the same Streams.
+_memory: MemoryStreamPlugin | None = None
 
 
 class TurnCursorError(ValueError):
     """A turn cursor that is not a position on the agent's Stream."""
 
 
-def streams_from_env() -> RedisStreamPlugin:
-    """The Redis Stream plugin at ``STREAMS_REDIS_URL``.
+def streams_from_env() -> StreamPlugin:
+    """The Stream plugin that ``STREAMS_STORE`` names.
 
-    The web app, the Nexus adapter and the workers are separate processes, and they must all
-    reach one Redis. ``STREAMS_KEY_PREFIX`` puts the keys under a prefix of their own, which
-    keeps two deployments (or two test runs) on one Redis apart.
+    ``redis`` (the default) is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter
+    and the workers are separate processes, and they must all reach one Redis.
+    ``STREAMS_KEY_PREFIX`` puts the keys under a prefix of their own, which keeps two deployments
+    (or two test runs) on one Redis apart. ``memory`` keeps the Streams in this process, for tests
+    and a single process only.
 
     Register the result once, as ``Client.connect(..., plugins=[streams])``. Workers built from
     that client take it, workflow code and activities reach it through the facade, and any other
     code through ``for_handle(handle)``. One plugin serves one client connection, so a second
-    connection needs a plugin of its own.
+    connection needs a plugin of its own, except the memory plugin, which all of them share.
     """
+    global _memory
+    store = os.environ.get(STORE_ENV, "redis")
+    if store == "memory":
+        if _memory is None:
+            _memory = MemoryStreamPlugin()
+        return _memory
+    if store != "redis":
+        raise ValueError(f"{STORE_ENV}={store!r} names no Stream store")
     return RedisStreamPlugin(
         os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL),
         key_prefix=os.environ.get(KEY_PREFIX_ENV) or None,
@@ -131,15 +145,7 @@ def _open(handle: WorkflowHandle[Any, Any], wait: bool) -> ClientStream:
         return for_handle(handle)
     # The read ends with the root's run: its close ends it, and so does a run that ended with
     # no close, such as a terminated one.
-    return for_handle(handle, wait_for_create=_CREATE_WINDOW, end_with_run=True)
-
-
-async def _run_ended(handle: WorkflowHandle[Any, Any]) -> bool:
-    description = await handle.describe()
-    return (
-        description.status is not None
-        and description.status != WorkflowExecutionStatus.RUNNING
-    )
+    return for_handle(handle, wait_for_create=_WAIT_FOR_CREATE, end_with_run=True)
 
 
 async def next_turn_cursor(client: Client, workflow_id: str) -> str:
@@ -176,7 +182,7 @@ async def check_turn_cursor(client: Client, workflow_id: str, after: str) -> Non
         # A Stream that does not exist has no position past its beginning.
         raise TurnCursorError(str(err)) from err
     finally:
-        await _close(items)
+        await items.aclose()
 
 
 def follow_turn_events(
@@ -218,60 +224,31 @@ async def read_turn_events(
     ends when the root agent's run closes.
     """
     offset = parse_cursor(after)
-    own = located.turn_events()
+    items = located.stream.subscribe(
+        topics=[located.turn_events()],
+        topic_prefixes=[subtree_prefix(located.topic)] if subtree else (),
+        from_offset=offset,
+        # A subagent's Topic is named at run time, so it has no Topic object with a type.
+        type=AgentEvent,
+    )
     # The newest record of each producer, to stamp a Superseded marker with.
     given: dict[str, Record[AgentEvent]] = {}
-    started = False
-    while True:
-        items = located.stream.subscribe(topics=None if subtree else [own], from_offset=offset)
-        try:
-            async for item in items:
-                started = True
-                if isinstance(item, Record):
-                    if subtree and not in_subtree(item.topic, located.topic):
-                        continue
-                    record = _typed(item)
-                    if record.producer is not None:
-                        given[record.producer.id] = record
-                    yield record
-                elif isinstance(item, Superseded):
-                    marker = _superseded_marker(item, given)
-                    if marker is not None:
-                        yield marker
-                elif isinstance(item, (Closed, Idle)):
-                    return
-            return
-        except StreamNotFoundError:
-            # The read's wait for the Stream to exist does not end with the run, so a session
-            # that ended before its first event would hold the reader forever.
-            if started:
-                raise
-            if await _run_ended(located.root):
+    try:
+        async for item in items:
+            if isinstance(item, Record):
+                if item.producer is not None:
+                    given[item.producer.id] = item
+                yield item
+            elif isinstance(item, Superseded):
+                marker = _superseded_marker(item, given)
+                if marker is not None:
+                    yield marker
+            elif isinstance(item, (Closed, Idle)):
                 return
-        except StreamOffsetError as err:
-            raise TurnCursorError(str(err)) from err
-        finally:
-            await _close(items)
-
-
-async def _close(items: AsyncIterator[Any]) -> None:
-    # ``subscribe`` gives an async generator, typed as an iterator, so stop the read explicitly.
-    close = getattr(items, "aclose", None)
-    if close is not None:
-        await close()
-
-
-def _typed(record: Record[Any]) -> Record[AgentEvent]:
-    # A read of every Topic decodes the Topics it has no type for to plain JSON, and a
-    # subagent's Topic is named at run time.
-    if isinstance(record.data, AgentEvent):
-        return record
-    return Record(
-        topic=record.topic,
-        data=AgentEvent.model_validate(record.data),
-        offset=record.offset,
-        producer=record.producer,
-    )
+    except StreamOffsetError as err:
+        raise TurnCursorError(str(err)) from err
+    finally:
+        await items.aclose()
 
 
 def _superseded_marker(
@@ -339,8 +316,7 @@ async def publisher_for_activity(
     stream = activity_stream(
         StreamRef(stream_id) if stream_id else None, batch_interval=batch_interval
     )
-    # The type only decodes a read, and this Topic is only written.
-    publisher = ActivityPublisher(stream.topic(topic, type=object))
+    publisher = ActivityPublisher(stream.topic(topic))
     try:
         yield publisher
     finally:

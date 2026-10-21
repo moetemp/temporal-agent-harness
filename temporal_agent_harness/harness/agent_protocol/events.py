@@ -45,11 +45,11 @@ def subagent_topic(agent_id: str) -> str:
     return f"{TURN_EVENTS_TOPIC}/{agent_id}"
 
 
-def in_subtree(topic: str, root_topic: str) -> bool:
-    """Whether ``topic`` belongs to the agent that publishes on ``root_topic`` or below it."""
-    if root_topic == TURN_EVENTS_TOPIC:
-        return topic == root_topic or topic.startswith(f"{TURN_EVENTS_TOPIC}/")
-    return topic == root_topic or topic.startswith(f"{root_topic}-")
+def subtree_prefix(topic: str) -> str:
+    """The prefix of the Topics of every subagent below the agent that publishes on ``topic``."""
+    if topic == TURN_EVENTS_TOPIC:
+        return f"{TURN_EVENTS_TOPIC}/"
+    return f"{topic}-"
 
 
 class AgentEventType(StrEnum):
