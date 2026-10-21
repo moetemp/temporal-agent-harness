@@ -26,7 +26,7 @@ classifiers = [
 # pydantic. AI-SDK and external-storage needs are opt-in extras below, so installing the
 # harness doesn't drag in Gemini or boto3.
 dependencies = [
-    "temporalio>=1.31.0",  # provides temporalio.contrib.streams (AI-198 prototype)
+    "temporalio>=1.31.0",  # provides temporalio.contrib.streams (Brook v3 prototype)
     "pydantic>=2.0",
 ]
 
@@ -165,10 +165,14 @@ include = ["temporal_agent_harness*"]
     "dist/assets/*",
 ]
 
+[tool.uv.config-settings-package]
+# The Redis Stream runtime is behind the bridge's `streams` feature, which is off by default.
+temporalio = { build-args = "--features streams" }
+
 [tool.uv.sources]
-# Pinned to the AI-198 Brook build of the Python SDK (`moe/brook/v2/h10-sdk-streams`):
-# `temporalio.contrib.streams` on the sdk-streams stream runtime is not released.
-temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "c0dedbe2cc2ef5d7c2cbfaa9e926068fc58b1fb0" }
+# Pinned to the Brook v3 build of the Python SDK (`moe/brook/v3/p11-shutdown-drain`):
+# `temporalio.contrib.streams` and `RedisStreamPlugin` are not released.
+temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "621be8688013e19b2d66a5386958c7bd0e5960ef" }
 temporal-nexus-mcp = { path = "nexus/mcp", editable = true }
 
 [tool.pytest.ini_options]
