@@ -32,7 +32,6 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.streams import StreamCursorError
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from tests._streams import turn_events, workflow_environment
@@ -67,6 +66,7 @@ from temporal_agent_harness.harness.agent_protocol import (
 from temporalio.exceptions import ApplicationError
 
 from temporal_agent_harness.harness.agent_client import AgentClient, JoinedTurnError
+from temporal_agent_harness.harness.stream_transport import TurnCursorError
 from temporal_agent_harness.harness.agent_workflow import (
     AUTO_MODE_EVALUATOR_ATTR,
     Injected,
@@ -439,13 +439,13 @@ async def test_attach_resuming_from_a_point_yields_exactly_what_follows_it(
 
 
 async def test_attach_refuses_a_foreign_resume_point_before_streaming(client_and_queue):
-    """A point minted by another stream provider fails the attach call itself, so a web layer
-    can answer with a client error instead of failing after the response started."""
+    """A point that names no position on the Stream fails the attach call itself, so a web
+    layer can answer with a client error instead of failing after the response started."""
     client, task_queue = client_and_queue
     handle = await _start(client, task_queue, TypedProbeAgent)
     agent_client = AgentClient(client, handle.id)
 
-    with pytest.raises(StreamCursorError):
+    with pytest.raises(TurnCursorError):
         await agent_client.attach(on_item=lambda item, _resume: item, resume="1@foreign:0")
 
 
@@ -1290,7 +1290,7 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, outcome="error"
     )
 
-    published = [c.args[0] for c in runner._events.append.call_args_list]
+    published = [c.args[0] for c in runner._events.publish.call_args_list]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event
@@ -1301,13 +1301,13 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
 
 
 def test_publish_reaches_the_producer_in_order(offline_build):
-    """A publish is one synchronous append on the producer, so the producer sees the envelopes
-    in the order the runner published them, with the sequence numbers it stamped."""
+    """A publish is one synchronous publish on the Topic, so the Topic sees the envelopes in
+    the order the runner published them, with the sequence numbers it stamped."""
     runner = offline_build(AgentConfig())
     runner._pub("turn-1", 1, TurnEnded())
     runner._pub("turn-2", 2, TurnEnded())
 
-    published = [c.args[0] for c in runner._events.append.call_args_list]
+    published = [c.args[0] for c in runner._events.publish.call_args_list]
     assert [e.turn_id for e in published] == ["turn-1", "turn-2"]
     assert [e.seq for e in published] == [1, 2]
 
@@ -1315,7 +1315,7 @@ def test_publish_reaches_the_producer_in_order(offline_build):
 def test_refused_publish_raises_at_the_call(offline_build):
     """A publish the store refuses fails the caller right there, not somewhere later."""
     runner = offline_build(AgentConfig())
-    runner._events.append.side_effect = [None, RuntimeError("store refused it")]
+    runner._events.publish.side_effect = [None, RuntimeError("store refused it")]
     runner._pub("turn-1", 1, TurnEnded())
 
     with pytest.raises(RuntimeError, match="store refused it"):
@@ -1325,7 +1325,7 @@ def test_refused_publish_raises_at_the_call(offline_build):
 def test_accepted_turn_from_error_raises_when_detail_absent():
     """An accepted-but-errored turn with no ``subagent_turn`` detail is a broken activity
     contract. The parent raises loudly rather than closing the bracket on an invented number
-    that the client merge's close gate would never match."""
+    that no consumer could pair with the opening marker."""
     err = ApplicationError("no reply", type="SubagentNoReply", non_retryable=True)
     with pytest.raises(ApplicationError) as excinfo:
         AgentWorkflowRunner._accepted_turn_from_error(err)
@@ -1347,9 +1347,9 @@ def offline_build(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    # Offline there is no store to bind a producer on; a mock records what the runner publishes.
-    # Its append is synchronous like the real one.
-    monkeypatch.setattr(aw, "stream_producer", lambda *a, **k: MagicMock())
+    # Offline there is no Stream to bind a Topic on; a mock records what the runner publishes.
+    # Its publish is synchronous like the real one.
+    monkeypatch.setattr(aw, "workflow_stream", lambda *a, **k: MagicMock())
 
     def build(config: AgentConfig):
         return AgentWorkflowRunner(
@@ -1370,7 +1370,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    monkeypatch.setattr(aw, "stream_producer", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "workflow_stream", lambda *a, **k: MagicMock())
 
     def build(
         config: AgentConfig,
@@ -1655,7 +1655,7 @@ async def test_send_message_fast_fails_on_a_join_instead_of_hanging(client_and_q
     """``send_message`` is one message → one turn → one stream, and says so immediately.
 
     A joining message has its turn's ``turn_started`` BEHIND the position read before the send, so the
-    merge's skip preamble never matches and the caller would sit in silence until the turn
+    reader's skip preamble never matches and the caller would sit in silence until the turn
     timeout (300s) for a single ``AgentTurnTimeout``. The reply's ``disposition`` makes that
     knowable at submit time, so it raises instead — and the message is still running, which is
     what the carried reply is for.

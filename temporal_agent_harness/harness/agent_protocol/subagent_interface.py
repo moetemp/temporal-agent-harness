@@ -13,12 +13,18 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from temporal_agent_harness.harness.agent_protocol.agent_interface import AgentMessage
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
 
 # The registered name of the subagent-turn activity. Used by the activity's ``@activity.defn``
 # (in ``subagent_activities.py``) and by the in-workflow ``send_<function>`` subagent tool's
 # ``execute_activity`` call (in ``agent_workflow.py``).
 RUN_SUBAGENT_TURN_ACTIVITY = "run_subagent_turn"
+
+# The update a parent's subagent-turn activity sends a message with. It is the
+# ``send_agent_message`` front door plus the dispatch the child announces on its parent's Topic.
+# Not in ``agent_interface``: only the harness sends it.
+SEND_SUBAGENT_MESSAGE_UPDATE = "send_subagent_message"
 
 # Steady heartbeat cadence for the activity. The activity heartbeats every interval; the
 # wrapper sets ``heartbeat_timeout`` to twice it, leaving one full interval of grace before
@@ -55,27 +61,25 @@ class RunSubagentTurnInput(BaseModel):
     )
     after_cursor: str = Field(
         default="",
-        description="Where to resume consuming the child's stream: the cursor of the last "
+        description="Where to resume reading the child's Topic: the cursor just past the last "
         "record the caller consumed (the previous turn's returned consumed_cursor), or empty "
         "for the beginning. A PERFORMANCE HINT ONLY, never correctness-critical: the streamer "
         "filters to this turn's turn_id, so a stale cursor merely replays a few already-seen "
         "events, and it can never be too far ahead (the next turn's events always follow the "
-        "prior turn's turn_end, which is where the prior consumed_cursor points). The token is "
-        "opaque and belongs to the stream provider; the caller stores and hands it back.",
+        "prior turn's turn_end, which is where the prior consumed_cursor points).",
     )
-    # The following identify the dispatch for the SubagentMessageSent event the activity
-    # publishes onto the PARENT's stream when it actually sends the message (see the activity).
+    # The following identify the dispatch for the SubagentMessageSent event the child publishes
+    # onto the PARENT's Topic when it admits the message (see SubagentDispatch).
     handle: str = Field(
         description="The parent's short handle for this subagent — for the SubagentMessageSent "
-        "event the activity publishes on send."
+        "event."
     )
     agent_key: str = Field(
         description="The wired agent key of this subagent — for the SubagentMessageSent event."
     )
     parent_stream_context: TurnStreamContext = Field(
-        description="The PARENT turn (turn_id + turn_number) to publish the SubagentMessageSent "
-        "event against. The activity targets its own parent workflow's stream via "
-        "publisher_from_activity; this carries which turn the dispatch belongs to."
+        description="The PARENT turn (turn_id + turn_number) the SubagentMessageSent event "
+        "belongs to, and the Stream and Topic the parent publishes on."
     )
 
 
@@ -100,3 +104,27 @@ class SubagentTurnResult(BaseModel):
         "stores it and threads it back as the next turn's after_cursor, so each turn streams "
         "from where the last one ended (cheap resume, no full-history replay)."
     )
+
+
+class SubagentDispatch(BaseModel):
+    """What a child needs to announce a parent's message on the parent's Topic.
+
+    The child publishes the parent's ``subagent_message_sent`` in the same Workflow Task that
+    admits the message, before its own ``message_accepted``. Both agents write one Stream, so the
+    marker comes before every event of the child's turn for every reader.
+    """
+
+    agent_key: str = Field(description="The wired agent key of the child.")
+    after_cursor: str = Field(
+        default="", description="The child Topic cursor the parent's activity reads after."
+    )
+    parent_stream_context: TurnStreamContext = Field(
+        description="The parent turn the marker belongs to, and the parent's Topic."
+    )
+
+
+class SubagentMessage(BaseModel):
+    """The payload of the ``send_subagent_message`` update: a message and its dispatch."""
+
+    message: AgentMessage
+    dispatch: SubagentDispatch

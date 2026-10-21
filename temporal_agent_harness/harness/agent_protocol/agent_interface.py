@@ -21,6 +21,9 @@ SEND_AGENT_MESSAGE_UPDATE = "send_agent_message"
 TOOL_APPROVAL_UPDATE = "tool_approval"
 PROVIDE_CALLBACK_RESULT_UPDATE = "provide_callback_result"
 AGENT_STATUS_QUERY = "agent_status"
+# The memo key a subagent workflow carries its ``AgentStream`` under, so a client that knows only
+# the subagent's workflow id finds the Stream and the Topic to read.
+AGENT_STREAM_MEMO = "agent_stream"
 AGENT_INTERFACE_QUERY = "agent_interface"
 
 # Width (hex chars) of ONE segment of an agent's short id. A top-level agent's id is a single
@@ -626,6 +629,21 @@ class ToolApprovalPolicy(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AgentStream(BaseModel):
+    """Where a subagent publishes its turn events: on its root agent's Stream, on its own Topic.
+
+    Every agent of a tree shares the root's default Stream, so a reader gets the whole tree in
+    one order with one read. The Topics keep each agent's events apart for a reader that wants
+    one agent only.
+    """
+
+    stream_id: str = Field(description="The id of the root agent's default Stream.")
+    root_workflow_id: str = Field(
+        description="The root agent's workflow id. A client opens the Stream from its handle."
+    )
+    topic: str = Field(description="The Topic this agent publishes its turn events on.")
+
+
 class AgentConfig(BaseModel):
     """The single, harness-defined input contract every agent workflow accepts.
 
@@ -687,11 +705,16 @@ class AgentConfig(BaseModel):
     id the parent (and a UI merging the streams) already knows it by. ``None`` → a top-level agent
     generates its own single-segment id. This is the one ``AgentConfig`` field a parent populates
     per-child rather than passing through unchanged.
+
+    ``stream`` — the Stream and Topic a subagent publishes on (see :class:`AgentStream`). A parent
+    sets it with ``agent_id`` when it starts a subagent. ``None`` → a top-level agent publishes on
+    its own default Stream, on :data:`TURN_EVENTS_TOPIC`.
     """
 
     approval_policy: ToolApprovalPolicy | None = None
     auto_approval_criteria: AutoApprovalCriteria | None = None
     agent_id: AgentId | None = None
+    stream: AgentStream | None = None
 
 
 # ---------------------------------------------------------------------------

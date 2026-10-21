@@ -38,7 +38,7 @@ from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 from agents.mcp import MCPServerStdio
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.openai_agents import (
     ModelActivityParameters,
@@ -122,10 +122,10 @@ async def main() -> None:
     # invoke_model_activity_streaming) are registered by the OpenAI plugin — so the Worker
     # below declares no activities at all.
     connect_config = ClientConfig.load_client_connect_config()
-    store = store_from_env()
+    streams = streams_from_env()
     client = await Client.connect(
         **connect_config,
-        plugins=[plugin, AgentHarnessPlugin(tools=[*ALL_TOOLS, *HUMAN_TOOLS]), store],
+        plugins=[plugin, AgentHarnessPlugin(tools=[*ALL_TOOLS, *HUMAN_TOOLS]), streams],
     )
 
     worker = Worker(

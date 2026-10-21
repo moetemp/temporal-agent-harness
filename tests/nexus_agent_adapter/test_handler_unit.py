@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from nexusrpc import HandlerError, HandlerErrorType
 from temporalio.converter import DataConverter
-from temporalio.contrib.streams import StreamCursorError
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import CallbackResultAck
 from temporal_agent_harness.nexus_agent_adapter import handler as handler_mod
@@ -23,6 +22,7 @@ from temporal_agent_harness.nexus_agent_adapter.handler import (
     _is_workflow_already_completed,
 )
 from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
+from temporal_agent_harness.harness.stream_transport import TurnCursorError
 
 _payload_converter = DataConverter.default.payload_converter
 
@@ -96,7 +96,7 @@ def test_is_workflow_already_completed_false_for_unrelated_error() -> None:
 
 
 async def test_poll_messages_answers_bad_request_for_a_foreign_cursor() -> None:
-    # The store refuses a token it did not mint at the read's first step, before any
+    # The reader refuses a cursor that names no position at its first step, before any
     # record. Outside the guard it leaves the operation as an
     # unhandled exception instead of telling the caller what it got wrong.
     handler = AgentServiceHandler(
@@ -109,9 +109,9 @@ async def test_poll_messages_answers_bad_request_for_a_foreign_cursor() -> None:
     )
 
     def refuse(_client, _workflow_id, *, after=""):
-        # The stream runtime refuses a cursor at the read's first step, not at the call.
+        # The reader refuses a cursor at its first step, not at the call.
         async def gen():
-            raise StreamCursorError(f"cursor {after!r} is not a stream cursor")
+            raise TurnCursorError(f"cursor {after!r} is not a turn cursor")
             yield
 
         return gen()

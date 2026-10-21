@@ -33,7 +33,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.openai_agents import (
     ModelActivityParameters,
@@ -75,9 +75,9 @@ async def main() -> None:
     # pydantic-compatible) payload converter wins; the harness plugin then adds the
     # large-payload offload on top, matching the session-manager worker and the web server.
     connect_config = ClientConfig.load_client_connect_config()
-    store = store_from_env()
+    streams = streams_from_env()
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin(), store]
+        **connect_config, plugins=[plugin, AgentHarnessPlugin(), streams]
     )
 
     worker = Worker(

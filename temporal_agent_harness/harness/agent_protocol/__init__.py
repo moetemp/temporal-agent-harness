@@ -11,6 +11,7 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     APPROVAL_SHORT_ID_LENGTH,
     AGENT_INTERFACE_QUERY,
     AGENT_STATUS_QUERY,
+    AGENT_STREAM_MEMO,
     PROVIDE_CALLBACK_RESULT_UPDATE,
     SEND_AGENT_MESSAGE_UPDATE,
     TOOL_APPROVAL_UPDATE,
@@ -19,6 +20,7 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AgentId,
     AgentMessage,
     AgentStatus,
+    AgentStream,
     AutoApprovalCriteria,
     AutoApprovalCriteriaSet,
     AutoApprovalVerdict,
@@ -41,8 +43,9 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AgentMessageReply,
 )
 from temporal_agent_harness.harness.agent_protocol.events import (
-    TURN_EVENTS,
     TURN_EVENTS_TOPIC,
+    in_subtree,
+    subagent_topic,
     AgentEvent,
     AgentEventType,
     AgentStatePatch,
@@ -88,7 +91,10 @@ from temporal_agent_harness.harness.agent_protocol.subagent_interface import (
     DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT,
     DEFAULT_SUBAGENT_START_TO_CLOSE_TIMEOUT,
     RUN_SUBAGENT_TURN_ACTIVITY,
+    SEND_SUBAGENT_MESSAGE_UPDATE,
     RunSubagentTurnInput,
+    SubagentDispatch,
+    SubagentMessage,
     SubagentTurnResult,
 )
 
@@ -98,6 +104,7 @@ __all__ = [
     "APPROVAL_SHORT_ID_LENGTH",
     "AGENT_INTERFACE_QUERY",
     "AGENT_STATUS_QUERY",
+    "AGENT_STREAM_MEMO",
     "PROVIDE_CALLBACK_RESULT_UPDATE",
     "SEND_AGENT_MESSAGE_UPDATE",
     "TOOL_APPROVAL_UPDATE",
@@ -106,6 +113,7 @@ __all__ = [
     "AgentId",
     "AgentMessage",
     "AgentStatus",
+    "AgentStream",
     "AutoApprovalCriteria",
     "AutoApprovalCriteriaSet",
     "AutoApprovalVerdict",
@@ -127,8 +135,9 @@ __all__ = [
     "ToolApprovalResult",
     "AgentMessageReply",
     # Stream-event vocabulary
-    "TURN_EVENTS",
     "TURN_EVENTS_TOPIC",
+    "in_subtree",
+    "subagent_topic",
     "AgentEventType",
     "EventTypeT",
     "StreamEvent",
@@ -174,5 +183,8 @@ __all__ = [
     "DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT",
     "DEFAULT_SUBAGENT_START_TO_CLOSE_TIMEOUT",
     "RunSubagentTurnInput",
+    "SEND_SUBAGENT_MESSAGE_UPDATE",
+    "SubagentDispatch",
+    "SubagentMessage",
     "SubagentTurnResult",
 ]

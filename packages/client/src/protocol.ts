@@ -489,7 +489,7 @@ export interface SubagentMessageSent {
    */
   subagent_turn: number;
   /**
-   * The cursor on the SUBAGENT's OWN stream that this turn's events follow (the child position the parent resumed consumption after for this turn; empty means the beginning). A client merging the parent + subagent streams positions the child cursor here the first time it mounts the child — so a merge that starts mid-session (resuming at a parent turn that is not the child's first) skips the child's pre-resume history, whose own message_sent markers are not on the merged stream and could otherwise never be ordered. An opaque provider token, unrelated to the parent stream's cursors.
+   * The cursor on the shared Stream from which the parent reads the subagent's Topic for this turn (empty means the beginning). A hint for a reader of the subagent's Topic alone; a reader of the whole Stream does not need it.
    */
   after_cursor: string;
 }
@@ -503,8 +503,8 @@ export interface SubagentMessageSent {
  * accepted-but-errored turn, which still emitted its own `turn_end`), but never for a
  * pre-acceptance rejection. Carries no reply payload (that rides the child's own
  * `message_handler_end` event + the send-tool's `tool_end`); it is a thin
- * close/correlation signal a stream-merge uses to order a subagent's whole turn ahead of
- * the parent observing its reply.
+ * close/correlation signal, and on the shared Stream the subagent's whole turn comes before
+ * it.
  */
 export interface SubagentReplyReceived {
   type: "subagent_reply_received";
@@ -517,7 +517,7 @@ export interface SubagentReplyReceived {
    */
   agent_key: string;
   /**
-   * The replying subagent's real child workflow id (matches the opening SubagentMessageSent) — the close-gate key a stream-merge correlates against.
+   * The replying subagent's real child workflow id (matches the opening SubagentMessageSent).
    */
   workflow_id: string;
   /**
@@ -570,14 +570,12 @@ export interface SubagentStopped {
   workflow_id: string;
 }
 /**
- * The stream merge gave up obtaining a subagent's events; its DETAIL is degraded (non-fatal).
+ * A client gave up obtaining a subagent's events; its DETAIL is degraded (non-fatal).
  *
- * SYNTHESIZED CLIENT-SIDE by the merge (never workflow-published) and injected into the merged
- * logical stream when a mounted subagent stream is unreadable/stalled. The merge stamps the
- * enclosing `AgentEvent`'s `agent_id` with this same `subagent_id` — so a UI that
- * groups events by `agent_id` routes this straight to the affected subagent's view, and a
- * root-only consumer (which filters to the root `agent_id`) ignores it. The parent stream is
- * unaffected; only the subagent's own turn detail is missing. No retry — a fresh attach recovers.
+ * Never workflow-published, and the harness's own reader does not synthesize it (see
+ * `AgentEventType.SUBAGENT_STREAM_UNAVAILABLE`). A client that does stamps the enclosing
+ * `AgentEvent`'s `agent_id` with this same `subagent_id`, so a UI that groups events
+ * by `agent_id` routes it straight to the affected subagent's view.
  */
 export interface SubagentStreamUnavailable {
   type: "subagent_stream_unavailable";
@@ -586,7 +584,7 @@ export interface SubagentStreamUnavailable {
    */
   subagent_id: string;
   /**
-   * The subagent's real child workflow id (the stream the merge couldn't read).
+   * The subagent's real child workflow id.
    */
   workflow_id: string;
   /**

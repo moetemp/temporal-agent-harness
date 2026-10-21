@@ -38,3 +38,14 @@ class TurnStreamContext(BaseModel):
         "derive it from ``activity.info()`` (which only knows the workflow_id), and the agent's id "
         "is no longer its workflow_id but a short, parent-assignable handle."
     )
+    stream_id: str | None = Field(
+        default=None,
+        description="The Stream the agent publishes on. ``None`` means the default Stream of the "
+        "workflow that scheduled the activity, which is the case for a top-level agent. A "
+        "subagent publishes on its root agent's Stream, so it threads that Stream's id here.",
+    )
+    topic: str = Field(
+        default="turn_events",
+        description="The Topic the agent publishes on: ``turn_events`` for a top-level agent, "
+        "the subagent's own Topic for a subagent.",
+    )

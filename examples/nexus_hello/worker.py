@@ -25,7 +25,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.openai_agents import (
     ModelActivityParameters,
@@ -63,7 +63,7 @@ async def main() -> None:
     # it then adds the harness's data-converter requirements and activities on top.
     connect_config = ClientConfig.load_client_connect_config()
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin(), store_from_env()]
+        **connect_config, plugins=[plugin, AgentHarnessPlugin(), streams_from_env()]
     )
 
     worker = Worker(

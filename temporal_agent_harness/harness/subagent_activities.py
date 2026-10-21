@@ -16,16 +16,14 @@
 # requires one of the close timeouts; the toolset generator uses a generous default that devs
 # can override).
 #
-# DESIGN — stream isolation: this activity reads the CHILD's stream ONLY to capture the reply
-# and detect turn_end. It mirrors NONE of the child's content onto the parent agent's stream.
-# (It does publish ONE marker of its own onto the PARENT's stream — the SubagentMessageSent
-# dispatch event, when it actually sends the message — but that is the parent's own record, not
-# any of the child's events; see _publish_dispatch.) A subagent's stream is never mirrored onto
-# a parent's. Collecting multiple agents' streams for a UI is a future client concern.
+# DESIGN — one Stream, a Topic per agent: the whole agent tree publishes on the root agent's
+# Stream, each agent on its own Topic. This activity reads the CHILD's Topic ONLY to capture the
+# reply and detect turn_end, and publishes nothing. The parent's SubagentMessageSent marker is
+# written by the child as it admits the message (see SubagentDispatch), so it lands before the
+# child's own events on the shared Stream.
 #
 # DESIGN — Temporal Client: the activity needs a ``Client`` to talk to
-# the *child* (both the ``send_agent_message`` update and the stream consumer). The activity's
-# own producer targets its parent, not the child, so it cannot serve here.
+# the *child* (both the ``send_subagent_message`` update and the Topic reader).
 # So this is a CLASS that closes over the worker's client; the bound method is what gets
 # registered as the activity. ``AgentHarnessPlugin`` does that instantiation from the worker's
 # own client (it is why the plugin overrides ``configure_worker``), so agents normally never
@@ -43,7 +41,7 @@ from pydantic import BaseModel
 from temporalio import activity
 from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
-from temporalio.contrib.streams import StreamCursorError, StreamRecord
+from temporalio.contrib.streams import Record
 
 from temporal_agent_harness.harness.agent_client import (
     MidTurnRejectedError,
@@ -55,19 +53,22 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentEvent,
     AgentEventType,
     RunSubagentTurnInput,
-    SubagentMessageSent,
+    SubagentDispatch,
     SubagentTurnResult,
 )
-from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
-from temporal_agent_harness.harness.stream_transport import follow_turn_events
+from temporal_agent_harness.harness.stream_transport import (
+    TurnCursorError,
+    cursor_after,
+    follow_turn_events,
+)
 
 
 class _TurnProgress(BaseModel):
     """The activity's heartbeat memo — what a retry needs to resume without re-sending.
 
     Recorded once the message has been sent (``sent`` is always True when present), carrying
-    the child's accepted ``message_id`` / ``turn_id`` / ``turn_number`` and the child stream
-    ``consumed_cursor`` to resume after. Its presence in ``heartbeat_details`` is the "already
+    the child's accepted ``message_id`` / ``turn_id`` / ``turn_number`` and the child Topic
+    ``consumed_cursor`` to resume from. Its presence in ``heartbeat_details`` is the "already
     sent?" signal; the background heartbeat task re-sends THIS object every interval, so the
     memo stays current as ``consumed_cursor`` advances (and is never clobbered by an empty
     heartbeat).
@@ -85,18 +86,17 @@ class _TurnProgress(BaseModel):
 
 async def _follow_from_hint(
     client: Client, child_workflow_id: str, progress: _TurnProgress
-) -> AsyncGenerator[StreamRecord[AgentEvent], None]:
-    """The child's turn events after ``progress.consumed_cursor``, or from its beginning.
+) -> AsyncGenerator[Record[AgentEvent], None]:
+    """The child's turn events from ``progress.consumed_cursor``, or from its beginning.
 
-    The cursor is a hint, so a store that will not take it costs a replay and nothing else:
-    the caller filters to this turn's turn_id either way. A switched store must not fail every
-    in-flight session's next subagent turn. The store refuses a cursor at the read's first
-    step, before any record, so the fallback never repeats a record.
+    The cursor is a hint, so one the Stream will not take costs a replay and nothing else:
+    the caller filters to this turn's turn_id either way. The reader refuses a cursor at its
+    first step, before any record, so the fallback never repeats a record.
     """
     events = follow_turn_events(client, child_workflow_id, after=progress.consumed_cursor)
     try:
         first = await anext(events)
-    except StreamCursorError:
+    except TurnCursorError:
         await events.aclose()
         progress.consumed_cursor = ""
         events = follow_turn_events(client, child_workflow_id, after="")
@@ -133,13 +133,12 @@ class SubagentActivities:
     async def run_subagent_turn(self, req: RunSubagentTurnInput) -> SubagentTurnResult:
         """Send one message to the child agent and stream its reply to completion.
 
-        Sends the ``send_agent_message`` envelope to ``req.child_workflow_id`` (unless a
-        heartbeat memo says a prior attempt already sent it), then subscribes to the child's
-        stream — with NO timeout — captures its own message's :class:`MessageHandlerEnd` output,
-        and returns once that turn's ``turn_end`` arrives. A background task heartbeats the dedup memo at a
-        steady interval throughout (see :meth:`_auto_heartbeat`). Mirrors none of the child's
-        stream content onto the parent; the only thing published onto the parent's stream is the
-        :class:`SubagentMessageSent` dispatch marker, on the fresh send (see :meth:`_publish_dispatch`).
+        Sends the message to ``req.child_workflow_id`` (unless a heartbeat memo says a prior
+        attempt already sent it), then reads the child's Topic — with NO timeout — captures its
+        own message's :class:`MessageHandlerEnd` output, and returns once that turn's
+        ``turn_end`` arrives. A background task heartbeats the dedup memo at a steady interval
+        throughout (see :meth:`_auto_heartbeat`). Publishes nothing: the child writes the
+        parent's :class:`SubagentMessageSent` marker as it admits the message.
 
         Failure modes surface as non-retryable :class:`ApplicationError` so the calling tool
         can render them as an ``is_error`` result to the parent model:
@@ -156,16 +155,10 @@ class SubagentActivities:
         # idempotent (``_submit`` keys the update on this activity's identity, stable across
         # attempts), so a crash between the update returning and the first heartbeat being
         # durably recorded re-issues the update and gets the same accepted reply back rather
-        # than dispatching the message twice. What that window can still duplicate is the
-        # ``subagent_message_sent`` marker below, which only the memo dedupes.
+        # than dispatching the message (or its ``subagent_message_sent`` marker) twice.
         progress = self._resume_progress()
         if progress is None:
             progress = await self._submit(client, req)
-            # The send just happened — NOW publish the dispatch marker onto the PARENT's stream
-            # (this is the accurate moment, vs. the parent's execute_activity dispatch time).
-            # Only on the fresh-send branch: a heartbeat-resume retry skips both the re-send and
-            # this publish, so the memo dedupes the event exactly as it dedupes the send.
-            await self._publish_dispatch(req, progress)
         # Record/refresh the memo immediately (covers both the fresh-send and resume paths),
         # then let the background task keep it alive at a steady cadence.
         activity.heartbeat(progress)
@@ -200,8 +193,8 @@ class SubagentActivities:
     ) -> tuple[dict[str, Any], bool]:
         """Stream ONE child turn's events to completion; return ``(reply_output, got_reply)``.
 
-        The activity's minimal single-CHILD-stream reader — the replacement for the former
-        ``AgentClient._stream_turn``. Follows the child's own stream after
+        The activity's minimal single-CHILD reader — the replacement for the former
+        ``AgentClient._stream_turn``. Follows the child's own Topic from
         ``progress.consumed_cursor`` (mutating it as events pass, so the auto-heartbeat memo stays
         current for a resume), captures OUR message's ``message_handler_end`` output, and stops at
         the turn's ``turn_end``. Our message's ``message_handler_error`` is surfaced as a
@@ -216,14 +209,11 @@ class SubagentActivities:
         first, but only as a cheap filter; ``message_id`` is what decides.
 
         Stopping is still the turn's ``turn_end``, not our own terminal: the parent publishes
-        ``subagent_reply_received`` once this returns, and the client-side merge holds that marker
-        until the child's ``turn_end`` has been emitted (``stream_merge/gates.py``). Returning
-        early would just move the same wait to the consumer.
+        ``subagent_reply_received`` once this returns, so on the shared Stream the marker comes
+        after the child's ``turn_end`` for every reader.
 
-        Deliberately reads ONLY the child's stream — NO recursion into grandchildren and NO bracket
-        gates. That is correct precisely because of stream isolation: coalescing the parent +
-        subagent streams into one logical view is a separate CLIENT-side concern (``stream_merge``);
-        an activity that gated on a grandchild's ``turn_end`` (a turn it never mounts) would wedge.
+        Deliberately reads ONLY the child's Topic — NO grandchildren. A grandchild's turn ends
+        before the child's own reply, so the child's ``turn_end`` already follows it.
         """
         output: dict[str, Any] = {}
         got_reply = False
@@ -232,8 +222,8 @@ class SubagentActivities:
             async for record in events:
                 # Advance the resume cursor for EVERY record seen (mutated in place so the
                 # background heartbeat re-sends the latest), then act only on our turn's events.
-                progress.consumed_cursor = record.cursor.token
-                envelope: AgentEvent = record.value
+                progress.consumed_cursor = cursor_after(record)
+                envelope: AgentEvent = record.data
                 if envelope.turn_id != progress.turn_id:
                     continue
                 payload = envelope.event
@@ -298,9 +288,11 @@ class SubagentActivities:
     async def _submit(
         self, client: AgentClient, req: RunSubagentTurnInput
     ) -> _TurnProgress:
-        """Submit the message to the child via the shared front door, and build the resume memo.
+        """Submit the message to the child, with its dispatch, and build the resume memo.
 
-        Delegates the envelope build + update to :meth:`AgentClient._submit_message`, then
+        Delegates the envelope build + update to :meth:`AgentClient._submit_message`, which
+        sends the internal ``send_subagent_message`` update: the child admits the message as its
+        front door would, and writes the parent's ``subagent_message_sent`` marker first. Then
         translates a rejection into a non-retryable :class:`ApplicationError` that preserves
         the child's error ``type`` (``MidTurnRejected`` / ``UnknownFunction`` /
         ``MalformedMessage``), so the calling tool can surface it verbatim. The memo seeds its
@@ -316,7 +308,14 @@ class SubagentActivities:
         update_id = f"subagent-turn:{info.workflow_run_id}:{info.activity_id}"
         try:
             result = await client._submit_message(
-                req.type, req.payload, update_id=update_id
+                req.type,
+                req.payload,
+                update_id=update_id,
+                dispatch=SubagentDispatch(
+                    agent_key=req.agent_key,
+                    after_cursor=req.after_cursor,
+                    parent_stream_context=req.parent_stream_context,
+                ),
             )
         except MidTurnRejectedError as e:
             raise ApplicationError(
@@ -336,34 +335,6 @@ class SubagentActivities:
             message_id=result.message_id,
             consumed_cursor=req.after_cursor,
         )
-
-    @staticmethod
-    async def _publish_dispatch(
-        req: RunSubagentTurnInput, progress: _TurnProgress
-    ) -> None:
-        """Publish the :class:`SubagentMessageSent` marker onto the PARENT's stream.
-
-        Called once per fresh send (see the caller's dedup note). Uses
-        ``AgentWorkflowRunner.publisher_from_activity``, which targets THIS activity's own parent
-        workflow (the agent that dispatched the activity) — so the event lands on the parent's
-        stream, never the child's (stream isolation). ``subagent_turn`` is the child's actual
-        accepted turn number from the send (``progress.turn_number``)."""
-        async with AgentWorkflowRunner.publisher_from_activity(
-            req.parent_stream_context
-        ) as publisher:
-            publisher.publish(
-                SubagentMessageSent(
-                    subagent_id=req.handle,
-                    agent_key=req.agent_key,
-                    workflow_id=req.child_workflow_id,
-                    handler=req.type,
-                    subagent_turn=progress.turn_number,
-                    # The child stream record this turn's events follow (the perf-hint cursor
-                    # the parent resumed after) — lets a client merging the parent + child streams
-                    # mount the child cursor at the right spot when resuming mid-session.
-                    after_cursor=req.after_cursor,
-                )
-            )
 
     @staticmethod
     def _resume_progress() -> _TurnProgress | None:

@@ -35,7 +35,7 @@ from temporal_agent_harness.harness.agent_protocol import (
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from temporal_agent_harness.harness.agent_client import AgentClient
-from temporal_agent_harness.harness.stream_transport import latest_turn_event
+from temporal_agent_harness.harness.stream_transport import next_turn_cursor
 
 from examples.monty import activities
 from examples.monty.workflow import MontyDynamicAgentWorkflow
@@ -199,8 +199,8 @@ async def test_subagent_runs_host_call_script(client_and_queue):
 async def _merged_send(
     client: Client, task_queue: str, scripts: list[str], *, stop: bool
 ) -> tuple[str, list[AgentEvent]]:
-    """Drive the parent via ``AgentClient.send_message`` (the MERGED path) and collect every
-    AgentEvent on the unified logical stream. ``stop`` controls whether the subagent is stopped
+    """Drive the parent via ``AgentClient.send_message`` (the whole-tree path) and collect every
+    AgentEvent on the shared Stream. ``stop`` controls whether the subagent is stopped
     at the end of the turn (a stopped subagent becomes a completed workflow — see the xfail note)."""
     handle = await client.start_workflow(
         SubagentE2EParentWorkflow.run,
@@ -225,12 +225,12 @@ async def _merged_send(
 def _assert_subagent_turns_nested_in_brackets(
     merged: list[AgentEvent], *, expected_child_turns: int
 ) -> None:
-    """Assert the merged stream coalesced the parent + its live subagent into ONE stream with each
+    """Assert the shared Stream gave the parent + its live subagent as ONE stream with each
     child turn fully nested in its ``[subagent_message_sent … subagent_reply_received]`` bracket.
 
     The subagent's events carry ``agent_id == subagent_id`` — the short id the PARENT pushed down
     as the child's ``agent_id`` (the same value on the parent's ``SubagentStarted`` /
-    ``SubagentMessageSent``) — so the merge is keyed off that short id, not the workflow_id."""
+    ``SubagentMessageSent``) — so the check is keyed off that short id, not the workflow_id."""
     subagent_ids = {
         e.event.subagent_id
         for e in merged
@@ -239,13 +239,13 @@ def _assert_subagent_turns_nested_in_brackets(
     assert len(subagent_ids) == 1
     child_id = next(iter(subagent_ids))
 
-    # Both agents' events appear on the ONE merged stream (stream isolation preserved — they came
-    # from two independent workflow streams the merge coalesced), each self-identified by its short
-    # agent_id. The child's events are exactly those stamped with the subagent_id.
+    # Both agents' events appear on the ONE Stream (each agent on a Topic of its own), each
+    # self-identified by its short agent_id. The child's events are exactly those stamped with
+    # the subagent_id.
     child_events = [e for e in merged if e.agent_id == child_id]
     parent_events = [e for e in merged if e.agent_id != child_id]
-    assert parent_events, "no parent events on the merged stream"
-    assert child_events, "the subagent's own events never appeared on the merged stream"
+    assert parent_events, "no parent events on the shared Stream"
+    assert child_events, "the subagent's own events never appeared on the shared Stream"
 
     # TREE-UNIQUENESS: the subagent stamps its OWN events with the COMPOUND id its parent assigned
     # — the parent's id plus one fresh 6-hex segment ("{parent}-{child}") — never the bare segment.
@@ -291,12 +291,12 @@ def _assert_subagent_turns_nested_in_brackets(
 
 
 async def test_merged_send_message_nests_live_subagent_events_in_brackets(client_and_queue):
-    # The client-side stream-merge: AgentClient.send_message surfaces the CHILD's own turn events
-    # (turn_started … reply … turn_end) INLINE on one logical stream, nested inside the parent's
-    # [subagent_message_sent … subagent_reply_received] bracket — though parent and child publish
-    # to independent workflow streams. End-to-end exercise of W1 (the new subagent_reply_received
-    # publish + AgentEvent.agent_id) + W3 (the merge engine) against real workflows. The subagent
-    # is left ALIVE (stop=False) so its stream is readable throughout (see the xfail twin below).
+    # AgentClient.send_message surfaces the CHILD's own turn events (turn_started … reply …
+    # turn_end) INLINE on one stream, nested inside the parent's
+    # [subagent_message_sent … subagent_reply_received] bracket — parent and child publish on
+    # one Stream, each on its own Topic, and the child writes the opening marker itself so it
+    # lands before the child's events. The subagent is left ALIVE (stop=False); the stopped twin
+    # is below.
     client, task_queue = client_and_queue
     _parent_id, merged = await _merged_send(
         client, task_queue, [_const_script(42), _const_script(99)], stop=False
@@ -310,8 +310,8 @@ async def test_human_can_message_a_live_subagent_directly(client_and_queue):
     There is no side channel to reach a child with: every control is an ``@agent.accepts``
     handler, so addressing a subagent means sending it a normal ``send_agent_message`` at its
     own ``workflow_id`` — which the parent advertises on ``subagent_started``. The child's
-    resulting turn events must land on the CHILD's stream stamped with the child's own
-    ``agent_id`` (the handle its parent knows it by), so a UI merging both streams can
+    resulting turn events must land on the CHILD's Topic stamped with the child's own
+    ``agent_id`` (the handle its parent knows it by), so a UI reading the tree can
     attribute them correctly.
 
     And the parent is unaffected by it: turn state is the child's own, so after the human's
@@ -330,7 +330,7 @@ async def test_human_can_message_a_live_subagent_directly(client_and_queue):
 
     # The parent already drove turn 1 through the subagent-turn activity, so ours is turn 2.
     child_client = AgentClient(client, child_workflow_id)
-    since = await latest_turn_event(client, child_workflow_id)
+    since = await next_turn_cursor(client, child_workflow_id)
     reply = await child_client.submit_message("run_script", {"script": _const_script(7)})
     assert reply.turn_number == 2
 
@@ -403,9 +403,9 @@ async def test_human_can_message_a_live_subagent_directly(client_and_queue):
 
 
 async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queue):
-    # Distinct from the LIVE merge above, which reads the child's detail in real time BEFORE the
+    # Distinct from the LIVE read above, which reads the child's detail in real time BEFORE the
     # end-of-turn stop completes the child: here we drive the subagent and STOP it, so by the time
-    # we REATTACH it is a COMPLETED workflow, and the merge mounts its stream after the fact.
+    # we REATTACH it is a COMPLETED workflow, and its Topic is read after the fact.
     client, task_queue = client_and_queue
     parent_id, _live = await _merged_send(
         client, task_queue, [_const_script(42), _const_script(99)], stop=True
@@ -414,9 +414,7 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     # Reattach from the start: the parent's backlog still references the now-completed subagent.
     agent_client = AgentClient(client, parent_id)
     attached: list[AgentEvent] = []
-    async for item in await agent_client.attach(
-        on_item=lambda it, _resume: it, subagent_stall_grace_seconds=2.0
-    ):
+    async for item in await agent_client.attach(on_item=lambda it, _resume: it):
         if isinstance(item, AgentEvent):
             attached.append(item)
 
@@ -429,13 +427,11 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     assert len(child_ids) == 1
     child_id = next(iter(child_ids))
 
-    # The parent stream rendered FULLY despite the unreadable child — its turn_end is present (the
-    # dead child's never-coming turn_end did not strand the parent's tail behind the close gate).
+    # The parent rendered FULLY with the child stopped — its turn_end is present.
     parent_events = [e for e in attached if e.agent_id != child_id]
     assert parent_events[-1].event.type == AgentEventType.TURN_END
 
-    # A non-fatal marker was surfaced for the stopped subagent (its own turn DETAIL is forgone), and
-    # no actual child turn detail leaked onto the merged stream.
+    # The stopped subagent's turn detail is on the shared Stream, so no unavailable marker.
     markers = [
         e
         for e in attached
@@ -447,10 +443,8 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
         if e.agent_id == child_id
         and e.event.type != AgentEventType.SUBAGENT_STREAM_UNAVAILABLE
     ]
-    # Every provider can read a completed workflow's stream (the stores outlive the workflow,
-    # and the Workflow Streams provider serves the final log by Query), so the replay carries
-    # the child's own detail and needs no marker. The give-up path that emits the marker is
-    # exercised against scripted unreadable streams in tests/harness/test_stream_merge.py.
+    # The child's Topic lives on the root's Stream, which outlives the child, so the replay
+    # carries the child's own detail and needs no marker.
     assert child_detail
     assert not markers
 

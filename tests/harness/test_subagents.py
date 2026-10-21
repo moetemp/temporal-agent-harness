@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 from temporalio.exceptions import ApplicationError
-from temporalio.contrib.streams import Cursor, RecordKind, StreamCursorError, StreamRecord
+from temporalio.contrib.streams import Record
 
 from temporal_agent_harness.harness import agent, subagent_activities
 from temporal_agent_harness.harness.agent_protocol import (
@@ -34,6 +34,7 @@ from temporal_agent_harness.harness.subagent_activities import (
     _TurnProgress,
 )
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
+from temporal_agent_harness.harness.stream_transport import TurnCursorError
 
 
 # A minimal child agent for exercising the toolset generator. No @workflow.defn is needed —
@@ -366,9 +367,9 @@ def test_distinct_subagents_have_independent_gates_and_counters():
 
 
 async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_turn():
-    # `after_cursor` is documented as a hint that can never break correctness, but a
-    # store mints it and refuses another's. Left to raise, switching stores fails every
-    # in-flight session's next subagent turn.
+    # `after_cursor` is documented as a hint that can never break correctness, but the
+    # Stream refuses a position it does not hold. Left to raise, that fails the session's
+    # next subagent turn.
     events = [
         AgentEvent(
             agent_id="C",
@@ -392,16 +393,11 @@ async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_t
         asked.append(after)
 
         async def gen():
-            # The stream runtime refuses a cursor at the read's first step, not at the call.
+            # The reader refuses a cursor at its first step, not at the call.
             if after:
-                raise StreamCursorError(f"cursor {after!r} is not a stream cursor")
+                raise TurnCursorError(f"cursor {after!r} is not a turn cursor")
             for index, event in enumerate(events):
-                yield StreamRecord(
-                    kind=RecordKind.DATA,
-                    cursor=Cursor(str(index)),
-                    topic=TURN_EVENTS_TOPIC,
-                    value=event,
-                )
+                yield Record(topic=TURN_EVENTS_TOPIC, data=event, offset=index, producer=None)
 
         return gen()
 
@@ -411,7 +407,7 @@ async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_t
         turn_id="turn-1",
         turn_number=1,
         message_id="ours",
-        consumed_cursor="memory:7",
+        consumed_cursor="99",
     )
     req = SimpleNamespace(child_workflow_id="C")
 
@@ -420,8 +416,8 @@ async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_t
 
     assert got_reply and output == {"answer": 42}
     # Asked once with the stale hint, then from the beginning.
-    assert asked == ["memory:7", ""]
-    assert progress.consumed_cursor == "1"
+    assert asked == ["99", ""]
+    assert progress.consumed_cursor == "2"
 
 
 # ---------------------------------------------------------------------------
@@ -436,11 +432,9 @@ async def test_a_child_cursor_the_store_refuses_replays_instead_of_failing_the_t
 # scripted child stream, which is the only way to script that interleaving deterministically.
 
 
-def _FakeItem(index: int, event: AgentEvent) -> StreamRecord[AgentEvent]:
-    """One record of the child's stream, as ``follow_turn_events`` yields it."""
-    return StreamRecord(
-        kind=RecordKind.DATA, cursor=Cursor(str(index)), topic=TURN_EVENTS_TOPIC, value=event
-    )
+def _FakeItem(index: int, event: AgentEvent) -> Record[AgentEvent]:
+    """One record of the child's Topic, as ``follow_turn_events`` yields it."""
+    return Record(topic=TURN_EVENTS_TOPIC, data=event, offset=index, producer=None)
 
 
 def _child_event(payload, *, turn_id: str, message_id: str | None) -> AgentEvent:
@@ -454,7 +448,7 @@ def _child_event(payload, *, turn_id: str, message_id: str | None) -> AgentEvent
     )
 
 
-def _shared_child_turn(*, ours: str, theirs: str) -> list[StreamRecord[AgentEvent]]:
+def _shared_child_turn(*, ours: str, theirs: str) -> list[Record[AgentEvent]]:
     """One child turn with two participants — ours replying FIRST, so "last wins" is wrong."""
     turn_id = "child-turn-4"
     payloads = [
@@ -468,7 +462,7 @@ def _shared_child_turn(*, ours: str, theirs: str) -> list[StreamRecord[AgentEven
     ]
 
 
-def _consume(items: list[StreamRecord[AgentEvent]], monkeypatch):
+def _consume(items: list[Record[AgentEvent]], monkeypatch):
     """Run ``_consume_child_turn`` over ``items``, returning ``(output, got_reply)``."""
     activities = SubagentActivities(client=None)  # the stream reader is patched out
 

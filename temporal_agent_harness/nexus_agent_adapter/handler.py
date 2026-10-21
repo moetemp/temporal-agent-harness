@@ -15,7 +15,6 @@ from nexusrpc import HandlerError, HandlerErrorType
 from nexusrpc.handler import StartOperationContext, service_handler, sync_operation
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError
-from temporalio.contrib.streams import StreamCursorError
 
 from temporal_agent_harness.harness.agent_client import (
     AgentClient,
@@ -31,7 +30,11 @@ from temporal_agent_harness.harness.agent_protocol import (
     SubagentInfo,
     ToolApprovalPolicy,
 )
-from temporal_agent_harness.harness.stream_transport import follow_turn_events
+from temporal_agent_harness.harness.stream_transport import (
+    TurnCursorError,
+    cursor_after,
+    follow_turn_events,
+)
 
 # Aliased with a Nexus* prefix where the name collides with an agent_protocol type of the
 # same name but a different (reshaped, wire-friendly) shape.
@@ -338,8 +341,8 @@ class AgentServiceHandler:
     ) -> PollMessagesOutput:
         """Wait up to the poll timeout for turn events after ``input.cursor`` and return them.
 
-        ``cursor`` is the opaque token of the last item the caller handled (empty for the
-        beginning); ``next_offset`` is the token to hand back next time. ``closed`` is set when
+        ``cursor`` is the position just past the last item the caller handled (empty for the
+        beginning); ``next_offset`` is the cursor to hand back next time. ``closed`` is set when
         the agent workflow has completed, which is when a stream that lives with the workflow
         ends; on a store that outlives it, the caller learns the same from the agent's status.
         """
@@ -354,15 +357,15 @@ class AgentServiceHandler:
         try:
             async with asyncio.timeout(timeout) as window:
                 async for record in events:
-                    payload = converter.to_payloads([record.value])[0]
+                    payload = converter.to_payloads([record.data])[0]
+                    cursor = cursor_after(record)
                     items.append(
                         StreamItem(
                             topic=TURN_EVENTS_TOPIC,
                             data=base64.b64encode(payload.SerializeToString()).decode("ascii"),
-                            offset=record.cursor.token,
+                            offset=cursor,
                         )
                     )
-                    cursor = record.cursor.token
                     if len(items) >= POLL_BATCH_LIMIT:
                         more_ready = True
                         break
@@ -375,8 +378,8 @@ class AgentServiceHandler:
                     closed = await self._workflow_completed(workflow_id)
         except TimeoutError:
             pass
-        except StreamCursorError as e:
-            # The store refuses a cursor at the read's first step, so a token it did not mint
+        except TurnCursorError as e:
+            # The reader refuses a cursor at its first step, so a cursor that names no position
             # is the caller's mistake and not a handler failure.
             raise HandlerError(str(e), type=HandlerErrorType.BAD_REQUEST) from e
         except RPCError as e:

@@ -44,7 +44,7 @@ from temporalio.worker import Worker
 
 from temporal_agent_harness.ai_sdks.google_genai_plugin import GoogleGenAIPlugin
 from temporal_agent_harness.harness.jev_approvals.activity import typesafe_api_key
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 
 from ..monty import activities
@@ -85,7 +85,7 @@ async def main() -> None:
         plugins=[
             GoogleGenAIPlugin(GeminiClient(api_key=gemini_api_key)),
             AgentHarnessPlugin(tools=activities.ALL_TOOLS),
-            store_from_env(),
+            streams_from_env(),
         ],
     )
 

@@ -1,7 +1,7 @@
 """Suite-wide fixtures.
 
-One stream store serves one client connection, and every test connects its own client. So
-each test gets a fresh store, and the memory store starts empty, which each test expects.
+One Stream plugin serves one client connection, and every test connects its own client. So
+each test gets a fresh plugin.
 """
 
 from __future__ import annotations

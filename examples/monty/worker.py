@@ -34,7 +34,7 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness.stream_transport import store_from_env
+from temporal_agent_harness.harness.stream_transport import streams_from_env
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.ai_sdks.google_genai_plugin import GoogleGenAIPlugin
 
@@ -79,13 +79,13 @@ async def main() -> None:
     #     subagent-turn activity (drives the script-runner child for MontyChatSubagentAgent),
     #     and the durable activity body of every travel tool in ALL_TOOLS.
     connect_config = ClientConfig.load_client_connect_config()
-    store = store_from_env()
+    streams = streams_from_env()
     client = await Client.connect(
         **connect_config,
         plugins=[
             GoogleGenAIPlugin(GeminiClient(api_key=api_key)),
             AgentHarnessPlugin(tools=activities.ALL_TOOLS),
-            store,
+            streams,
         ],
     )
 
