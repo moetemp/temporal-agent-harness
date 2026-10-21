@@ -170,9 +170,9 @@ include = ["temporal_agent_harness*"]
 temporalio = { build-args = "--features streams" }
 
 [tool.uv.sources]
-# Pinned to the Brook v3 build of the Python SDK (moetemp/sdk-python #336, p14):
+# Pinned to the Brook v3 build of the Python SDK (moetemp/sdk-python #337, p15):
 # `temporalio.contrib.streams` and `RedisStreamPlugin` are not released.
-temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "0ca1bbd3bd184997e59aaf6596890aa15b2288a8" }
+temporalio = { git = "https://github.com/moetemp/sdk-python", rev = "14ee0adce5fa778155205370fb490de8a1815c41" }
 temporal-nexus-mcp = { path = "nexus/mcp", editable = true }
 
 [tool.pytest.ini_options]
