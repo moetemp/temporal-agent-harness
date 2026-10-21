@@ -698,7 +698,7 @@ Python SDK. The Stream runtime lives in the SDK's bridge and keeps the Streams i
 process registers it once on its client, `Client.connect(..., plugins=[streams])`. Workers built
 from that client take it. Workflow code writes through `workflow_stream()`, activities through
 `activity_stream()`, and a process outside a worker, such as the web app or the Nexus adapter,
-reads through `for_handle(handle)` on the same kind of client. Agent code names nothing.
+reads through `for_handle(handle)` or `for_ref(client, ref)` on the same kind of client. Agent code names nothing.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -716,8 +716,9 @@ root's Stream gives every agent of the tree in one order, and `AgentClient.send_
 `attach` need no merge. The order keeps the subagent brackets by construction. The child writes
 the parent's `subagent_message_sent` as it admits the message, before any event of its own turn,
 and the parent writes `subagent_reply_received` only after it read the child's `turn_end`. A
-subagent's memo names the Stream and the Topic, so a client that knows only the subagent's
-workflow id reads its Topic directly. A read of an agent and its subagents asks for the agent's
+subagent's memo carries the root's `StreamRef` (in its proto JSON form) and the Topic, so a
+client that knows only the subagent's workflow id reads its Topic with `for_ref(client, ref,
+end_with_run=True)`. A read of an agent and its subagents asks for the agent's
 Topic and the Topic prefix of its subagents (`topic_prefixes=`), so the Stream runtime filters.
 
 A resume point is a position on that one Stream, so a resume loses nothing: a consumer that
