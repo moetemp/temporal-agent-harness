@@ -20,14 +20,7 @@ import contextvars
 import inspect
 import textwrap
 import time
-from collections.abc import (
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Mapping,
-    Sequence,
-)
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -47,7 +40,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
 from temporalio.contrib.streams import ActivityStream, BufferedPublisher, WorkflowStream
-from temporalio.contrib.streams.workflow import create_stream
+from temporalio.contrib.streams.workflow import create_stream_nowait
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -312,26 +305,10 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 # ``streaming_batch_interval``, say) passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
 
-
 # Closes a root's Stream that no run completion closes, such as one of a terminated or timed out
 # run, so its readers end. Well over the longest expected gap between turns of a session, so a
 # live session's Stream stays open.
 _ROOT_STREAM_AUTO_CLOSE = timedelta(hours=24)
-
-
-def _completed(call: Coroutine[Any, Any, _R]) -> _R:
-    """Run a Workflow Stream call to its end, from code that can't await.
-
-    The runner creates its Stream in its constructor, which can't await, and it publishes the
-    state snapshots there right after. The create only adds to the run's buffer, so the call ends
-    in its first step. Publishes use ``publish_nowait``, and the create has no such call.
-    """
-    try:
-        call.send(None)
-    except StopIteration as done:
-        return done.value
-    call.close()
-    raise RuntimeError("A Workflow Stream call waited, so sync code can't make it")
 
 _InjectedT = TypeVar("_InjectedT")
 
@@ -1848,9 +1825,8 @@ class AgentWorkflowRunner:
             stream = config.stream.handle
             self._stream = config.stream
         else:
-            stream = _completed(
-                create_stream(AgentEvents, auto_close=_ROOT_STREAM_AUTO_CLOSE)
-            )
+            # The constructor can't await, and it publishes the state snapshots right after.
+            stream = create_stream_nowait(AgentEvents, auto_close=_ROOT_STREAM_AUTO_CLOSE)
             # Offline construction (unit tests) has no run and so no Stream to name.
             own = stream if workflow.in_workflow() else WorkflowStream(id="")
             self._stream = AgentStream(handle=own, topic=TURN_EVENTS_TOPIC)

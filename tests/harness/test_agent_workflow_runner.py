@@ -1406,27 +1406,15 @@ def test_the_root_creates_its_stream_with_an_auto_close(offline_build, monkeypat
 
     creates: list[tuple[Any, dict[str, Any]]] = []
 
-    async def recording_create(definition: Any, **kwargs: Any) -> MagicMock:
+    def recording_create(definition: Any, **kwargs: Any) -> MagicMock:
         creates.append((definition, kwargs))
         return MagicMock()
 
-    monkeypatch.setattr(aw, "create_stream", recording_create)
+    monkeypatch.setattr(aw, "create_stream_nowait", recording_create)
     offline_build(AgentConfig())
     place = AgentStream(handle=WorkflowStream(id="wf:run:agent_events"), topic="turn_events/abc")
     offline_build(AgentConfig(stream=place))
     assert creates == [(aw.AgentEvents, {"auto_close": aw._ROOT_STREAM_AUTO_CLOSE})]
-
-
-def test_a_workflow_stream_call_that_waits_is_refused():
-    """Sync code runs a Workflow Stream call to its end at once. A call that waits can't end
-    there, so it raises rather than drop the write."""
-    import temporal_agent_harness.harness.agent_workflow as aw
-
-    async def waits() -> None:
-        await asyncio.sleep(0)
-
-    with pytest.raises(RuntimeError, match="waited"):
-        aw._completed(waits())
 
 
 def test_accepted_turn_from_error_raises_when_detail_absent():
@@ -1444,8 +1432,8 @@ def test_accepted_turn_from_error_raises_when_detail_absent():
 # ---------------------------------------------------------------------------
 
 
-async def _offline_create_stream(*_args: Any, **_kwargs: Any) -> MagicMock:
-    # Like the real create, it ends in its first step. The runner publishes with publish_nowait.
+def _offline_create_stream(*_args: Any, **_kwargs: Any) -> MagicMock:
+    # The runner publishes on its Topic with publish_nowait, which the mock records.
     return MagicMock()
 
 
@@ -1460,7 +1448,7 @@ def offline_build(monkeypatch):
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
     # Offline there is no Stream to bind a Topic on; a mock records what the runner publishes.
-    monkeypatch.setattr(aw, "create_stream", _offline_create_stream)
+    monkeypatch.setattr(aw, "create_stream_nowait", _offline_create_stream)
 
     def build(config: AgentConfig):
         return AgentWorkflowRunner(
@@ -1481,7 +1469,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    monkeypatch.setattr(aw, "create_stream", _offline_create_stream)
+    monkeypatch.setattr(aw, "create_stream_nowait", _offline_create_stream)
 
     def build(
         config: AgentConfig,
