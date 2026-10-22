@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from temporalio.client import Client
-from temporalio.contrib.streams.redis import StreamPlugin
+from temporalio.contrib.streams import StreamPlugin
 from temporalio.testing import WorkflowEnvironment
 
 from temporal_agent_harness.harness.agent_protocol import AgentEvent

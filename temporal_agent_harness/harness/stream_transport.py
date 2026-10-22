@@ -27,9 +27,10 @@ from temporalio.contrib.streams import (
     StreamClient,
     StreamNotFoundError,
     StreamOffsetError,
+    StreamPlugin,
     Superseded,
 )
-from temporalio.contrib.streams.redis import RedisStreamPlugin, StreamPlugin
+from temporalio.contrib.streams.redis import RedisStreamPlugin
 from temporalio.contrib.streams.testing import MemoryStreamPlugin
 
 from temporal_agent_harness.harness.agent_protocol import (
