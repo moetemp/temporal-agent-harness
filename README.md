@@ -713,8 +713,9 @@ The web app, the Nexus adapter and each worker are separate processes, so they a
 Redis. Streams need only a stock Temporal server, so the dev server is enough.
 
 **One Stream per agent tree.** A top-level agent creates its Stream in its first Workflow Task
-and publishes on the Topic `turn_events`. The Stream closes when the agent's run chain closes,
-and a run that continues as new passes it on in `AgentConfig.stream`
+and publishes on the Topic `turn_events`. The Stream closes when the agent's run chain closes, or
+after 24 hours with no event (`auto_close`), so a terminated root still ends its readers. A run
+that continues as new passes it on in `AgentConfig.stream`
 (`AgentWorkflowRunner.stream`). When it starts a subagent, it passes its Stream down, and the
 subagent publishes on it too, on a Topic of its own (`turn_events/<subagent id>`). So one read of
 the root's Stream gives every agent of the tree in one order, and `AgentClient.send_message` and
