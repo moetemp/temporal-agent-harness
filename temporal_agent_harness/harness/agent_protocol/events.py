@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from temporalio.contrib import streams
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AutoApprovalVerdict,
@@ -1203,3 +1204,14 @@ class AgentEvent(BaseModel):
         "Temporal's Pydantic converter reconstructs to the concrete payload subtype on read."
     )
 
+
+@streams.defn(name="agent_events")
+class AgentEvents:
+    """The Stream an agent tree publishes on. The root agent creates it, and its subagents
+    write it too.
+
+    Its one declared Topic is the root's own. A subagent's Topic (``subagent_topic``) is named
+    at run time, so a handle opens it by name with ``type=AgentEvent``.
+    """
+
+    turn_events = streams.topic(AgentEvent, name=TURN_EVENTS_TOPIC)

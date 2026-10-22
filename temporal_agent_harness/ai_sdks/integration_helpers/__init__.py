@@ -6,7 +6,7 @@
 These helpers are SDK-agnostic: they are meant to be reused across the
 ``google_genai`` plugin and future AI-SDK plugins in this package, so that
 common integration concerns (e.g. live-streaming raw provider events to a
-the workflow's stream through ``temporalio.contrib.streams``) are defined
+Stream through ``temporalio.contrib.streams``) are defined
 once rather than re-implemented per SDK.
 
 Copied into the harness from the sdk-python ``temporalio.contrib.integration_helpers``
@@ -20,6 +20,7 @@ See :py:class:`StreamObserver` for the live-streaming observer contract.
 
 from temporal_agent_harness.ai_sdks.integration_helpers._stream_observer import (
     ObserverFactory,
+    RawTopic,
     RawTopicObserver,
     StreamObserver,
     select_observer,
@@ -27,6 +28,7 @@ from temporal_agent_harness.ai_sdks.integration_helpers._stream_observer import 
 
 __all__ = [
     "ObserverFactory",
+    "RawTopic",
     "RawTopicObserver",
     "StreamObserver",
     "select_observer",

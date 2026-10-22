@@ -16,8 +16,8 @@ The plugin is wired for the HARNESS STREAMING PATH:
   * ``observer_factory=harness_observer_factory`` — turns that context into the observer that
     translates raw OpenAI events into the harness turn-stream vocabulary live.
 Drop either hook, or omit the ``context=self._runner`` on ``run_streamed``, and there is no
-stream target — the streamed call raises unless you also set ``model_params.streaming_topic``
-(the plugin's plain raw-topic fallback, not wired here).
+stream target, and the streamed call raises. (The plugin's plain raw-topic path, a provider
+that returns an ``integration_helpers.RawTopic``, is not wired here.)
 
 Env vars (set in the repo-root .env.local — see .env.example):
     TEMPORAL_CONFIG_FILE / TEMPORAL_PROFILE   Temporal connection profile

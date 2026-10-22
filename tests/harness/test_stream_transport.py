@@ -5,18 +5,19 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from temporalio.api.streamservice.v1 import ProducerKind
 from temporalio.contrib.streams import (
+    ActivityStream,
     Closed,
-    Idle,
     Record,
     StreamNotFoundError,
-    StreamRef,
     Superseded,
-    Topic,
+    WorkflowStream,
 )
 from temporalio.contrib.streams.system import models
 
@@ -27,18 +28,31 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentStream,
     AttemptSuperseded,
     ReplyDelta,
+    TurnEnded,
     subagent_topic,
     subtree_prefix,
 )
+from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+from temporal_agent_harness.harness.stream_context import TurnStreamContext
 from temporal_agent_harness.harness.stream_transport import (
     TurnCursorError,
     TurnStream,
     cursor_after,
     next_turn_cursor,
     parse_cursor,
-    publisher_for_activity,
     read_turn_events,
 )
+
+
+@dataclass
+class _FakeTopic:
+    name: str
+    type: Any = None
+    batches: list[tuple[Any, ...]] = field(default_factory=list)
+
+    async def publish(self, *values: Any) -> int:
+        self.batches.append(values)
+        return len(self.batches)
 
 
 class _FakeStream:
@@ -47,33 +61,24 @@ class _FakeStream:
     def __init__(self, items: list[Any]) -> None:
         self._items = items
         self.reads: list[dict[str, Any]] = []
-        self.published: list[tuple[str, Any]] = []
-        self.flushed = 0
 
-    def topic(self, name: str, *, type: Any = Any) -> Topic[Any]:
-        return Topic(self, name, type)  # type: ignore[arg-type]
-
-    def _publish(self, topic: str, value: Any, force_flush: bool) -> None:
-        self.published.append((topic, value))
-
-    async def flush(self) -> None:
-        self.flushed += 1
+    def topic(self, name: str, *, type: Any = None) -> _FakeTopic:
+        return _FakeTopic(name, type)
 
     def subscribe(
         self,
-        *,
-        topics: Sequence[Topic[Any]] | None = None,
-        topic_prefixes: Sequence[str] = (),
+        *topics: _FakeTopic,
         from_offset: int | None = None,
-        type: Any = None,
+        prefixes: Sequence[str] = (),
+        create_wait: timedelta | None = None,
         **_: Any,
     ) -> AsyncIterator[Any]:
         self.reads.append(
             {
-                "topics": [t.name for t in topics] if topics else None,
-                "prefixes": list(topic_prefixes),
+                "topics": [(t.name, t.type) for t in topics],
+                "prefixes": list(prefixes),
                 "from": from_offset,
-                "type": type,
+                "create_wait": create_wait,
             }
         )
 
@@ -154,16 +159,38 @@ async def test_a_supersession_before_any_record_retires_nothing_and_is_dropped()
     assert [r.offset for r in out] == [12]
 
 
-@pytest.mark.parametrize("end", [Idle(offset=3), Closed(offset=3, result=None, failure=None)])
-async def test_an_idle_or_closed_item_ends_the_read(end: Any):
+async def test_a_closed_item_ends_the_read():
+    end = Closed(offset=3, result=None, failure=None)
     out, _ = await _drain([_record(1, _event("root", "a")), end, _record(4, _event("root", "b"))])
     assert [r.offset for r in out] == [1]
+
+
+async def test_a_read_of_a_stream_that_was_never_created_ends():
+    # An agent that ended before it created its Stream has nothing to read. A read with no
+    # create wait gives StreamNotFoundError at its first step.
+    class _Missing(_FakeStream):
+        def subscribe(self, *topics: _FakeTopic, **kw: Any) -> AsyncIterator[Any]:
+            super().subscribe(*topics, **kw)
+
+            async def items() -> AsyncIterator[Any]:
+                raise StreamNotFoundError("no Stream", reason="stream_not_found")
+                yield
+
+            return items()
+
+    located = TurnStream(_Missing([]), TURN_EVENTS_TOPIC)  # type: ignore[arg-type]
+    assert [record async for record in read_turn_events(located)] == []
 
 
 async def test_the_own_read_filters_to_the_agents_topic():
     _, stream = await _drain([], after="7")
     assert stream.reads == [
-        {"topics": [TURN_EVENTS_TOPIC], "prefixes": [], "from": 7, "type": AgentEvent}
+        {
+            "topics": [(TURN_EVENTS_TOPIC, AgentEvent)],
+            "prefixes": [],
+            "from": 7,
+            "create_wait": None,
+        }
     ]
 
 
@@ -171,8 +198,26 @@ async def test_the_subtree_read_asks_for_the_agent_and_its_subagents_only():
     child = subagent_topic("root-aaaaaa")
     _, stream = await _drain([], topic=child, subtree=True)
     assert stream.reads == [
-        {"topics": [child], "prefixes": [f"{child}-"], "from": None, "type": AgentEvent}
+        {
+            "topics": [(child, AgentEvent)],
+            "prefixes": [f"{child}-"],
+            "from": None,
+            "create_wait": None,
+        }
     ]
+
+
+async def test_a_record_of_a_prefix_topic_decodes_to_an_agent_event():
+    # A read has no type for a Topic that only a prefix names, so its values come as JSON.
+    child = subagent_topic("root-aaaaaa")
+    grandchild = subagent_topic("root-aaaaaa-bbbbbb")
+    plain = _event("root-aaaaaa-bbbbbb", "deep").model_dump(mode="json")
+    out, _ = await _drain(
+        [_record(5, plain, topic=grandchild)],  # type: ignore[arg-type]
+        topic=child,
+        subtree=True,
+    )
+    assert [r.data for r in out] == [_event("root-aaaaaa-bbbbbb", "deep")]
 
 
 def test_subtree_prefix():
@@ -194,28 +239,62 @@ def test_cursors():
             parse_cursor(bad)
 
 
-async def test_the_activity_publisher_flushes_the_tail_when_the_activity_fails(monkeypatch):
-    stream = _FakeStream([])
-    opened: list[Any] = []
+def _stream_context(topic: str) -> tuple[TurnStreamContext, list[_FakeTopic]]:
+    # The handle is real, so the context validates as it does in an activity input. Only its
+    # Topic is fake.
+    stream = ActivityStream(id="wf:run")
+    opened: list[_FakeTopic] = []
 
-    def fake_activity_stream(ref: Any = None, **kw: Any) -> _FakeStream:
-        opened.append((ref, kw))
-        return stream
+    def fake_topic(name: str, *, type: Any = None) -> _FakeTopic:
+        opened.append(_FakeTopic(name, type))
+        return opened[-1]
 
-    monkeypatch.setattr(transport, "activity_stream", fake_activity_stream)
+    stream.topic = fake_topic  # type: ignore[method-assign]
+    context = TurnStreamContext(
+        turn_id="turn-1", turn_number=1, agent_id="abc", stream=stream, topic=topic
+    )
+    return context, opened
+
+
+async def test_the_activity_publisher_flushes_the_tail_when_the_activity_fails():
+    context, opened = _stream_context(subagent_topic("abc"))
     with pytest.raises(RuntimeError):
-        async with publisher_for_activity("turn_events/abc", stream_id="wf:run") as publisher:
-            publisher.publish("half")
+        async with AgentWorkflowRunner.publisher_from_activity(
+            context, batch_interval=timedelta(hours=1)
+        ) as publisher:
+            publisher.publish(ReplyDelta(text="half"))
             raise RuntimeError("model call failed")
-    assert stream.published == [("turn_events/abc", "half")]
-    assert stream.flushed == 1
-    assert opened[0][0].id == "wf:run"
+    [topic] = opened
+    assert (topic.name, topic.type) == (subagent_topic("abc"), AgentEvent)
+    assert [[e.event for e in batch] for batch in topic.batches] == [[ReplyDelta(text="half")]]
+
+
+async def test_an_activity_write_goes_out_after_the_buffered_events():
+    context, opened = _stream_context(TURN_EVENTS_TOPIC)
+    async with AgentWorkflowRunner.publisher_from_activity(
+        context, batch_interval=timedelta(hours=1)
+    ) as publisher:
+        publisher.publish(ReplyDelta(text="a"))
+        await publisher.write(TurnEnded())
+        # The write returns when it is written, with what was buffered before it.
+        [topic] = opened
+        assert [e.event for batch in topic.batches for e in batch] == [
+            ReplyDelta(text="a"),
+            TurnEnded(),
+        ]
+
+
+async def test_an_activity_publisher_needs_a_stream():
+    context = TurnStreamContext(turn_id="turn-1", turn_number=1, agent_id="abc")
+    with pytest.raises(RuntimeError, match="no Stream"):
+        async with AgentWorkflowRunner.publisher_from_activity(context):
+            pass
 
 
 
 async def test_the_next_cursor_of_a_stream_not_written_yet_is_the_beginning(monkeypatch):
-    # A Workflow's default Stream does not exist until its first write, and get_offset()
-    # raises until then. A client that sends the first message reads from the beginning.
+    # The root creates its Stream in its first Workflow Task, and get_offset() raises until
+    # then. A client that sends the first message reads from the beginning.
     class _Unwritten(_FakeStream):
         async def get_offset(self) -> int:
             raise StreamNotFoundError("no Stream yet", reason="stream_not_found")
@@ -227,18 +306,26 @@ async def test_the_next_cursor_of_a_stream_not_written_yet_is_the_beginning(monk
     assert await next_turn_cursor(None, "wf") == ""  # type: ignore[arg-type]
 
 
-def test_the_subagent_stream_ref_uses_the_proto_json_names():
-    # A memo or a config outlives this SDK, so the ref is stored as the proto JSON that every
-    # SDK reads. A ref stored with snake case names still decodes.
+def test_the_subagent_stream_handle_uses_the_proto_json_names():
+    # A memo or a config outlives this SDK, so the handle is stored as the proto JSON of a
+    # StreamRef, which every SDK reads.
     place = AgentStream(
-        ref=StreamRef("wf:run", workflow_id="wf", first_execution_run_id="run"),
+        handle=WorkflowStream(
+            id="wf:run:agent_events",
+            workflow_id="wf",
+            first_execution_run_id="run",
+            backend="memory",
+        ),
         topic=subagent_topic("abc"),
     )
     stored = place.model_dump(mode="json")
-    assert stored["ref"] == {"id": "wf:run", "workflowId": "wf", "firstExecutionRunId": "run"}
+    assert stored["handle"] == {
+        "id": "wf:run:agent_events",
+        "workflowId": "wf",
+        "firstExecutionRunId": "run",
+        "backend": "memory",
+    }
     assert AgentStream.model_validate(stored) == place
-    old = {"ref": {"id": "wf:run", "workflow_id": "wf", "first_execution_run_id": "run"}}
-    assert AgentStream.model_validate({**old, "topic": place.topic}) == place
-    # A ref with no owner, such as a standalone Stream's, keeps only its id.
-    standalone = AgentStream(ref=StreamRef("solo"), topic=TURN_EVENTS_TOPIC)
-    assert standalone.model_dump(mode="json")["ref"] == {"id": "solo"}
+    # A handle with no owner, such as a client's Stream, keeps only its id.
+    standalone = AgentStream(handle=WorkflowStream(id="solo"), topic=TURN_EVENTS_TOPIC)
+    assert standalone.model_dump(mode="json")["handle"] == {"id": "solo"}

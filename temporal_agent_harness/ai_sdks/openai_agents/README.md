@@ -590,12 +590,13 @@ agents-SDK `StreamEvent` union (so raw model events arrive as
 `RawResponsesStreamEvent.data`).
 
 External consumers (UIs, tracing pipelines, etc.) observe events as
-they arrive by hosting a [`WorkflowStream`](../workflow_streams/README.md)
-in the workflow and subscribing with `WorkflowStreamClient`. The
-streaming activity publishes each event to the topic configured on
-`ModelActivityParameters.streaming_topic`. The topic is required
-when using `Runner.run_streamed`; calling it without a configured topic
-raises before any activity is scheduled.
+they arrive on a Stream of `temporalio.contrib.streams`. An activity gets
+a Stream only in its input, so the workflow creates one and
+`ModelActivityParameters.stream_to_provider` returns the routing token
+that names it: with no `observer_factory`, an
+`integration_helpers.RawTopic` (the Stream and a topic). A provider is
+required when using `Runner.run_streamed`; calling it without one raises
+before any activity is scheduled.
 
 Example workflow consuming events via `stream_events()` while the
 streaming activity publishes to the `"events"` topic:
@@ -619,10 +620,11 @@ class MyAgent:
         return result.final_output
 ```
 
-To publish raw model events to external subscribers, host a
-`WorkflowStream` in the workflow and configure
-`OpenAIAgentsPlugin(model_params=ModelActivityParameters(streaming_topic="events"))`. See [`temporalio.contrib.workflow_streams`](../workflow_streams/README.md) for the
-publisher and subscriber API.
+To publish raw model events to external subscribers, create a Stream
+in the workflow with `temporalio.contrib.streams.workflow.create_stream`
+and configure `ModelActivityParameters(stream_to_provider=...)` with a
+provider that returns `RawTopic(stream=ActivityStream.from_handle(stream),
+topic="events")`. Subscribers read the Stream through `StreamClient`.
 
 `RunResultStreaming.stream_events()` yields the agents-SDK
 `StreamEvent` union (`RawResponsesStreamEvent`, `RunItemStreamEvent`,

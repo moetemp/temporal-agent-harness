@@ -3,8 +3,9 @@
 # activity contract (parent workflow ↔ harness activity, in ``subagent_interface``).
 # Re-exports every protocol type so consumers import flat names from one package
 # (``from harness.agent_protocol import AgentEvent, AgentMessage, ...``) without reaching into
-# submodules. This package depends only on stdlib, pydantic and the SDK's ``StreamRef``, so it
-# imports cleanly inside the Temporal workflow sandbox.
+# submodules. This package depends only on stdlib, pydantic and ``temporalio.contrib.streams``
+# (which the Stream plugin passes through the sandbox), so it imports cleanly inside the Temporal
+# workflow sandbox.
 
 from temporal_agent_harness.harness.agent_protocol.agent_interface import (
     AGENT_ID_LENGTH,
@@ -47,6 +48,7 @@ from temporal_agent_harness.harness.agent_protocol.events import (
     subtree_prefix,
     subagent_topic,
     AgentEvent,
+    AgentEvents,
     AgentEventType,
     AgentStatePatch,
     AgentStateSnapshot,
@@ -136,6 +138,7 @@ __all__ = [
     "AgentMessageReply",
     # Stream-event vocabulary
     "TURN_EVENTS_TOPIC",
+    "AgentEvents",
     "subtree_prefix",
     "subagent_topic",
     "AgentEventType",

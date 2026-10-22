@@ -257,8 +257,8 @@ class OpenAIAgentsPlugin(SimplePlugin):
                 to the built-in raw-topic one.
                 Pair with ``model_params.stream_to_provider`` to route streamed
                 events into an embedding runtime (e.g. the agent harness turn
-                stream). If ``None``, streaming publishes raw events to
-                ``model_params.streaming_topic`` as before.
+                stream). If ``None``, streaming publishes raw events to the
+                Stream and topic of the ``RawTopic`` the provider returns.
                 Warning: streaming support is experimental and behavior may change in future versions.
 
         """

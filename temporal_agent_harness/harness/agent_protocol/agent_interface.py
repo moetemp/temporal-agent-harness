@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
-from temporalio.contrib.streams import StreamRef
+from temporalio.contrib.streams import WorkflowStream
 
 # ---------------------------------------------------------------------------
 # Protocol constants — workflow must use these exact names
@@ -631,16 +631,18 @@ class ToolApprovalPolicy(BaseModel):
 
 
 class AgentStream(BaseModel):
-    """Where a subagent publishes its turn events: on its root agent's Stream, on its own Topic.
+    """Where an agent publishes its turn events: on its root agent's Stream, on its own Topic.
 
-    Every agent of a tree shares the root's default Stream, so a reader gets the whole tree in
-    one order with one read. The Topics keep each agent's events apart for a reader that wants
+    Every agent of a tree shares the Stream that the root creates, so a reader gets the whole tree
+    in one order with one read. The Topics keep each agent's events apart for a reader that wants
     one agent only.
     """
 
-    ref: StreamRef = Field(
-        description="The root agent's default Stream, in its proto JSON form. A client opens it "
-        "with ``for_ref``."
+    # Not WorkflowStream[AgentEvents]: the definition is in ``events``, which imports this module.
+    # Not WorkflowStream[Any] either: the SDK takes ``Any`` for a definition class on Python 3.11+.
+    handle: WorkflowStream = Field(
+        description="The root agent's Stream, in the proto JSON form of a Stream handle. A "
+        "client opens it with ``StreamClient.get_handle``."
     )
     topic: str = Field(description="The Topic this agent publishes its turn events on.")
 
@@ -708,8 +710,9 @@ class AgentConfig(BaseModel):
     per-child rather than passing through unchanged.
 
     ``stream`` — the Stream and Topic a subagent publishes on (see :class:`AgentStream`). A parent
-    sets it with ``agent_id`` when it starts a subagent. ``None`` → a top-level agent publishes on
-    its own default Stream, on :data:`TURN_EVENTS_TOPIC`.
+    sets it with ``agent_id`` when it starts a subagent, and a run that continues as new passes
+    its own on (``AgentWorkflowRunner.stream``). ``None`` → a top-level agent creates its Stream
+    and publishes on :data:`TURN_EVENTS_TOPIC`.
     """
 
     approval_policy: ToolApprovalPolicy | None = None

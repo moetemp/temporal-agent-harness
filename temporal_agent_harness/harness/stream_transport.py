@@ -1,35 +1,33 @@
-# ABOUTME: How the harness reaches its Streams: the one place the Stream plugin is built, the
-# publisher an activity uses, and the readers every client-side consumer of turn events shares.
-# The plugin is registered once on the client. Workflow code writes through ``workflow_stream``,
-# activities through ``activity_stream``, and clients read through ``for_handle``.
+# ABOUTME: How the harness reaches its Streams: the one place the Stream plugin is built, and the
+# readers every client-side consumer of turn events shares. The plugin is registered once on the
+# client. Workflow code creates and writes the Stream (``AgentWorkflowRunner``), activities get it
+# in their input and write it through ``BufferedPublisher``, and clients read it through
+# ``StreamClient``.
 #
-# An agent tree shares ONE Stream: the root agent's default Stream. Each agent publishes on its
-# own Topic (``turn_events`` for the root, ``subagent_topic(agent_id)`` below it), so one read of
-# the Stream gives every agent's events in one order, and a Topic filter gives one agent's.
+# An agent tree shares ONE Stream: the one the root agent creates (``AgentEvents``). Each agent
+# publishes on its own Topic (``turn_events`` for the root, ``subagent_topic(agent_id)`` below it),
+# so one read of the Stream gives every agent's events in one order, and a Topic filter gives one
+# agent's.
 
 from __future__ import annotations
 
+import dataclasses
 import os
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from temporalio.client import Client, WorkflowHandle
+from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.contrib.streams import (
     ClientStream,
+    ClientTopic,
     Closed,
-    Idle,
     Record,
+    StreamClient,
     StreamNotFoundError,
     StreamOffsetError,
-    StreamRef,
     Superseded,
-    Topic,
-    activity_stream,
-    for_handle,
-    for_ref,
 )
 from temporalio.contrib.streams.redis import RedisStreamPlugin, StreamPlugin
 from temporalio.contrib.streams.testing import MemoryStreamPlugin
@@ -38,6 +36,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AGENT_STREAM_MEMO,
     TURN_EVENTS_TOPIC,
     AgentEvent,
+    AgentEvents,
     AgentStream,
     AttemptSuperseded,
     subtree_prefix,
@@ -47,9 +46,8 @@ STORE_ENV = "STREAMS_STORE"
 REDIS_URL_ENV = "STREAMS_REDIS_URL"
 KEY_PREFIX_ENV = "STREAMS_KEY_PREFIX"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379"
-# How long a read waits for a Stream that no agent has written yet. A fresh session has no
-# Stream until its first event, and a client may start reading before that. The read also ends
-# when the root's run ends.
+# How long a read waits for a Stream that does not exist yet. The root creates its Stream in its
+# first Workflow Task, and a client that just started the root may read before that.
 _WAIT_FOR_CREATE = timedelta(hours=1)
 # Every client of this process shares one memory plugin, so they all see the same Streams.
 _memory: MemoryStreamPlugin | None = None
@@ -69,9 +67,10 @@ def streams_from_env() -> StreamPlugin:
     and a single process only.
 
     Register the result once, as ``Client.connect(..., plugins=[streams])``. Workers built from
-    that client take it, workflow code and activities reach it through the facade, and any other
-    code through ``for_handle(handle)``. One plugin serves one client connection, so a second
-    connection needs a plugin of its own, except the memory plugin, which all of them share.
+    that client take it, workflow code and activities reach it through their Stream handles, and
+    any other code through ``StreamClient(client)``. One plugin serves one client connection, so a
+    second connection needs a plugin of its own, except the memory plugin, which all of them
+    share.
     """
     global _memory
     store = os.environ.get(STORE_ENV, "redis")
@@ -90,7 +89,7 @@ def streams_from_env() -> StreamPlugin:
 def parse_cursor(cursor: str) -> int | None:
     """The offset a stored cursor names, or None for the beginning.
 
-    A cursor is the offset to read from next, in decimal. Offsets are positive, so zero is the
+    A cursor is the offset to read from next, in decimal. Offsets are above zero, so zero is the
     beginning too.
     """
     if not cursor:
@@ -113,10 +112,12 @@ def cursor_after(item: Record[Any]) -> str:
 class TurnStream:
     """The Stream an agent publishes on, and the Topic that is its own."""
 
-    stream: ClientStream
+    stream: ClientStream[AgentEvents]
     topic: str
+    # How long a read waits for the Stream to exist. None reads at once.
+    create_wait: timedelta | None = None
 
-    def turn_events(self) -> Topic[AgentEvent]:
+    def turn_events(self) -> ClientTopic[AgentEvent]:
         """The agent's own Topic, typed."""
         return self.stream.topic(self.topic, type=AgentEvent)
 
@@ -124,33 +125,29 @@ class TurnStream:
 async def turn_stream(client: Client, workflow_id: str, *, wait: bool = True) -> TurnStream:
     """The Stream and Topic of the agent ``workflow_id``. ``client`` carries the Stream plugin.
 
-    A top-level agent publishes on its own default Stream. A subagent publishes on its root's,
-    and its memo carries the root's ``StreamRef``, so a client that knows only the subagent finds
-    the Stream with one Describe call. With ``wait``, a read of a Stream that does not exist yet
-    waits for it. Either way the read ends when the root's run ends.
+    A top-level agent publishes on the Stream it creates. A subagent publishes on its root's,
+    and its memo carries the root's Stream handle, so a client that knows only the subagent
+    finds the Stream with one Describe call. With ``wait``, a read of a Stream that does not
+    exist yet waits for it. The read ends when the root's run chain closes the Stream.
     """
+    streams = StreamClient(client)
+    create_wait = _WAIT_FOR_CREATE if wait else None
     description = await client.get_workflow_handle(workflow_id).describe()
     located = await description.memo_value(AGENT_STREAM_MEMO, None)
     if located is not None:
         place = AgentStream.model_validate(located)
-        stream = for_ref(
-            client,
-            place.ref,
-            wait_for_create=_WAIT_FOR_CREATE if wait else None,
-            end_with_run=wait,
+        stream = streams.get_handle(
+            AgentEvents, id=place.handle.id, backend=place.handle.backend
         )
-        return TurnStream(stream, place.topic)
+        return TurnStream(stream, place.topic, create_wait)
     first_run_id = description.raw_description.workflow_execution_info.first_run_id
     root = client.get_workflow_handle(workflow_id, first_execution_run_id=first_run_id or None)
-    return TurnStream(_open(root, wait), TURN_EVENTS_TOPIC)
-
-
-def _open(handle: WorkflowHandle[Any, Any], wait: bool) -> ClientStream:
-    if not wait:
-        return for_handle(handle)
-    # The read ends with the root's run: its close ends it, and so does a run that ended with
-    # no close, such as a terminated one.
-    return for_handle(handle, wait_for_create=_WAIT_FOR_CREATE, end_with_run=True)
+    if description.status != WorkflowExecutionStatus.RUNNING:
+        # A run chain that ended with no Stream never creates one.
+        create_wait = None
+    return TurnStream(
+        streams.get_workflow_stream(root, AgentEvents), TURN_EVENTS_TOPIC, create_wait
+    )
 
 
 async def next_turn_cursor(client: Client, workflow_id: str) -> str:
@@ -163,7 +160,8 @@ async def next_turn_cursor(client: Client, workflow_id: str) -> str:
     try:
         offset = await located.stream.get_offset()
     except StreamNotFoundError:
-        # A session that published nothing yet has no Stream, so it starts at the beginning.
+        # A root whose first Workflow Task has not completed has no Stream yet, so it starts at
+        # the beginning.
         return ""
     return str(offset) if offset else ""
 
@@ -179,7 +177,7 @@ async def check_turn_cursor(client: Client, workflow_id: str, after: str) -> Non
         return
     located = await turn_stream(client, workflow_id, wait=False)
     items = located.stream.subscribe(
-        topics=[located.turn_events()], from_offset=offset, wait_new_records=False
+        located.turn_events(), from_offset=offset, wait_new_records=False
     )
     try:
         await anext(items, None)
@@ -226,21 +224,24 @@ async def read_turn_events(
     records in the Stream, and its retry writes different words, so a consumer that rendered
     the first half has to be told. Use ``cursor_after(record)`` to store a position for a later
     ``after``. A malformed cursor raises ``TurnCursorError`` at the first iteration. The read
-    ends when the root agent's run closes.
+    ends when the root agent's run chain closes the Stream.
     """
     offset = parse_cursor(after)
     items = located.stream.subscribe(
-        topics=[located.turn_events()],
-        topic_prefixes=[subtree_prefix(located.topic)] if subtree else (),
+        located.turn_events(),
+        prefixes=[subtree_prefix(located.topic)] if subtree else (),
         from_offset=offset,
-        # A subagent's Topic is named at run time, so it has no Topic object with a type.
-        type=AgentEvent,
+        create_wait=located.create_wait,
     )
     # The newest record of each producer, to stamp a Superseded marker with.
     given: dict[str, Record[AgentEvent]] = {}
     try:
         async for item in items:
             if isinstance(item, Record):
+                if not isinstance(item.data, AgentEvent):
+                    # A Topic that a prefix matched is named at run time, so the read has no
+                    # type for it and gives the plain JSON.
+                    item = dataclasses.replace(item, data=AgentEvent.model_validate(item.data))
                 if item.producer is not None:
                     given[item.producer.id] = item
                 yield item
@@ -248,10 +249,14 @@ async def read_turn_events(
                 marker = _superseded_marker(item, given)
                 if marker is not None:
                     yield marker
-            elif isinstance(item, (Closed, Idle)):
+            elif isinstance(item, Closed):
                 return
     except StreamOffsetError as err:
         raise TurnCursorError(str(err)) from err
+    except StreamNotFoundError:
+        # A read with no create wait, of an agent that ended before it created its Stream,
+        # has nothing to give.
+        return
     finally:
         await items.aclose()
 
@@ -289,42 +294,3 @@ def _superseded_marker(
         offset=item.offset,
         producer=None,
     )
-
-
-class ActivityPublisher:
-    """Publishes values onto one Topic from an activity.
-
-    ``publish`` is synchronous, so an SDK's streaming callback can call it. The Topic buffers
-    the records and flushes every ``batch_interval``, and leaving the context flushes the tail.
-    """
-
-    def __init__(self, topic: Topic[Any]) -> None:
-        self._topic = topic
-
-    def publish(self, value: Any) -> None:
-        self._topic.publish(value)
-
-
-@asynccontextmanager
-async def publisher_for_activity(
-    topic: str,
-    *,
-    stream_id: str | None = None,
-    batch_interval: timedelta = timedelta(milliseconds=50),
-) -> AsyncIterator[ActivityPublisher]:
-    """A publisher onto ``topic`` of the Stream ``stream_id``, from an activity.
-
-    With no ``stream_id``, the default Stream of the workflow that scheduled this activity. The
-    records carry the activity's own Producer id and attempt, so a retry withdraws what the
-    failed attempt wrote, and readers get a ``Superseded`` item for it.
-    """
-    stream = activity_stream(
-        StreamRef(stream_id) if stream_id else None, batch_interval=batch_interval
-    )
-    publisher = ActivityPublisher(stream.topic(topic))
-    try:
-        yield publisher
-    finally:
-        # The tail goes out even when the activity is failing, so a reader sees what was
-        # produced up to the failure.
-        await stream.flush()

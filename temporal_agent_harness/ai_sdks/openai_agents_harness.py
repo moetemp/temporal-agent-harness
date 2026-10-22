@@ -322,7 +322,7 @@ def stream_to_provider(model: str | None, run_context: Any) -> _HarnessStreamTok
     and the object the agent passed as ``Runner.run_streamed(..., context=self._runner)``.
     Reads the in-flight turn's stream context off that runner and bundles it with the
     model. Returns ``None`` when the run context is not a harness runner or there is no
-    active turn, so the vendored stub falls back to ``streaming_topic``.
+    active turn, and then the vendored stub raises, since there is no Stream to publish on.
     """
     if not isinstance(run_context, AgentWorkflowRunner):
         return None

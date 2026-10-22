@@ -260,10 +260,10 @@ class _TemporalModelStub(Model):  # type:ignore[reportUnusedClass]
                 "workflow stream signal channel)."
             )
 
-        # Resolve the opaque per-call routing token: prefer the configured
-        # provider (called here, in workflow context), falling back to the
-        # static streaming_topic. The activity hands whatever this is to its
-        # observer factory; it never inspects the token itself.
+        # Resolve the opaque per-call routing token from the configured
+        # provider (called here, in workflow context). The activity hands
+        # whatever this is to its observer factory; it never inspects the token
+        # itself.
         stream_to: Any = None
         if self.model_params.stream_to_provider is not None:
             # Pass the requested model id and the caller's run context, so the
@@ -272,13 +272,15 @@ class _TemporalModelStub(Model):  # type:ignore[reportUnusedClass]
             stream_to = self.model_params.stream_to_provider(
                 self.model_name, self._run_context
             )
-        if stream_to is None:
-            stream_to = self.model_params.streaming_topic
+        if stream_to is None and self.model_params.streaming_topic is not None:
+            raise ValueError(
+                "ModelActivityParameters.streaming_topic names no Stream. Return "
+                "a RawTopic with the Stream from stream_to_provider."
+            )
         if stream_to is None:
             raise ValueError(
-                "Runner.run_streamed requires ModelActivityParameters."
-                "streaming_topic or a stream_to_provider that returns a "
-                "routing token."
+                "Runner.run_streamed requires a stream_to_provider that returns "
+                "a routing token."
             )
 
         base_input, summary = self._build_activity_input(

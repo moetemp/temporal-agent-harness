@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import (
     Client,
+    WorkflowContinuedAsNewError,
     WorkflowExecutionStatus,
     WorkflowHandle,
     WorkflowUpdateFailedError,
@@ -278,6 +279,30 @@ class MidTurnProbeAgent:
         return self._published_after_sibling
 
 
+@agent.defn
+class ContinuingProbeAgent:
+    """Continues as new when it is closed the first time, and passes its Stream on, so a test
+    can read both runs on one Stream."""
+
+    @workflow.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = AgentWorkflowRunner(
+            config,
+            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
+        )
+
+    @workflow.run
+    async def run(self, config: AgentConfig) -> None:
+        await self._runner.run(self)
+        if config.stream is None:
+            workflow.continue_as_new(config.model_copy(update={"stream": self._runner.stream}))
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def greet(self, message: Greeting) -> Greeted:
+        """Greet a person by name."""
+        return Greeted(message=f"hi {message.name}")
+
+
 @pytest_asyncio.fixture
 async def client_and_queue():
     """A time-skipping env (pydantic converter) with a worker hosting the probe."""
@@ -288,7 +313,12 @@ async def client_and_queue():
     async with Worker(
         env.client,
         task_queue=task_queue,
-        workflows=[TypedProbeAgent, MidTurnProbeAgent, NoEvaluatorProbeAgent],
+        workflows=[
+            TypedProbeAgent,
+            MidTurnProbeAgent,
+            NoEvaluatorProbeAgent,
+            ContinuingProbeAgent,
+        ],
         # Unsandboxed so the test module's imports (pydantic, harness, pytest) don't
         # trip the workflow sandbox; the runner logic under test is unaffected.
         workflow_runner=UnsandboxedWorkflowRunner(),
@@ -518,6 +548,51 @@ async def test_handler_error_publishes_message_handler_error_and_loop_survives(
     await _send(handle, "greet", {"name": "Bob"})
     seen = await _wait_for_seen(handle, 1)
     assert "greet:Bob" in seen
+
+
+async def test_the_stream_goes_through_continue_as_new_and_closes_with_the_chain(
+    client_and_queue,
+):
+    """The first run passes its Stream to the next one in ``AgentConfig.stream``, so a reader
+    of the agent gets both runs' turns on one Stream, and the read ends when the chain ends."""
+    client, task_queue = client_and_queue
+    first = await _start(client, task_queue, ContinuingProbeAgent)
+    await _send(first, "greet", {"name": "Ada"})
+    assert len(await _collect_until_turn_end(client, first.id)) > 0
+    await first.signal("close")
+    # A message sent while the first run drains its close would stay with that run.
+    first_run = client.get_workflow_handle(first.id, run_id=first.result_run_id)
+    with pytest.raises(WorkflowContinuedAsNewError):
+        await first_run.result(follow_runs=False)
+
+    # The latest run of the chain, not the first.
+    latest = client.get_workflow_handle(first.id)
+    await _send(latest, "greet", {"name": "Bob"})
+    await _wait_for_turn_ends(client, first.id, 2)
+    await latest.signal("close")
+    await latest.result()
+
+    events: list[AgentEvent] = []
+    async with asyncio.timeout(30):
+        # No break: the Stream's close ends the read.
+        async for envelope in turn_events(client, first.id):
+            events.append(envelope)
+    replies = [
+        e.event.output
+        for e in events
+        if e.event.type == AgentEventType.MESSAGE_HANDLER_END
+    ]
+    assert replies == [{"message": "hi Ada"}, {"message": "hi Bob"}]
+
+
+async def _wait_for_turn_ends(client: Client, workflow_id: str, count: int) -> None:
+    ends = 0
+    async with asyncio.timeout(30):
+        async for envelope in turn_events(client, workflow_id):
+            if envelope.event.type == AgentEventType.TURN_END:
+                ends += 1
+                if ends == count:
+                    return
 
 
 async def test_a_rejected_auto_mode_policy_fails_the_message_not_the_workflow(
@@ -1301,8 +1376,8 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
 
 
 def test_publish_reaches_the_producer_in_order(offline_build):
-    """A publish is one synchronous publish on the Topic, so the Topic sees the envelopes in
-    the order the runner published them, with the sequence numbers it stamped."""
+    """A publish is one publish on the Topic, run to its end at the call, so the Topic sees the
+    envelopes in the order the runner published them, with the sequence numbers it stamped."""
     runner = offline_build(AgentConfig())
     runner._pub("turn-1", 1, TurnEnded())
     runner._pub("turn-2", 2, TurnEnded())
@@ -1322,6 +1397,18 @@ def test_refused_publish_raises_at_the_call(offline_build):
         runner._pub("turn-2", 2, TurnEnded())
 
 
+def test_a_workflow_stream_call_that_waits_is_refused():
+    """Sync code runs a Workflow Stream call to its end at once. A call that waits can't end
+    there, so it raises rather than drop the write."""
+    import temporal_agent_harness.harness.agent_workflow as aw
+
+    async def waits() -> None:
+        await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="waited"):
+        aw._completed(waits())
+
+
 def test_accepted_turn_from_error_raises_when_detail_absent():
     """An accepted-but-errored turn with no ``subagent_turn`` detail is a broken activity
     contract. The parent raises loudly rather than closing the bracket on an invented number
@@ -1337,6 +1424,13 @@ def test_accepted_turn_from_error_raises_when_detail_absent():
 # ---------------------------------------------------------------------------
 
 
+async def _offline_create_stream(*_args: Any, **_kwargs: Any) -> MagicMock:
+    # Like the real create, it ends in its first step, and so does each publish on its Topic.
+    stream = MagicMock()
+    stream.topic.return_value.publish = AsyncMock(return_value=None)
+    return stream
+
+
 @pytest.fixture
 def offline_build(monkeypatch):
     import temporal_agent_harness.harness.agent_workflow as aw
@@ -1348,8 +1442,7 @@ def offline_build(monkeypatch):
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
     # Offline there is no Stream to bind a Topic on; a mock records what the runner publishes.
-    # Its publish is synchronous like the real one.
-    monkeypatch.setattr(aw, "workflow_stream", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "create_stream", _offline_create_stream)
 
     def build(config: AgentConfig):
         return AgentWorkflowRunner(
@@ -1370,7 +1463,7 @@ def offline_build_policy(monkeypatch):
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
-    monkeypatch.setattr(aw, "workflow_stream", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(aw, "create_stream", _offline_create_stream)
 
     def build(
         config: AgentConfig,

@@ -1,7 +1,8 @@
 # ABOUTME: Unit-tests select_observer's routing and the flush cadence it threads — that a
 # configured ObserverFactory is called with (token, batch_interval=...) so a plugin's
 # streaming_batch_interval governs a custom observer's publisher too, and that the default
-# raw-topic path carries the same interval. No Temporal server, no provider keys.
+# raw-topic path (a RawTopic token naming the Stream) carries the same interval. No Temporal
+# server, no provider keys.
 #
 # Run with: uv run pytest tests/ai_sdks/integration_helpers/test_select_observer.py -v
 
@@ -13,9 +14,11 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from temporalio.contrib.streams import ActivityStream
 
 from temporal_agent_harness.ai_sdks.integration_helpers import (
     ObserverFactory,
+    RawTopic,
     RawTopicObserver,
     StreamObserver,
     select_observer,
@@ -67,11 +70,26 @@ async def test_factory_receives_token_and_batch_interval():
 
 
 def test_raw_topic_path_carries_the_batch_interval():
+    token = RawTopic(stream=ActivityStream(id="wf:run:raw"), topic="raw_events")
     observer = select_observer(
-        factory=None, token="raw_events", batch_interval=timedelta(milliseconds=250)
+        factory=None, token=token, batch_interval=timedelta(milliseconds=250)
     )
     assert isinstance(observer, RawTopicObserver)
     assert observer._batch_interval == timedelta(milliseconds=250)
+
+
+def test_a_raw_topic_token_arrives_as_json_and_still_routes():
+    # The token rides the activity input as an untyped field, so the activity gets its JSON.
+    token = RawTopic(stream=ActivityStream(id="wf:run:raw"), topic="raw_events")
+    observer = select_observer(factory=None, token=token.model_dump(mode="json"))
+    assert isinstance(observer, RawTopicObserver)
+    assert observer._target == token
+
+
+def test_a_bare_topic_name_names_no_stream():
+    # An activity gets a Stream only in its input, so dropping the events would hide the gap.
+    with pytest.raises(ValueError, match="names no Stream"):
+        select_observer(factory=None, token="raw_events")
 
 
 @pytest.mark.asyncio

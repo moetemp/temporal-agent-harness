@@ -8,7 +8,7 @@ to. Without it they start the time-skipping test server.
 
 The plugin is registered on the test client, through ``Client.connect``, the way an application
 registers it. Workers built from that client take it, and every reader goes through
-``for_handle``. A Redis plugin serves one client connection, so every test builds its own. The
+``StreamClient``. A Redis plugin serves one client connection, so every test builds its own. The
 memory plugin is one for the process, so the web app's client sees the workers' Streams.
 """
 

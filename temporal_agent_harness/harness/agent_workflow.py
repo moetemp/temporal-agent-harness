@@ -20,7 +20,14 @@ import contextvars
 import inspect
 import textwrap
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -39,7 +46,8 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
 from temporalio.common import VersioningBehavior
-from temporalio.contrib.streams import StreamRef, workflow_stream
+from temporalio.contrib.streams import ActivityStream, BufferedPublisher, WorkflowStream
+from temporalio.contrib.streams.workflow import create_stream
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -60,6 +68,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AcceptedFunction,
     AgentConfig,
     AgentEvent,
+    AgentEvents,
     AgentMessage,
     AgentMessageReply,
     AgentStatePatch,
@@ -118,10 +127,6 @@ from temporal_agent_harness.harness.state.events import StateEvent, StateSnapsho
 # lives in its own leaf module so the sandbox-safe activity contracts in agent_protocol can embed
 # it without a circular import back through this module.
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
-from temporal_agent_harness.harness.stream_transport import (
-    ActivityPublisher,
-    publisher_for_activity,
-)
 
 # ParamSpec/return-type vars for the tool decorators. They let each be typed as an
 # identity over the wrapped callable (``Callable[P, Awaitable[R]] -> Callable[P,
@@ -306,6 +311,21 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 # fallback: a caller that has its own configured cadence (an SDK plugin threading
 # ``streaming_batch_interval``, say) passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
+
+
+def _completed(call: Coroutine[Any, Any, _R]) -> _R:
+    """Run a Workflow Stream call to its end, from code that can't await.
+
+    A Workflow's create and publish only add to the run's buffer, so the call ends in its first
+    step. The runner's constructor, sync handlers and ``mutate()`` blocks publish, and they can't
+    await.
+    """
+    try:
+        call.send(None)
+    except StopIteration as done:
+        return done.value
+    call.close()
+    raise RuntimeError("A Workflow Stream call waited, so sync code can't make it")
 
 _InjectedT = TypeVar("_InjectedT")
 
@@ -1062,20 +1082,23 @@ class TurnEventPublisher:
     Bound to a :class:`TurnStreamContext` at construction so call sites
     don't have to re-thread turn metadata on every publish. Obtain one
     via :meth:`AgentWorkflowRunner.publisher_from_activity` (an async
-    context manager that owns the underlying batched producer so deltas
+    context manager that owns the underlying ``BufferedPublisher`` so deltas
     batch and drain correctly).
     """
 
     def __init__(
         self,
-        events: ActivityPublisher,
+        events: BufferedPublisher[AgentEvent],
         context: TurnStreamContext,
     ) -> None:
         self._events = events
         self._context = context
 
     def publish(self, event: AgentStreamItem) -> None:
-        """Wrap ``event`` in an :class:`AgentEvent` envelope and publish it.
+        """Wrap ``event`` in an :class:`AgentEvent` envelope and buffer it.
+
+        It returns at once, so an SDK's sync streaming callback can call it. The buffer goes
+        out at most the publisher's ``batch_interval`` later, and at the end of the context.
 
         Producers build the typed payload (e.g. ``ReplyDelta(text=…)``); the
         envelope adds the routing metadata only the harness controls — ``turn_id``
@@ -1089,15 +1112,21 @@ class TurnEventPublisher:
         context, so an activity streaming a model call attributes its deltas to the right
         message without ever knowing there is such a thing.
         """
-        self._events.publish(
-            AgentEvent(
-                event=event,
-                agent_id=self._context.agent_id,
-                turn_id=self._context.turn_id,
-                turn_number=self._context.turn_number,
-                message_id=self._context.message_id,
-                timestamp=time.time(),
-            )
+        self._events.publish(self._envelope(event))
+
+    async def write(self, event: AgentStreamItem) -> None:
+        """Publish ``event`` after the buffered ones, and return when all of them are written."""
+        self._events.publish(self._envelope(event))
+        await self._events.flush()
+
+    def _envelope(self, event: AgentStreamItem) -> AgentEvent:
+        return AgentEvent(
+            event=event,
+            agent_id=self._context.agent_id,
+            turn_id=self._context.turn_id,
+            turn_number=self._context.turn_number,
+            message_id=self._context.message_id,
+            timestamp=time.time(),
         )
 
 
@@ -1747,8 +1776,9 @@ class AgentWorkflowRunner:
                 approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             )
 
-        The runner publishes its events through ``workflow_stream`` onto the Stream plugin the
-        worker's client carries; the agent names no Stream and no store.
+        A top-level runner creates the agent tree's Stream (``AgentEvents``) and publishes its
+        events on it through the Stream plugin the worker's client carries; the agent names no
+        Stream and no store.
 
         ``config`` is the standardized agent input; the runner resolves each universal
         knob as *the caller's config value if given, else the agent's default*
@@ -1803,17 +1833,19 @@ class AgentWorkflowRunner:
         # inside another run's activation can tell (``_in_own_run``). Offline construction
         # (unit tests) has no run.
         self._run_id: str | None = workflow.info().run_id if workflow.in_workflow() else None
-        # Every agent of a tree publishes on its root's default Stream, each on a Topic of its
+        # Every agent of a tree publishes on the Stream its root creates, each on a Topic of its
         # own, so one read of the Stream gives the whole tree in order. A parent passes the place
-        # down in ``config.stream``; a top-level agent's place is its own default Stream.
+        # down in ``config.stream``, and so does a run that continues as new. The create closes
+        # the Stream when the root's run chain closes.
+        stream: WorkflowStream[Any]
         if config.stream is not None:
-            stream = workflow_stream(config.stream.ref)
+            stream = config.stream.handle
             self._stream = config.stream
         else:
-            stream = workflow_stream()
-            # Offline construction (unit tests) has no run and so no Stream ref.
-            own = stream.ref if workflow.in_workflow() else StreamRef("")
-            self._stream = AgentStream(ref=own, topic=TURN_EVENTS_TOPIC)
+            stream = _completed(create_stream(AgentEvents))
+            # Offline construction (unit tests) has no run and so no Stream to name.
+            own = stream if workflow.in_workflow() else WorkflowStream(id="")
+            self._stream = AgentStream(handle=own, topic=TURN_EVENTS_TOPIC)
         self._workflow_stream = stream
         self._events = stream.topic(self._stream.topic, type=AgentEvent)
         _assert_async_auto_mode_evaluator(auto_mode_evaluator)
@@ -2015,21 +2047,24 @@ class AgentWorkflowRunner:
         child's events, and a retried send that Temporal deduplicates publishes it once.
         """
         parent = dispatch.parent_stream_context
-        self._workflow_stream.topic(parent.topic, type=AgentEvent).publish(
-            AgentEvent(
-                event=SubagentMessageSent(
-                    subagent_id=self._agent_id,
-                    agent_key=dispatch.agent_key,
-                    workflow_id=workflow.info().workflow_id,
-                    handler=message.type,
-                    subagent_turn=turn_number,
-                    after_cursor=dispatch.after_cursor,
-                ),
-                agent_id=parent.agent_id,
-                turn_id=parent.turn_id,
-                turn_number=parent.turn_number,
-                message_id=parent.message_id,
-                timestamp=workflow.time(),
+        topic = self._workflow_stream.topic(parent.topic, type=AgentEvent)
+        _completed(
+            topic.publish(
+                AgentEvent(
+                    event=SubagentMessageSent(
+                        subagent_id=self._agent_id,
+                        agent_key=dispatch.agent_key,
+                        workflow_id=workflow.info().workflow_id,
+                        handler=message.type,
+                        subagent_turn=turn_number,
+                        after_cursor=dispatch.after_cursor,
+                    ),
+                    agent_id=parent.agent_id,
+                    turn_id=parent.turn_id,
+                    turn_number=parent.turn_number,
+                    message_id=parent.message_id,
+                    timestamp=workflow.time(),
+                )
             )
         )
 
@@ -2788,6 +2823,15 @@ class AgentWorkflowRunner:
             self._pub(ctx.turn_id, ctx.turn_number, payload)
 
     @property
+    def stream(self) -> AgentStream:
+        """Where this agent publishes: its tree's Stream and its own Topic.
+
+        On continue-as-new, put it in the next run's ``AgentConfig.stream``, so the next run
+        writes the same Stream. The Stream closes when the run chain closes.
+        """
+        return self._stream
+
+    @property
     def current_stream_context(self) -> TurnStreamContext | None:
         """Carrier identifying the in-flight turn + message for activity-side publishing.
 
@@ -2807,9 +2851,9 @@ class AgentWorkflowRunner:
         return ctx.model_copy(
             update={
                 "message_id": _CURRENT_MESSAGE_ID.get(),
-                # A subagent's activities publish on the root's Stream, not on the default
-                # Stream of the subagent that scheduled them.
-                "stream_id": self._stream.ref.id or None,
+                # An activity gets a Stream only in its input. A subagent's activities publish
+                # on the root's Stream.
+                "stream": ActivityStream.from_handle(self._stream.handle),
                 "topic": self._stream.topic,
             }
         )
@@ -3035,7 +3079,7 @@ class AgentWorkflowRunner:
         # passes through unchanged); a caller-supplied agent_id would not match the handle.
         # The child publishes on this tree's Stream, on a Topic of its own. The memo says where,
         # so a client that knows only the child's workflow id can read it.
-        child_stream = AgentStream(ref=self._stream.ref, topic=subagent_topic(handle))
+        child_stream = AgentStream(handle=self._stream.handle, topic=subagent_topic(handle))
         child_config = (config if config is not None else AgentConfig()).model_copy(
             update={"agent_id": handle, "stream": child_stream}
         )
@@ -3249,17 +3293,20 @@ class AgentWorkflowRunner:
         turn events (e.g. ``reply_delta`` chunks from a streaming model
         call) onto its parent workflow's ``turn_events`` topic.
 
-        Encapsulates the Topic's buffer (flushed every ``batch_interval``,
-        and on exit so the tail drains before the activity returns) and
-        the Topic binding. Activities just call ``publisher.publish(...)``.
+        Encapsulates the ``BufferedPublisher`` (which writes a batch at most
+        ``batch_interval`` after its first value, and on exit so the tail drains
+        before the activity returns) and the Topic binding. Activities call
+        ``publisher.publish(...)`` for a stream of deltas and
+        ``await publisher.write(...)`` for an event that must be written before
+        they go on.
 
         Args:
             context: Carrier identifying the workflow + turn to publish
                 against. Built on the workflow side via
                 :attr:`AgentWorkflowRunner.current_stream_context` and
                 forwarded opaquely through activity inputs.
-            batch_interval: Background flush cadence on the underlying
-                producer. Each flush is one append to the stream store, so a
+            batch_interval: How long a value waits in the buffer at most.
+                Each batch is one append to the stream store, so a
                 longer interval trades UI snappiness for fewer writes. ``None``
                 takes :data:`DEFAULT_PUBLISH_BATCH_INTERVAL` (50ms), which keeps
                 the UI feel snappy. An SDK integration should pass its own
@@ -3267,20 +3314,20 @@ class AgentWorkflowRunner:
                 ``ModelActivityParameters.streaming_batch_interval``).
 
         Yields:
-            A :class:`TurnEventPublisher` bound to the active workflow
-            (resolved from the activity context) and the given turn.
+            A :class:`TurnEventPublisher` bound to the Stream and turn that the
+            context names.
         """
-        # The context names the Stream and Topic of the publishing agent: a subagent publishes on
-        # its root's Stream, which is not the default Stream of the workflow that scheduled this
-        # activity. The agent's SHORT id to stamp the events with is not derivable from
-        # ``activity.info()`` either, so it rides in on the context too.
-        async with publisher_for_activity(
-            context.topic,
-            stream_id=context.stream_id,
-            batch_interval=(
-                DEFAULT_PUBLISH_BATCH_INTERVAL if batch_interval is None else batch_interval
-            ),
-        ) as events:
+        # An activity gets its Stream only in its input, so the context names the Stream and
+        # Topic of the publishing agent: a subagent publishes on its root's Stream. The agent's
+        # SHORT id to stamp the events with is not derivable from ``activity.info()`` either, so
+        # it rides in on the context too.
+        if context.stream is None:
+            raise RuntimeError("the stream context names no Stream to publish on")
+        topic = context.stream.topic(context.topic, type=AgentEvent)
+        max_delay = DEFAULT_PUBLISH_BATCH_INTERVAL if batch_interval is None else batch_interval
+        # Leaving the block writes the tail, also when the activity is failing, so a reader sees
+        # what was produced up to the failure.
+        async with BufferedPublisher(topic, max_delay=max_delay) as events:
             yield TurnEventPublisher(events=events, context=context)
 
     # -- Tool execution -----------------------------------------------------
@@ -3380,7 +3427,7 @@ class AgentWorkflowRunner:
         # The Worker appends the record before it completes this activation. An unconvertible
         # value raises here, and a record the store refuses fails the Workflow Task. Either
         # way it is loud.
-        self._events.publish(envelope)
+        _completed(self._events.publish(envelope))
 
 
 # ---------------------------------------------------------------------------
@@ -3576,7 +3623,7 @@ def activity_tool_defn(
                 k: v for k, v in full_input.items() if k not in sig.inject_names and k != "self"
             }
             async with AgentWorkflowRunner.publisher_from_activity(tool_ctx.stream_context) as pub:
-                pub.publish(
+                await pub.write(
                     ToolStartEvent(
                         tool_id=tool_ctx.tool_id,
                         tool_name=tool_name,
@@ -3586,13 +3633,13 @@ def activity_tool_defn(
                 try:
                     result = await user_fn(*user_args, **kwargs)
                 except Exception as e:
-                    pub.publish(
+                    await pub.write(
                         ToolErrorEvent(
                             tool_id=tool_ctx.tool_id, tool_name=tool_name, message=str(e)
                         )
                     )
                     raise
-                pub.publish(
+                await pub.write(
                     ToolEndEvent(
                         tool_id=tool_ctx.tool_id,
                         tool_name=tool_name,

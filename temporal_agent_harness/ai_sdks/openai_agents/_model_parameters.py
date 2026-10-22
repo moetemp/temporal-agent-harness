@@ -75,11 +75,12 @@ class ModelActivityParameters:
 
     streaming_topic: str | None = None
     """Stream topic to publish raw model stream events to when the workflow
-    calls ``Runner.run_streamed``. Required for ``Runner.run_streamed``;
-    if left as ``None``, ``run_streamed`` raises before scheduling any
-    activity. The worker's client must carry a stream provider (see
-    ``temporal_agent_harness.harness.stream_transport``); the activity
-    publishes onto this topic of its workflow's stream through it.
+    calls ``Runner.run_streamed``. A topic name alone names no Stream, and an
+    activity gets a Stream only in its input, so ``run_streamed`` raises
+    before scheduling any activity when ``stream_to_provider`` gives no token.
+    Return an ``integration_helpers.RawTopic`` (the Stream and this topic)
+    from ``stream_to_provider`` instead. The worker's client must carry a
+    Stream plugin (see ``temporal_agent_harness.harness.stream_transport``).
 
     Streaming is incompatible with ``use_local_activity`` (local activities
     do not support heartbeats or an activity stream producer).
