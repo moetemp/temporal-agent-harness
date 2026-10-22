@@ -696,9 +696,12 @@ Python SDK. The Stream runtime lives in the SDK's bridge and keeps the Streams i
 `streams_from_env()` in `temporal_agent_harness.harness.stream_transport` builds the
 `RedisStreamPlugin` for the Redis at `STREAMS_REDIS_URL` (`redis://127.0.0.1:6379`), and the
 process registers it once on its client, `Client.connect(..., plugins=[streams])`. Workers built
-from that client take it. Workflow code writes through `workflow_stream()`, activities through
-`activity_stream()`, and a process outside a worker, such as the web app or the Nexus adapter,
-reads through `for_handle(handle)` or `for_ref(client, ref)` on the same kind of client. Agent code names nothing.
+from that client take it. The Stream definition is `AgentEvents` in `agent_protocol`. The root
+agent's runner creates the Stream with `temporalio.contrib.streams.workflow.create_stream` and
+writes it. An activity gets the Stream in its input (`TurnStreamContext.stream`) and writes it
+through a `BufferedPublisher`. A process outside a worker, such as the web app or the Nexus
+adapter, reads through `StreamClient(client)` on the same kind of client. Agent code names
+nothing.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -709,17 +712,20 @@ reads through `for_handle(handle)` or `for_ref(client, ref)` on the same kind of
 The web app, the Nexus adapter and each worker are separate processes, so they all need the same
 Redis. Streams need only a stock Temporal server, so the dev server is enough.
 
-**One Stream per agent tree.** A top-level agent publishes on its own default Stream, on the
-Topic `turn_events`. When it starts a subagent, it passes its Stream down, and the subagent
-publishes on it too, on a Topic of its own (`turn_events/<subagent id>`). So one read of the
-root's Stream gives every agent of the tree in one order, and `AgentClient.send_message` and
+**One Stream per agent tree.** A top-level agent creates its Stream in its first Workflow Task
+and publishes on the Topic `turn_events`. The Stream closes when the agent's run chain closes,
+and a run that continues as new passes it on in `AgentConfig.stream`
+(`AgentWorkflowRunner.stream`). When it starts a subagent, it passes its Stream down, and the
+subagent publishes on it too, on a Topic of its own (`turn_events/<subagent id>`). So one read of
+the root's Stream gives every agent of the tree in one order, and `AgentClient.send_message` and
 `attach` need no merge. The order keeps the subagent brackets by construction. The child writes
 the parent's `subagent_message_sent` as it admits the message, before any event of its own turn,
 and the parent writes `subagent_reply_received` only after it read the child's `turn_end`. A
-subagent's memo carries the root's `StreamRef` (in its proto JSON form) and the Topic, so a
-client that knows only the subagent's workflow id reads its Topic with `for_ref(client, ref,
-end_with_run=True)`. A read of an agent and its subagents asks for the agent's
-Topic and the Topic prefix of its subagents (`topic_prefixes=`), so the Stream runtime filters.
+subagent's memo carries the root's Stream handle (the proto JSON of a `StreamRef`) and the
+Topic, so a client that knows only the subagent's workflow id reads its Topic with
+`StreamClient(client).get_handle(AgentEvents, id=...)`. A read of an agent and its subagents
+asks for the agent's Topic and the Topic prefix of its subagents (`prefixes=`), so the Stream
+runtime filters. A read ends at the Stream's close.
 
 A resume point is a position on that one Stream, so a resume loses nothing: a consumer that
 disconnects in the middle of a subagent's turn gets the rest of that turn when it resumes.
@@ -737,8 +743,8 @@ STREAMS_STORE=redis STREAMS_REDIS_URL=redis://127.0.0.1:6379/0 \
 What it costs:
 
 - Records never pass through Temporal. A workflow's own publish goes to Redis when its Workflow
-  Task completes and adds nothing to History. A publish from an activity is buffered and goes out
-  in batches.
+  Task completes and adds nothing to History. An activity's model deltas go through a
+  `BufferedPublisher` in batches, and its tool lifecycle events are awaited writes.
 - The value is an ordinary payload, so the payload converter and the client's codec chain both
   apply to it.
 - A Stream keeps records for its Retention (7 days by default). A resume point past that fails
