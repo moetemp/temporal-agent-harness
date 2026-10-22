@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 from temporalio.contrib.streams import ActivityStream
 
@@ -41,9 +43,8 @@ class TurnStreamContext(BaseModel):
         "is no longer its workflow_id but a short, parent-assignable handle."
     )
     # Not ActivityStream[AgentEvents]: agent_protocol imports this module, so it can't import
-    # the definition. The activity names the Topic with its type instead. Not
-    # ActivityStream[Any] either: the SDK takes ``Any`` for a definition class on Python 3.11+.
-    stream: ActivityStream | None = Field(
+    # the definition. The activity names the Topic with its type instead.
+    stream: ActivityStream[Any] | None = Field(
         default=None,
         description="The Stream the agent publishes on: the one its root agent created. An "
         "activity gets a Stream only in its input, so the runner always fills it in. ``None`` "

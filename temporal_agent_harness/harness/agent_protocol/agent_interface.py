@@ -639,8 +639,7 @@ class AgentStream(BaseModel):
     """
 
     # Not WorkflowStream[AgentEvents]: the definition is in ``events``, which imports this module.
-    # Not WorkflowStream[Any] either: the SDK takes ``Any`` for a definition class on Python 3.11+.
-    handle: WorkflowStream = Field(
+    handle: WorkflowStream[Any] = Field(
         description="The root agent's Stream, in the proto JSON form of a Stream handle. A "
         "client opens it with ``StreamClient.get_handle``."
     )

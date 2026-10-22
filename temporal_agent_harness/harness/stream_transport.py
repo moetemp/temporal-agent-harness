@@ -143,10 +143,12 @@ async def turn_stream(client: Client, workflow_id: str, *, wait: bool = True) ->
     first_run_id = description.raw_description.workflow_execution_info.first_run_id
     root = client.get_workflow_handle(workflow_id, first_execution_run_id=first_run_id or None)
     if description.status != WorkflowExecutionStatus.RUNNING:
-        # A run chain that ended with no Stream never creates one.
+        # A root that ended before its create never creates its Stream, so the read must not
+        # wait for it. A Stream that does exist needs no wait, and its close or ``auto_close``
+        # ends the read.
         create_wait = None
     return TurnStream(
-        streams.get_workflow_stream(root, AgentEvents), TURN_EVENTS_TOPIC, create_wait
+        streams.workflow_stream(root, AgentEvents), TURN_EVENTS_TOPIC, create_wait
     )
 
 

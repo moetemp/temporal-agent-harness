@@ -313,12 +313,18 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
 
 
+# Closes a root's Stream that no run completion closes, such as one of a terminated or timed out
+# run, so its readers end. Well over the longest expected gap between turns of a session, so a
+# live session's Stream stays open.
+_ROOT_STREAM_AUTO_CLOSE = timedelta(hours=24)
+
+
 def _completed(call: Coroutine[Any, Any, _R]) -> _R:
     """Run a Workflow Stream call to its end, from code that can't await.
 
-    A Workflow's create and publish only add to the run's buffer, so the call ends in its first
-    step. The runner's constructor, sync handlers and ``mutate()`` blocks publish, and they can't
-    await.
+    The runner creates its Stream in its constructor, which can't await, and it publishes the
+    state snapshots there right after. The create only adds to the run's buffer, so the call ends
+    in its first step. Publishes use ``publish_nowait``, and the create has no such call.
     """
     try:
         call.send(None)
@@ -1836,13 +1842,15 @@ class AgentWorkflowRunner:
         # Every agent of a tree publishes on the Stream its root creates, each on a Topic of its
         # own, so one read of the Stream gives the whole tree in order. A parent passes the place
         # down in ``config.stream``, and so does a run that continues as new. The create closes
-        # the Stream when the root's run chain closes.
+        # the Stream when the root's run chain closes, or after a day with no event.
         stream: WorkflowStream[Any]
         if config.stream is not None:
             stream = config.stream.handle
             self._stream = config.stream
         else:
-            stream = _completed(create_stream(AgentEvents))
+            stream = _completed(
+                create_stream(AgentEvents, auto_close=_ROOT_STREAM_AUTO_CLOSE)
+            )
             # Offline construction (unit tests) has no run and so no Stream to name.
             own = stream if workflow.in_workflow() else WorkflowStream(id="")
             self._stream = AgentStream(handle=own, topic=TURN_EVENTS_TOPIC)
@@ -2048,23 +2056,21 @@ class AgentWorkflowRunner:
         """
         parent = dispatch.parent_stream_context
         topic = self._workflow_stream.topic(parent.topic, type=AgentEvent)
-        _completed(
-            topic.publish(
-                AgentEvent(
-                    event=SubagentMessageSent(
-                        subagent_id=self._agent_id,
-                        agent_key=dispatch.agent_key,
-                        workflow_id=workflow.info().workflow_id,
-                        handler=message.type,
-                        subagent_turn=turn_number,
-                        after_cursor=dispatch.after_cursor,
-                    ),
-                    agent_id=parent.agent_id,
-                    turn_id=parent.turn_id,
-                    turn_number=parent.turn_number,
-                    message_id=parent.message_id,
-                    timestamp=workflow.time(),
-                )
+        topic.publish_nowait(
+            AgentEvent(
+                event=SubagentMessageSent(
+                    subagent_id=self._agent_id,
+                    agent_key=dispatch.agent_key,
+                    workflow_id=workflow.info().workflow_id,
+                    handler=message.type,
+                    subagent_turn=turn_number,
+                    after_cursor=dispatch.after_cursor,
+                ),
+                agent_id=parent.agent_id,
+                turn_id=parent.turn_id,
+                turn_number=parent.turn_number,
+                message_id=parent.message_id,
+                timestamp=workflow.time(),
             )
         )
 
@@ -3427,7 +3433,7 @@ class AgentWorkflowRunner:
         # The Worker appends the record before it completes this activation. An unconvertible
         # value raises here, and a record the store refuses fails the Workflow Task. Either
         # way it is loud.
-        _completed(self._events.publish(envelope))
+        self._events.publish_nowait(envelope)
 
 
 # ---------------------------------------------------------------------------

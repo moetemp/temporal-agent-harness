@@ -87,8 +87,7 @@ class RawTopic(BaseModel):
     and :func:`select_observer` validates it back.
     """
 
-    # Not ActivityStream[Any]: the SDK takes ``Any`` for a definition class on Python 3.11+.
-    stream: ActivityStream
+    stream: ActivityStream[Any]
     topic: str
 
 

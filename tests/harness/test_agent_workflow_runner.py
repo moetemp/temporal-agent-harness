@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -33,6 +33,7 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.contrib.streams import WorkflowStream
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from tests._streams import turn_events, workflow_environment
@@ -48,6 +49,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentEventType,
     AgentMessage,
     AgentStatus,
+    AgentStream,
     AutoApprovalVerdict,
     AutoApprovalCriteria,
     AutoApprovalCriteriaSet,
@@ -1365,7 +1367,7 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, outcome="error"
     )
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = [c.args[0] for c in runner._events.publish_nowait.call_args_list]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event
@@ -1376,13 +1378,13 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
 
 
 def test_publish_reaches_the_producer_in_order(offline_build):
-    """A publish is one publish on the Topic, run to its end at the call, so the Topic sees the
-    envelopes in the order the runner published them, with the sequence numbers it stamped."""
+    """A publish is one ``publish_nowait`` on the Topic, so the Topic sees the envelopes in the
+    order the runner published them, with the sequence numbers it stamped."""
     runner = offline_build(AgentConfig())
     runner._pub("turn-1", 1, TurnEnded())
     runner._pub("turn-2", 2, TurnEnded())
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = [c.args[0] for c in runner._events.publish_nowait.call_args_list]
     assert [e.turn_id for e in published] == ["turn-1", "turn-2"]
     assert [e.seq for e in published] == [1, 2]
 
@@ -1390,11 +1392,29 @@ def test_publish_reaches_the_producer_in_order(offline_build):
 def test_refused_publish_raises_at_the_call(offline_build):
     """A publish the store refuses fails the caller right there, not somewhere later."""
     runner = offline_build(AgentConfig())
-    runner._events.publish.side_effect = [None, RuntimeError("store refused it")]
+    runner._events.publish_nowait.side_effect = [None, RuntimeError("store refused it")]
     runner._pub("turn-1", 1, TurnEnded())
 
     with pytest.raises(RuntimeError, match="store refused it"):
         runner._pub("turn-2", 2, TurnEnded())
+
+
+def test_the_root_creates_its_stream_with_an_auto_close(offline_build, monkeypatch):
+    """A root whose run never completes, such as a terminated one, still closes its Stream, so
+    its readers end. A subagent creates nothing: it writes its root's Stream."""
+    import temporal_agent_harness.harness.agent_workflow as aw
+
+    creates: list[tuple[Any, dict[str, Any]]] = []
+
+    async def recording_create(definition: Any, **kwargs: Any) -> MagicMock:
+        creates.append((definition, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(aw, "create_stream", recording_create)
+    offline_build(AgentConfig())
+    place = AgentStream(handle=WorkflowStream(id="wf:run:agent_events"), topic="turn_events/abc")
+    offline_build(AgentConfig(stream=place))
+    assert creates == [(aw.AgentEvents, {"auto_close": aw._ROOT_STREAM_AUTO_CLOSE})]
 
 
 def test_a_workflow_stream_call_that_waits_is_refused():
@@ -1425,10 +1445,8 @@ def test_accepted_turn_from_error_raises_when_detail_absent():
 
 
 async def _offline_create_stream(*_args: Any, **_kwargs: Any) -> MagicMock:
-    # Like the real create, it ends in its first step, and so does each publish on its Topic.
-    stream = MagicMock()
-    stream.topic.return_value.publish = AsyncMock(return_value=None)
-    return stream
+    # Like the real create, it ends in its first step. The runner publishes with publish_nowait.
+    return MagicMock()
 
 
 @pytest.fixture
