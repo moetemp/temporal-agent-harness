@@ -3190,10 +3190,10 @@ requires-dist = [
     { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'pydantic-ai'", specifier = ">=2.13" },
     { name = "pydantic-monty", marker = "extra == 'code-mode'", specifier = "==0.0.18" },
     { name = "temporal-nexus-mcp", marker = "extra == 'nexus-mcp'", editable = "nexus/mcp" },
-    { name = "temporalio", git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
-    { name = "temporalio", extras = ["aioboto3"], marker = "extra == 's3'", git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
-    { name = "temporalio", extras = ["opentelemetry"], marker = "extra == 'nexus-mcp'", git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
-    { name = "temporalio", extras = ["opentelemetry"], marker = "extra == 'openai-agents'", git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
+    { name = "temporalio", git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
+    { name = "temporalio", extras = ["aioboto3"], marker = "extra == 's3'", git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
+    { name = "temporalio", extras = ["opentelemetry"], marker = "extra == 'nexus-mcp'", git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
+    { name = "temporalio", extras = ["opentelemetry"], marker = "extra == 'openai-agents'", git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
     { name = "typesafe-sdk", marker = "extra == 'jev'", specifier = ">=0.6.0" },
 ]
 provides-extras = ["genai", "s3", "openai-agents", "pydantic-ai", "ui", "code-mode", "jev", "nexus-mcp"]
@@ -3216,8 +3216,8 @@ dev = [
     { name = "pytest-benchmark", specifier = ">=5.1.0" },
     { name = "setuptools", specifier = ">=83.0.0" },
     { name = "temporal-nexus-mcp", editable = "nexus/mcp" },
-    { name = "temporalio", extras = ["aioboto3"], git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
-    { name = "temporalio", extras = ["opentelemetry"], git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" },
+    { name = "temporalio", extras = ["aioboto3"], git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
+    { name = "temporalio", extras = ["opentelemetry"], git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee" },
     { name = "typesafe-sdk", specifier = ">=0.6.0" },
 ]
 examples = [
@@ -3268,7 +3268,7 @@ dev = [
 [[package]]
 name = "temporalio"
 version = "1.34.0"
-source = { git = "https://github.com/moetemp/sdk-python?rev=d4255ff7d4497ccd8fc87c886dcb6be66b330ccc#d4255ff7d4497ccd8fc87c886dcb6be66b330ccc" }
+source = { git = "https://github.com/moetemp/sdk-python?rev=bba56f3cfe8d412497d6944346f60bb6484bb3ee#bba56f3cfe8d412497d6944346f60bb6484bb3ee" }
 dependencies = [
     { name = "nexus-rpc" },
     { name = "protobuf" },
