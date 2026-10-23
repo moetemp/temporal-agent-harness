@@ -89,7 +89,8 @@ export class HttpTransport implements SessionTransport, SessionStarter {
     resume: string,
     signal: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
-    const query = `session_id=${encodeURIComponent(sessionId)}&resume=${encodeURIComponent(resume)}`;
+    const session = encodeURIComponent(sessionId);
+    const query = `session_id=${session}&resume=${encodeURIComponent(resume)}`;
     const response = await this.#request(`attach?${query}`, { signal });
     yield* readSse(response);
   }

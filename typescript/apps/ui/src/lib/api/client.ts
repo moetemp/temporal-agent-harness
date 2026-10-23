@@ -35,7 +35,11 @@ export interface AgentApi {
    * works on any agent regardless of what it accepts.
    */
   closeSession(sessionId: WorkflowId): Promise<void>;
-  attach(sessionId: WorkflowId, resume?: ResumePoint, signal?: AbortSignal): AsyncIterable<AgentSseFrame>;
+  attach(
+    sessionId: WorkflowId,
+    resume?: ResumePoint,
+    signal?: AbortSignal
+  ): AsyncIterable<AgentSseFrame>;
   submitMessage(request: ChatRequest, signal?: AbortSignal): Promise<SubmitMessageResponse>;
   chat(request: ChatRequest, signal?: AbortSignal): AsyncIterable<AgentSseFrame>;
   approve(request: ToolApprovalRequest): Promise<ToolApprovalResponse>;

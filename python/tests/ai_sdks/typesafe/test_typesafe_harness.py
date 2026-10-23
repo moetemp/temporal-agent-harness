@@ -96,8 +96,12 @@ async def test_native_round_trip_events_and_replay(mode):
                     await handle.signal(Probe.cancel_call)
                 result = await handle.result()
                 history = await handle.fetch_history()
-            await Replayer(plugins=stream_plugins(), workflows=[Probe], workflow_runner=UnsandboxedWorkflowRunner(),
-                           data_converter=client.data_converter).replay_workflow(history)
+            await Replayer(
+                plugins=stream_plugins(),
+                workflows=[Probe],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                data_converter=client.data_converter,
+            ).replay_workflow(history)
     assert [event["type"] for event in result["events"]] == [
         "model_interaction_started", "model_interaction_ended"]
     assert all(event["model"] == "override" for event in result["events"])

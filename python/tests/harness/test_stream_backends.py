@@ -8,6 +8,7 @@ on Workflow Streams.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -204,6 +205,17 @@ async def _turn(agent_client: AgentClient, handler: str, text: str, **kwargs: An
         return [item async for item in stream]
 
 
+async def _running_child(client: Client, parent: AgentClient) -> str:
+    """The parent's subagent's workflow id, once the subagent is in a turn."""
+    handle = client.get_workflow_handle(parent.workflow_id)
+    async with asyncio.timeout(30):
+        while (child := await handle.query(BackendParent.child)) is None:
+            await asyncio.sleep(0.05)
+        while not (await AgentClient(client, child).get_status()).turn_active:
+            await asyncio.sleep(0.05)
+    return child
+
+
 def _reply(items: list[Any]) -> str:
     return next(
         item.event.output["text"]
@@ -228,11 +240,7 @@ async def test_a_subagent_answer_is_its_own_message_s_in_a_shared_turn(client_an
     client, task_queue = client_and_queue
     parent = await _start(client, task_queue)
     reply = asyncio.create_task(_turn(parent, "delegate", "wait-for-join"))
-    async with asyncio.timeout(30):
-        while (child := await client.get_workflow_handle(parent.workflow_id).query("child")) is None:
-            await asyncio.sleep(0.05)
-        while not (await AgentClient(client, child).get_status()).turn_active:
-            await asyncio.sleep(0.05)
+    child = await _running_child(client, parent)
     await AgentClient(client, child).submit_message("join", {"text": "fail"})
 
     assert _reply(await reply) == "ours"
@@ -250,11 +258,7 @@ async def test_a_terminated_subagent_ends_the_parent_s_call(client_and_queue):
     client, task_queue = client_and_queue
     parent = await _start(client, task_queue)
     reply = asyncio.create_task(_turn(parent, "delegate", "hang"))
-    async with asyncio.timeout(30):
-        while (child := await client.get_workflow_handle(parent.workflow_id).query("child")) is None:
-            await asyncio.sleep(0.05)
-        while not (await AgentClient(client, child).get_status()).turn_active:
-            await asyncio.sleep(0.05)
+    child = await _running_child(client, parent)
     await client.get_workflow_handle(child).terminate()
 
     assert _reply(await reply).startswith("error:SubagentNoReply:")
@@ -446,7 +450,8 @@ async def test_a_nexus_poll_of_a_terminated_agent_says_closed(client_and_queue):
     turn = await _turn(agent_client, "echo", "hi")
     await client.get_workflow_handle(agent_client.workflow_id).terminate()
 
-    out = await _poll(_nexus_handler(client, task_queue), agent_client.workflow_id, turn[-1][1].cursor)
+    handler = _nexus_handler(client, task_queue)
+    out = await _poll(handler, agent_client.workflow_id, turn[-1][1].cursor)
 
     assert not out.items and out.closed
 
@@ -462,9 +467,10 @@ async def test_a_nexus_send_gives_the_cursor_where_its_turn_starts(client_and_qu
     session = f"BackendParent-{uuid.uuid4()}"
 
     async def send(text: str) -> Any:
+        payload = json.dumps({"text": text})
         return await handler.send_agent_message(
             SimpleNamespace(request_id=str(uuid.uuid4())),
-            SendAgentMessageInput(session_id=session, msg_type="echo", payload=f'{{"text": "{text}"}}'),
+            SendAgentMessageInput(session_id=session, msg_type="echo", payload=payload),
         )
 
     await send("one")
@@ -472,9 +478,7 @@ async def test_a_nexus_send_gives_the_cursor_where_its_turn_starts(client_and_qu
     sent = await send("three")
     out = await _poll(handler, session, sent.stream_cursor)
 
-    events = [
-        _payload_converter_event(item.data) for item in out.items
-    ]
+    events = [_payload_converter_event(item.data) for item in out.items]
     assert sent.stream_cursor
     assert {e.turn_number for e in events} == {sent.turn_number}
 

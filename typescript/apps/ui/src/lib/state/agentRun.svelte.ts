@@ -151,7 +151,7 @@ function yieldToMain(): Promise<void> {
 
 /**
  * The identity #ingestFrame dedupes on. A frame arriving twice is normal — a reconnect replays from
- * a root resume point, and the cached frames overlap the live stream — so this has to say "same event"
+ * a resume point, and the cached frames overlap the live stream — so this has to say "same event"
  * exactly when it is the same event.
  *
  * An event read off a log reports its own offset there, which with the tree-unique `agent_id` is
