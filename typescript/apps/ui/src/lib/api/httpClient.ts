@@ -43,7 +43,7 @@ export function approvalAlreadyResolved(error: unknown): boolean {
   return error instanceof ApiError && error.code === "ToolApprovalAlreadyResolved";
 }
 
-/** The server holds no position for the resume point, such as after a store switch. */
+/** The server has no position for the resume point, such as after a store switch. */
 export function invalidResumePoint(error: unknown): boolean {
   return error instanceof ApiError && error.code === "invalid_resume_point";
 }

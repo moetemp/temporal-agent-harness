@@ -470,9 +470,9 @@ describe("frame arrival", () => {
     );
   });
 
-  // A point the server no longer holds, such as after a store switch, is a 400 with
+  // A point the server no longer has, such as after a store switch, is a 400 with
   // its own code. Retrying it would spend the budget on a request that cannot work.
-  it("a resume point the server no longer holds", async () => {
+  it("a resume point the server no longer has", async () => {
     const stream = controllableStream();
     const refusing = {
       iterate() {

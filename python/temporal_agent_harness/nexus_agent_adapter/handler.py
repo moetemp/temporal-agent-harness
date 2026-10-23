@@ -73,7 +73,7 @@ _WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
 _MAX_STREAM_POLL_SECONDS = 8.0
 _STREAM_POLL_BATCH_LIMIT = 100
 # Once one event has arrived, gather what follows it within this window and answer, rather than
-# holding the batch open for the whole timeout.
+# keeping the batch open for the whole timeout.
 _STREAM_POLL_BATCH_GRACE_SECONDS = 0.05
 
 
@@ -442,7 +442,7 @@ class AgentServiceHandler:
         except TimeoutError:
             pass
         except contrib_stream.TurnCursorError as e:
-            # The cursor names no position, which is the caller's mistake.
+            # The cursor is not a position, which is the caller's mistake.
             raise HandlerError(str(e), type=HandlerErrorType.BAD_REQUEST) from e
         finally:
             await events.aclose()

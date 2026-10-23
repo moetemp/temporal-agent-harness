@@ -1233,7 +1233,7 @@ export class AgentRunController {
         } catch (error) {
           if (isAbortError(error) || !isCurrentStream()) break;
           if (invalidResumePoint(error) && point !== "") {
-            /* The server holds no position for the point, such as after a store
+            /* The server has no position for the point, such as after a store
                switch or the end of retention. Read the session again from the
                beginning, into an empty view, since the cached frames may be stale. */
             this.#forgetFrames();

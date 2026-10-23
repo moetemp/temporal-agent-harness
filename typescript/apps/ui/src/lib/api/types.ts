@@ -12,7 +12,7 @@ export type ResumePoint = string;
  * root-stream point, the same for every event of a subagent's turn).
  *
  * A number in the log of the agent that published it, or a decimal string on a
- * Stream of temporalio.contrib.streams, where offsets pass what a number holds.
+ * Stream of temporalio.contrib.streams, where offsets pass what a number keeps exact.
  * `SYNTHESIZED` when the server made the event up rather than reading it off a
  * log, so it has no durable coordinate to report. Absent entirely from mock
  * fixtures and from any server predating the field, which is why it is optional
@@ -381,7 +381,7 @@ export type AgentEventData<TType extends AgentEventType> = (TType extends keyof 
   AgentEventMetadata;
 
 /** Synthesized by the Stream reader when a failed attempt's records are withdrawn. It lists
- *  their offsets, and the envelope names the agent that wrote them. */
+ *  their offsets, and the envelope gives the agent that wrote them. */
 export type AttemptSupersededEvent = AgentEventData<"attempt_superseded">;
 
 export interface TextAnnotationDelta {

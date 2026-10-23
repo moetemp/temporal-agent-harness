@@ -706,7 +706,7 @@ class AgentConfig(BaseModel):
     generates its own single-segment id. This is the one ``AgentConfig`` field a parent populates
     per-child rather than passing through unchanged.
 
-    ``stream`` — where a subagent of a ``ContribStream`` root publishes (see
+    ``stream`` is where a subagent of a ``ContribStream`` root publishes (see
     :class:`AgentStream`). The parent sets it with ``agent_id``. A run that continues as new
     passes its own on with ``AgentWorkflowRunner.continue_as_new_config``. ``None`` → the
     agent's own ``stream=`` choice.

@@ -760,7 +760,8 @@ def _update_id(req: ChatRequestBody) -> str | None:
 
 def _reply_json(reply: AgentMessageReply) -> dict[str, Any]:
     # The place and the raw cursor are for a reader in this process, and a Stream offset is past
-    # what a JavaScript number holds. A caller attaches from ``resume`` to catch this dispatch.
+    # what a JavaScript number keeps exact. A caller attaches from ``resume`` to catch this
+    # dispatch.
     content = {k: v for k, v in asdict(reply).items() if k not in ("stream", "accepted_cursor")}
     offset = getattr(reply, "accepted_offset", 0)
     cursor = getattr(reply, "accepted_cursor", "") or (str(offset) if offset else "")

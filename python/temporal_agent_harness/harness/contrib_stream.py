@@ -1,7 +1,7 @@
 # ABOUTME: The temporalio.contrib.streams backend of the agent event stream. An agent selects it
-# with ``AgentWorkflowRunner(config, stream=ContribStream())``; Workflow Streams is the default.
+# with ``AgentWorkflowRunner(config, stream=ContribStream())``. Workflow Streams is the default.
 #
-# An agent tree shares ONE Stream: the one the root agent creates (``AgentEvents``). Each agent
+# An agent tree shares ONE Stream, which the root agent creates (``AgentEvents``). Each agent
 # publishes on its own Topic (``turn_events`` for the root, ``subagent_topic(agent_id)`` below
 # it), so one read of the Stream gives every agent's events in one order, and a Topic filter
 # gives one agent's. Workflow code writes the Stream with Local Activities, an activity writes it
@@ -84,8 +84,8 @@ class AgentEvents:
     """The Stream an agent tree publishes on. The root agent creates it, and its subagents
     write it too.
 
-    Its one declared Topic is the root's own. A subagent's Topic (``subagent_topic``) is named
-    at run time, so a handle opens it by name with ``type=AgentEvent``.
+    Its one declared Topic is the root's own. A subagent's Topic (``subagent_topic``) is made
+    at run time, so a handle opens it with ``type=AgentEvent``.
     """
 
     turn_events = streams.topic(AgentEvent, name=TURN_EVENTS_TOPIC)
@@ -96,7 +96,7 @@ class TurnCursorError(ValueError):
 
 
 def streams_from_env() -> StreamPlugin | None:
-    """The Stream plugin that ``STREAMS_STORE`` names, or ``None`` when it is unset.
+    """The Stream plugin for the store in ``STREAMS_STORE``, or ``None`` when it is unset.
 
     ``redis`` is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
     workers are separate processes, and they must all reach one Redis. ``STREAMS_KEY_PREFIX``
@@ -119,7 +119,7 @@ def streams_from_env() -> StreamPlugin | None:
             _memory = MemoryStreamPlugin()
         return _memory
     if store != "redis":
-        raise ValueError(f"{STORE_ENV}={store!r} names no Stream store")
+        raise ValueError(f"{STORE_ENV}={store!r} is not a Stream store")
     from temporalio.contrib.streams.redis import RedisStreamPlugin
 
     return RedisStreamPlugin(
@@ -214,8 +214,8 @@ class ContribSink:
 def open_root(choice: ContribStream) -> ContribSink:
     """Create the tree's Stream in a root agent's ``@agent.init``.
 
-    The Stream closes when the run chain closes. It has no ``auto_close``: an idle session
-    keeps its Stream, and a reader of a run that ended with no close finds that out itself.
+    The Stream closes when the run chain closes. It has no ``auto_close``, so an idle session
+    keeps its Stream. A reader of a run that ended with no close finds that out itself.
     """
     try:
         stream = create_stream_nowait(
@@ -228,7 +228,7 @@ def open_root(choice: ContribStream) -> ContribSink:
 
 
 def open_place(place: AgentStream) -> ContribSink:
-    """Write the Stream that ``place`` names: a subagent's, or a run's after continue-as-new."""
+    """Write the Stream at ``place``, for a subagent or for a run after continue-as-new."""
     stream = TypeAdapter(WorkflowStream[AgentEvents]).validate_python(place.handle)
     return ContribSink(stream, place)
 
@@ -246,7 +246,7 @@ def _handle_json(stream: Any) -> dict[str, str]:
 async def activity_publisher(
     context: TurnStreamContext, *, max_delay: timedelta
 ) -> AsyncIterator[BufferedPublisher[AgentEvent]]:
-    """Buffer an activity's events for the Stream and Topic that ``context`` names.
+    """Buffer an activity's events for the Stream and Topic in ``context``.
 
     Leaving the block writes the tail, also when the activity fails, so a reader sees what
     the attempt produced up to the failure.
@@ -277,7 +277,7 @@ class TurnItem:
 
 
 def parse_cursor(cursor: str) -> int | None:
-    """The offset a cursor names, or ``None`` for the beginning.
+    """The offset in a cursor, or ``None`` for the beginning.
 
     A cursor is the offset to read from next, in decimal. Offsets are above zero, so zero is the
     beginning too.
@@ -301,7 +301,7 @@ def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEven
 
 
 async def check_turn_cursor(client: Client, place: AgentStream, after: str) -> None:
-    """Raise ``TurnCursorError`` now if ``after`` names no position on the agent's Stream.
+    """Raise ``TurnCursorError`` now if ``after`` is not a position on the agent's Stream.
 
     A caller that must refuse a bad cursor before it starts a response, such as an SSE route,
     calls this first. It reads at most one item and does not wait for new ones.
@@ -372,7 +372,7 @@ async def read_turn_events(
             if isinstance(item, Record):
                 data = item.data
                 if not isinstance(data, AgentEvent):
-                    # A Topic that a prefix matched is named at run time, so the read has no
+                    # A Topic that a prefix matched is made at run time, so the read has no
                     # type for it and gives the plain JSON.
                     data = AgentEvent.model_validate(data)
                 own = item.topic == place.topic
@@ -445,7 +445,7 @@ async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str 
             continue
         try:
             description = await client.get_workflow_handle(wid).describe()
-        except Exception:  # noqa: BLE001 — a workflow that is gone has nothing more to write
+        except Exception:  # noqa: BLE001, since a workflow that is gone writes nothing more
             return True
         info = description.raw_description.workflow_execution_info
         if first_run_id and info.first_run_id and info.first_run_id != first_run_id:

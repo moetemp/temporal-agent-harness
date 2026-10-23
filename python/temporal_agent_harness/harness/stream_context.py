@@ -4,7 +4,7 @@
 # module (stdlib, pydantic and the SDK's Stream handle only, importing nothing else from
 # ``harness``) so BOTH the workflow-side runner (``harness/agent_workflow.py``) AND the
 # sandbox-safe activity contracts in ``harness/agent_protocol`` (e.g. ``RunSubagentTurnInput``)
-# can embed them without a circular import — and without leaking internal machinery into the
+# can embed them without a circular import, and without leaking internal machinery into the
 # public ``agent_protocol`` surface.
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ class TurnStreamContext(BaseModel):
 
 
 class TurnStreamToken(BaseModel):
-    """The routing token of a model call that streams into a harness turn: the turn's stream
-    context and the requested model id.
+    """The routing token of a model call that streams into a harness turn. It is the turn's
+    stream context and the requested model id.
 
     The OpenAI streaming activity types its token with it first. So the context's Stream comes
     back as a handle, and the Stream plugin withdraws an earlier attempt's records when a retry

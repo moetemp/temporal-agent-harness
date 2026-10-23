@@ -111,7 +111,7 @@ class SubagentTurnResult(BaseModel):
 
 
 class SubagentDispatch(BaseModel):
-    """The parent turn that a ``send_subagent_message`` belongs to.
+    """The parent turn of a ``send_subagent_message``.
 
     On ``temporalio.contrib.streams`` the child publishes the parent's ``subagent_message_sent``
     in the Workflow Task that admits the message. Both agents write one Stream, so the marker
@@ -120,12 +120,12 @@ class SubagentDispatch(BaseModel):
 
     agent_key: str = Field(description="The wired agent key of the child.")
     parent_stream_context: TurnStreamContext = Field(
-        description="The parent turn the marker belongs to, and the parent's Stream and Topic."
+        description="The marker's parent turn, and the parent's Stream and Topic."
     )
 
 
 class SubagentMessage(BaseModel):
-    """The payload of the ``send_subagent_message`` update: a message and its dispatch."""
+    """The payload of the ``send_subagent_message`` update, a message and its dispatch."""
 
     message: AgentMessage
     dispatch: SubagentDispatch

@@ -542,7 +542,7 @@ with workflow.unsafe.imports_passed_through():
 
 self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_policy_default=...)
 
-# Every client and worker of the deployment carries the same Stream plugin.
+# Every client and worker of the deployment has the same Stream plugin.
 client = await Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()])
 ```
 
@@ -568,7 +568,7 @@ subagents on Workflow Streams too. An agent that continues as new passes its Str
 | Where events go | Into each workflow's own log, in its history | Into the store, for the Stream's retention |
 | Temporal Cloud Actions | Each activity flush is a Signal and each client read an Update, one Action each | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store |
 | History | The Signals and Updates, with their payloads | One Local Activity marker per write batch, with no event payloads |
-| Subagents | One stream per agent, which the client merges. A resume point moves on root events only | One Stream per tree in one order. A resume point moves on every event |
+| Subagents | One stream per agent, which the client merges. A resume point advances on root events only | One Stream per tree in one order. A resume point advances on every event |
 | A retried attempt | Its events show twice | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets |
 | A store outage | No store to fail | The agent goes on, and the live view misses what it wrote meanwhile |
 

@@ -376,7 +376,7 @@
       "type": "object"
     },
     "AttemptSuperseded": {
-      "description": "Records of a failed attempt that a consumer must drop.\n\nAn activity that streams half an answer and then fails leaves those records in the Stream.\nIts retry calls the model again and writes other words. A Workflow Task that fails after\nits Local Activities wrote leaves records too. The store can't remove them, so the reader\ntells the consumer which ones they are. The envelope names the agent that wrote them.",
+      "description": "Records of a failed attempt that a consumer must drop.\n\nAn activity that streams half an answer and then fails leaves those records in the Stream.\nIts retry calls the model again and writes other words. A Workflow Task that fails after\nits Local Activities wrote leaves records too. The store can't remove them, so the reader\ntells the consumer which ones they are. The envelope gives the agent that wrote them.",
       "properties": {
         "type": {
           "const": "attempt_superseded",
@@ -385,7 +385,7 @@
           "type": "string"
         },
         "withdrawn_offsets": {
-          "description": "The Stream offsets of the withdrawn records that this read gave, in order, as decimal strings. They pass 2**53, so a JavaScript number can't hold them.",
+          "description": "The Stream offsets of the withdrawn records that this read gave, in order, as decimal strings. They pass 2**53, so a JavaScript number can't keep them exact.",
           "items": {
             "type": "string"
           },

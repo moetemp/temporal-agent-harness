@@ -169,12 +169,12 @@ export interface AgentStateSnapshot {
  * An activity that streams half an answer and then fails leaves those records in the Stream.
  * Its retry calls the model again and writes other words. A Workflow Task that fails after
  * its Local Activities wrote leaves records too. The store can't remove them, so the reader
- * tells the consumer which ones they are. The envelope names the agent that wrote them.
+ * tells the consumer which ones they are. The envelope gives the agent that wrote them.
  */
 export interface AttemptSuperseded {
   type: "attempt_superseded";
   /**
-   * The Stream offsets of the withdrawn records that this read gave, in order, as decimal strings. They pass 2**53, so a JavaScript number can't hold them.
+   * The Stream offsets of the withdrawn records that this read gave, in order, as decimal strings. They pass 2**53, so a JavaScript number can't keep them exact.
    */
   withdrawn_offsets: string[];
 }

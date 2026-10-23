@@ -309,9 +309,9 @@ Response media type: `text/event-stream`.
 With an empty `resume`, the server replays the session's event history. To resume, pass the
 last `resume` a frame carried; only later events are streamed. The stream returns when the
 workflow is idle and caught up. A resume point is opaque, so a client stores the newest one
-and never compares two. On Workflow Streams several subagent frames may carry the same one.
+and never compares two. On Workflow Streams several subagent frames may have the same one.
 
-A point the server holds no position for, such as one from before a store switch, gets a
+A point the server has no position for, such as one from before a store switch, gets a
 `400` with `error` `invalid_resume_point`. The client then attaches again with an empty
 `resume`. `from_offset=N` is still read, as the Workflow Streams point at root offset `N`.
 

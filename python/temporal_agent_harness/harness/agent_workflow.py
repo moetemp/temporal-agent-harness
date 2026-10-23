@@ -313,9 +313,9 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 # Harness default publish-flush cadence for activity-side stream publishers (see
 # ``AgentWorkflowRunner.publisher_from_activity``). On Workflow Streams each flush is one
 # Signal into the workflow, and on a ``ContribStream`` one write to the store, so this is the
-# knob that trades UI snappiness against history or store volume. It is only the fallback: a
-# caller that has its own configured cadence — an SDK plugin threading
-# ``streaming_batch_interval``, say — passes that instead.
+# knob that trades UI snappiness against history or store volume. It is only the fallback. A
+# caller that has its own configured cadence, such as an SDK plugin threading
+# ``streaming_batch_interval``, passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
 
 _InjectedT = TypeVar("_InjectedT")
@@ -1343,7 +1343,7 @@ class TurnEventPublisher:
 
 
 class _WorkflowStreamsSink:
-    """What the runner publishes through on Workflow Streams: the agent's own ``WorkflowStream``.
+    """What the runner publishes through on Workflow Streams, the agent's own ``WorkflowStream``.
 
     ``ContribSink`` in ``contrib_stream`` is the other one. The runner calls only what both have.
     """
@@ -1361,8 +1361,8 @@ class _WorkflowStreamsSink:
         self._events.publish(event)
 
     def accepted_offset(self) -> int:
-        # The real log head, not a publish counter: activity-published events enter the same
-        # global log via signals and would be missed by a counter.
+        # The real log head, not a publish counter. Activity-published events enter the same
+        # global log via signals, and a counter would miss them.
         return self._stream._on_offset()
 
     def accepted_cursor(self) -> str:
@@ -2236,7 +2236,7 @@ class AgentWorkflowRunner:
     def _validate_send_subagent_message(self, message: SubagentMessage) -> None:
         self._validate_send_agent_message(message.message)
         # Only a parent sends it, and on a Stream the child writes the parent's marker. So the
-        # dispatch must name this agent's parent, on this agent's own Stream.
+        # dispatch must come from this agent's parent, on this agent's own Stream.
         parent = message.dispatch.parent_stream_context
         own_parent = self._agent_id.rpartition("-")[0]
         place = self._sink.place
@@ -3420,8 +3420,8 @@ class AgentWorkflowRunner:
         # (and, since the handle is tree-unique, group by agent_id without collisions). This is the
         # one config field the parent overrides per-child (everything else passes through
         # unchanged); a caller-supplied agent_id would not match the parent's handle.
-        # On a Stream, the child also gets the place to publish on: this tree's Stream, on a
-        # Topic of its own.
+        # On a Stream, the child also gets the place to publish on, which is this tree's Stream
+        # and a Topic of its own.
         child_config = (config if config is not None else AgentConfig()).model_copy(
             update={"agent_id": handle, "stream": self._sink.child_place(handle)}
         )
@@ -3645,7 +3645,7 @@ class AgentWorkflowRunner:
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
         call) to its parent workflow's :class:`WorkflowStream`, or to the
-        ``temporalio.contrib.streams`` Stream that ``context.stream`` names.
+        ``temporalio.contrib.streams`` Stream in ``context.stream``.
 
         Encapsulates the :class:`WorkflowStreamClient` or ``BufferedPublisher``
         lifecycle (entered for batched flushing, exited so the tail drains before

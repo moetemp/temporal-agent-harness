@@ -361,7 +361,7 @@ func TestPoll_Closed(t *testing.T) {
 	assert.Empty(t, result.Events)
 }
 
-// A batch can hold the last events of an agent that just finished, so they go out with the
+// A batch can have the last events of an agent that just finished, so they go out with the
 // close.
 func TestPoll_ClosedBatchKeepsItsEvents(t *testing.T) {
 	last := streamItem{TurnNumber: 1, Event: turnEvent{Type: "reply_delta", Text: "last words"}}

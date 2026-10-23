@@ -141,7 +141,7 @@ AgentStreamOutput = AgentEvent | AgentTurnError | AgentTurnTimeout
 
 
 class TurnCursorError(ValueError):
-    """A resume point that names no position on the agent's stream."""
+    """A resume point that is not a position on the agent's stream."""
 
 
 @dataclass(frozen=True)
@@ -156,7 +156,7 @@ class ResumePoint:
     has caught up (``AgentStatus.last_event_seq``), which a stream position can't.
 
     ``offset`` is the stream position of the event itself, on ``temporalio.contrib.streams``
-    only. An ``AttemptSuperseded`` event names the events to drop by it. It is not part of the
+    only. An ``AttemptSuperseded`` event lists the events to drop by it. It is not part of the
     encoded point.
     """
 
@@ -165,7 +165,7 @@ class ResumePoint:
     offset: str = ""
 
     def advance(self, *, cursor: str, seq: int | None, offset: str = "") -> ResumePoint:
-        """The point just past an event; an event without a seq of this agent keeps the last."""
+        """The point just past an event. An event without a seq of this agent keeps the last."""
         return ResumePoint(cursor=cursor, seq=self.seq if seq is None else seq, offset=offset)
 
     def encode(self) -> str:
@@ -189,8 +189,8 @@ class ResumePoint:
 
 
 # The callback signature: (item, resume) -> T
-# ``resume`` is the resume point as of this item — a value the consumer records
-# (``resume.encode()``) and hands back as ``attach(resume=...)`` to resume.
+# ``resume`` is the resume point as of this item. The consumer records ``resume.encode()``
+# and hands it back as ``attach(resume=...)`` to resume.
 OnItemCallback = Callable[[AgentStreamOutput, ResumePoint], T]
 
 # Decides, after each event, whether a read ends. It gets whether the event is the read
@@ -523,8 +523,8 @@ class AgentClient:
                 :meth:`attach`), but it is passed through uniformly so a caller's bookkeeping is
                 consistent across both entry points.
             timeout: Max seconds to wait for the turn to complete (``None`` = no limit).
-            subagent_stall_grace_seconds: Liveness backstop (seconds) for the Workflow Streams
-                merge — how
+            subagent_stall_grace_seconds: Liveness backstop (seconds) for the stream merge, on
+                Workflow Streams only — how
                 long a subagent whose reply the parent is already waiting on may stay silent on its
                 OWN stream before the merge presumes it unreachable, gives up on its detail, and
                 lets the parent's reply flow. NOT an ordering input (ordering is clock-free); it
@@ -571,11 +571,11 @@ class AgentClient:
         """Phase 2 of :meth:`send_message`: read the stream for one submitted turn.
 
         Reads from the reply's accepted position and skips to ``reply.turn_id``'s
-        ``turn_started``, then follows until that turn's ``turn_end`` on the ROOT agent — by
-        which point every subagent turn it triggered has already been emitted (on Workflow
-        Streams via the merge's close gate, on a Stream by the one order of the shared Stream).
-        THIS MESSAGE's ``message_handler_error`` is surfaced as an :class:`AgentTurnError` — a
-        sibling participant's is not, since it says nothing about the caller's own message; on
+        ``turn_started``, then reads on until that turn's ``turn_end`` on the ROOT agent. By
+        then every subagent turn it triggered has already been emitted, on Workflow Streams
+        through the merge's close gate and on a Stream through the shared Stream's one order.
+        THIS MESSAGE's ``message_handler_error`` is surfaced as an :class:`AgentTurnError`. A
+        sibling participant's is not, since it says nothing about the caller's own message. On
         timeout an :class:`AgentTurnTimeout` is yielded last.
 
         A repeated ``update_id`` gets the original reply back, and so the original accepted
@@ -639,38 +639,38 @@ class AgentClient:
 
         ``resume`` controls where the read starts:
 
-        * **empty (default)** — full replay from the beginning, for a blank-slate consumer (a
-          freshly loaded tab) that has no prior state. Replays past events, then follows live
+        * **empty (default)**, a full replay from the beginning, for a blank-slate consumer (a
+          freshly loaded tab) that has no prior state. It replays past events, then tails live
           until the agent is idle.
-        * **an encoded resume point** — resume: stream from that point onward, so already-seen
-          events are not re-sent.
+        * **an encoded resume point**, to stream from that point onward, so already-seen events
+          are not re-sent.
 
         ``on_item`` receives ``(item, resume)``. Record the latest ``resume.encode()`` and pass
-        it back to resume. How fine-grained that is depends on the backend:
+        it back to resume. How fine-grained that is depends on the backend.
 
-        * **Workflow Streams** — the point is a ROOT-stream offset that advances ONLY on root
+        * **Workflow Streams.** The point is a ROOT-stream offset that advances ONLY on root
           events. Every subagent event between two root events carries the SAME point, so a
           consumer that disconnects *mid a subagent's turn* and resumes will NOT re-receive the
           rest of that subagent's turn detail (the merge starts past that subagent's
           ``subagent_message_sent`` and never re-mounts it). The parent's reply and everything
           after it still flow. A consumer that needs every subagent event across a mid-turn
           reconnect re-attaches from the beginning.
-        * **temporalio.contrib.streams** — every agent of the tree publishes on one Stream, so
+        * **temporalio.contrib.streams.** Every agent of the tree publishes on one Stream, so
           the point advances on every event and a resume loses nothing.
 
         Returns immediately (yields nothing) if there's nothing new to stream.
 
-        ``subagent_stall_grace_seconds`` — see :meth:`send_message`; same liveness backstop, applied
-        to the merge that backs this attach on Workflow Streams.
+        ``subagent_stall_grace_seconds`` is the liveness backstop of :meth:`send_message`, for
+        the merge that backs this attach on Workflow Streams.
 
-        Termination mirrors the per-turn close: on each root ``turn_end`` we re-query status
+        Termination mirrors the per-turn close. On each root ``turn_end`` we re-query status
         and stop once the workflow is idle and the event just emitted is the last one the agent
         published (``AgentEvent.seq`` against ``AgentStatus.last_event_seq``). ``turn_end`` is the
-        only terminal there is — it fires when the last participant of a turn finishes, so it is a
-        true quiescence signal — which is what lets a caller safely disconnect instead of holding
-        the stream open forever.
+        only terminal there is. It fires when the last participant of a turn finishes, so it is a
+        true quiescence signal, and that lets a caller disconnect instead of keeping the stream
+        open forever.
 
-        A malformed ``resume`` raises ``ValueError``, and one that names no position on the
+        A malformed ``resume`` raises ``ValueError``, and one that is not a position on the
         agent's stream raises ``TurnCursorError`` (a ``ValueError`` too), both before anything
         streams, so a caller can answer with a client error and start over.
         """
@@ -679,7 +679,7 @@ class AgentClient:
         # Checked here, before the response starts, rather than at the read's first step.
         await self._check_cursor(status.stream, point.cursor)
         # Already caught up (the point is at or past the agent's last word) and the agent is
-        # idle — nothing to stream.
+        # idle, so there is nothing to stream.
         if (
             not status.turn_active
             and not status.pending_turns
@@ -708,7 +708,7 @@ class AgentClient:
     ) -> AsyncIterator[T]:
         """Phase 2 of :meth:`attach`: read from ``resume`` to the next idle point, no skip.
 
-        Resuming mid-stream is safe on Workflow Streams too — a subagent whose turn began before
+        Resuming mid-stream is safe on Workflow Streams too. A subagent whose turn began before
         the point is never mounted (its detail is absent, its ``reply_received`` released by the
         merge's unmounted-stuck give-up), while subagents dispatched at/after it merge normally."""
 
@@ -764,7 +764,7 @@ class AgentClient:
             await events.aclose()
 
     async def _check_cursor(self, place: AgentStream | None, cursor: str) -> None:
-        """Raise ``TurnCursorError`` if ``cursor`` names no position on the agent's stream."""
+        """Raise ``TurnCursorError`` if ``cursor`` is not a position on the agent's stream."""
         if place is None:
             if cursor and not cursor.isdigit():
                 raise TurnCursorError(f"not a Workflow Streams offset: {cursor!r}")

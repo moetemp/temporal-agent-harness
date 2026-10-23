@@ -44,7 +44,7 @@ _default_server_path("start_time_skipping", "test_server_existing_path", "TEMPOR
 def _streams_lane() -> None:
     """With ``STREAMS_STORE`` set, give every test client the Stream plugin it names.
 
-    ``TEMPORAL_ADDRESS`` then names a running server that ``start_time_skipping`` connects to,
+    ``TEMPORAL_ADDRESS`` then gives a running server that ``start_time_skipping`` connects to,
     since the Redis lane runs on a dev server. ``tests/_streams.py`` has the rest of the lane.
     """
     if not os.environ.get("STREAMS_STORE"):

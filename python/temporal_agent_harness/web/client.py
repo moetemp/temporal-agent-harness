@@ -68,7 +68,7 @@ async def connect_client() -> "Client":
     web server, and every agent worker can read each other's payloads only because they all add
     it. Its default large-payload storage matches ``create_agent_harness_app``'s, keeping the
     packaged entrypoints mutually readable out of the box. With ``STREAMS_STORE`` set it also
-    carries the Stream plugin (see :func:`stream_plugins`).
+    has the Stream plugin (see :func:`stream_plugins`).
     """
     from temporalio.client import Client
     from temporalio.envconfig import ClientConfig
