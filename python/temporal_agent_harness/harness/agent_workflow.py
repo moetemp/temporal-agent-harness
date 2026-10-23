@@ -48,7 +48,7 @@ from temporalio.contrib.workflow_streams import (
     WorkflowStreamClient,
     WorkflowTopicHandle,
 )
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError
 from temporalio.workflow import ActivityConfig
 
 from temporal_agent_harness.harness.state import StateRef
@@ -3533,18 +3533,23 @@ class AgentWorkflowRunner:
                     heartbeat_timeout=DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT,
                     result_type=SubagentTurnResult,
                 )
-            except ApplicationError as e:
+            except ActivityError as e:
                 # A turn the child ACCEPTED but that then errored (or produced no reply) opened
                 # a bracket on our stream that must be closed. A pre-acceptance rejection ran
-                # no child turn, so there is nothing to close.
-                if e.type in ("SubagentTurnError", "SubagentNoReply"):
+                # no child turn, so there is nothing to close. The activity's own error is the
+                # cause of the ``ActivityError`` that ``execute_activity`` raises.
+                cause = e.cause
+                if isinstance(cause, ApplicationError) and cause.type in (
+                    "SubagentTurnError",
+                    "SubagentNoReply",
+                ):
                     # Close the bracket on the child's ACTUAL accepted turn number, which the
                     # activity threads through the error details. The opening
                     # ``subagent_message_sent`` was published with that same number
                     # (``progress.turn_number``), and the close gate keys on
                     # ``(workflow_id, subagent_turn)``; using one source on both sides makes
                     # the key match by construction.
-                    accepted_turn = self._accepted_turn_from_error(e)
+                    accepted_turn = self._accepted_turn_from_error(cause)
                     # The child ran (and errored on) that turn — it still emitted its own
                     # turn_end — so we MUST close the [message_sent … reply_received] bracket on
                     # OUR stream, or a client merge would wedge waiting on a reply that never
