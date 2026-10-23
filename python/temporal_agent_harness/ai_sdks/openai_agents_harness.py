@@ -336,9 +336,9 @@ def harness_observer_factory(
     ``batch_interval`` is the plugin's configured
     ``ModelActivityParameters.streaming_batch_interval``, handed to every factory by
     ``select_observer`` and forwarded to the observer's publisher — so raising that one
-    field genuinely coarsens this path's flush cadence (one Signal per flush) instead of
-    being ignored the moment a factory is wired. Defaulted so the factory stays callable
-    by hand (e.g. in tests), where ``None`` means "use the harness default".
+    field genuinely coarsens this path's flush cadence (one Signal or store write per flush)
+    instead of being ignored the moment a factory is wired. Defaulted so the factory stays
+    callable by hand (e.g. in tests), where ``None`` means "use the harness default".
     """
     tok = (
         token

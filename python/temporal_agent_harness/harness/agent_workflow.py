@@ -311,10 +311,11 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
         pass
 
 # Harness default publish-flush cadence for activity-side stream publishers (see
-# ``AgentWorkflowRunner.publisher_from_activity``). Each flush is one Signal into the
-# workflow, so this is the knob that trades UI snappiness against workflow-history
-# volume. It is only the fallback: a caller that has its own configured cadence — an SDK
-# plugin threading ``streaming_batch_interval``, say — passes that instead.
+# ``AgentWorkflowRunner.publisher_from_activity``). On Workflow Streams each flush is one
+# Signal into the workflow, and on a ``ContribStream`` one write to the store, so this is the
+# knob that trades UI snappiness against history or store volume. It is only the fallback: a
+# caller that has its own configured cadence — an SDK plugin threading
+# ``streaming_batch_interval``, say — passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
 
 _InjectedT = TypeVar("_InjectedT")
@@ -3643,12 +3644,13 @@ class AgentWorkflowRunner:
 
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
-        call) to its parent workflow's :class:`WorkflowStream`.
+        call) to its parent workflow's :class:`WorkflowStream`, or to the
+        ``temporalio.contrib.streams`` Stream that ``context.stream`` names.
 
-        Encapsulates the :class:`WorkflowStreamClient` lifecycle (entered
-        for batched flushing, exited so the tail drains before the
-        activity returns) and the topic binding. Activities just call
-        ``publisher.publish(...)``.
+        Encapsulates the :class:`WorkflowStreamClient` or ``BufferedPublisher``
+        lifecycle (entered for batched flushing, exited so the tail drains before
+        the activity returns, also when it fails) and the topic binding.
+        Activities just call ``publisher.publish(...)``.
 
         Args:
             context: Carrier identifying the workflow + turn to publish
@@ -3656,8 +3658,9 @@ class AgentWorkflowRunner:
                 :attr:`AgentWorkflowRunner.current_stream_context` and
                 forwarded opaquely through activity inputs.
             batch_interval: Background flush cadence on the underlying
-                stream client — each flush is one Signal, so a longer interval
-                trades UI snappiness for fewer workflow-history events. ``None``
+                stream client — each flush is one Signal on Workflow Streams and
+                one store write on a Stream, so a longer interval trades UI
+                snappiness for fewer of them. ``None``
                 takes :data:`DEFAULT_PUBLISH_BATCH_INTERVAL` (50ms), which keeps
                 the UI feel snappy. An SDK integration should pass its own
                 configured cadence (e.g. the OpenAI plugin's
