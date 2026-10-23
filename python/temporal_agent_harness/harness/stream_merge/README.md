@@ -8,8 +8,9 @@ stream without the caller knowing subagents exist.
 
 Full design + rationale: [`docs/internal/unified-subagent-event-stream.md`](../../../../docs/internal/unified-subagent-event-stream.md).
 
-It is the reader of the Workflow Streams backend, the default. A `ContribStream` tree needs no
-merge: every agent of it publishes on one Stream, in one order (see `contrib_stream.py`).
+It is the reader of the Workflow Streams backend (`stream=WorkflowStream()`). A `ContribStream`
+tree, the default, needs no merge: every agent of it publishes on one Stream, in one order (see
+`contrib_stream.py`).
 
 ## The one invariant
 

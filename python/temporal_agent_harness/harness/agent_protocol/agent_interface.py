@@ -631,11 +631,13 @@ class AgentStream(BaseModel):
 
     Every agent of a tree writes the Stream that its root creates, each on a Topic of its own.
     So one read of the Stream gives the whole tree in one order. An agent on Workflow Streams
-    has no ``AgentStream``.
+    reports no ``AgentStream``. A parent on Workflow Streams gives its subagents one with an
+    empty ``handle``, which keeps them on Workflow Streams too.
     """
 
     handle: dict[str, str] = Field(
-        description="The root agent's Stream, in the proto JSON form of a ``StreamRef``."
+        description="The root agent's Stream, in the proto JSON form of a ``StreamRef``. Empty "
+        "means Workflow Streams."
     )
     topic: str = Field(description="The Topic this agent publishes its turn events on.")
     seq: int = Field(

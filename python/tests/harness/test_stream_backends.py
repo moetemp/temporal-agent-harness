@@ -1,14 +1,16 @@
 """The failure paths of the two event-stream backends, against a real worker.
 
-Each test runs on the lane's backend (``tests/_streams.py``): Workflow Streams by default, and
-``ContribStream`` on the memory and Redis lanes. A test of something only a Stream has skips
-on Workflow Streams.
+Each test runs on the lane's backend (``tests/_streams.py``): the default ``ContribStream`` on
+the memory and Redis lanes, and ``WorkflowStream()`` without one. A test of something only a
+Stream has skips on Workflow Streams.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -172,6 +174,40 @@ class ContinuingAgent:
         return TextReply(text=message.text)
 
 
+@agent.defn
+class DefaultChild:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = AgentWorkflowRunner(
+            config, approval_policy_default=ToolApprovalPolicy.dangerously_skip_all()
+        )
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def ask(self, message: TextMessage) -> TextReply:
+        """Answer."""
+        return TextReply(text="default:" + message.text)
+
+
+@agent.defn
+class WorkflowStreamsParent:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = AgentWorkflowRunner(
+            config,
+            stream=WorkflowStream(),
+            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
+        )
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def delegate(self, message: TextMessage) -> TextReply:
+        """Ask a subagent that passes no ``stream=``."""
+        handle = await self._runner.start_subagent(
+            "child", "DefaultChild", workflow.info().task_queue
+        )
+        out = await self._runner.run_subagent_turn(handle, "ask", {"text": message.text})
+        return TextReply(text=out["text"])
+
+
 @pytest_asyncio.fixture
 async def client_and_queue():
     env = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)
@@ -179,7 +215,13 @@ async def client_and_queue():
     async with Worker(
         env.client,
         task_queue=task_queue,
-        workflows=[BackendParent, BackendChild, ContinuingAgent],
+        workflows=[
+            BackendParent,
+            BackendChild,
+            ContinuingAgent,
+            WorkflowStreamsParent,
+            DefaultChild,
+        ],
         plugins=[AgentHarnessPlugin(tools=[flaky_tool])],
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):
@@ -284,6 +326,24 @@ async def test_only_the_parent_sends_send_subagent_message(client_and_queue):
             SEND_SUBAGENT_MESSAGE_UPDATE, forged, result_type=AgentMessageReply
         )
     assert getattr(raised.value.cause, "type", None) == "NotTheParent"
+
+
+async def test_a_workflow_streams_parent_keeps_a_default_subagent_on_workflow_streams(
+    client_and_queue,
+):
+    client, task_queue = client_and_queue
+    handle = await client.start_workflow(
+        WorkflowStreamsParent.run,
+        AgentConfig(),
+        id=f"WorkflowStreamsParent-{uuid.uuid4()}",
+        task_queue=task_queue,
+    )
+    items = await _turn(AgentClient(client, handle.id), "delegate", "hi")
+
+    assert _reply(items) == "default:hi"
+    # The client merges a subagent's events only from the subagent's own Workflow Streams log.
+    events = [item for item, _ in items if isinstance(item, AgentEvent)]
+    assert any(event.agent_id != events[0].agent_id for event in events)
 
 
 @needs_a_stream
@@ -561,3 +621,11 @@ async def test_a_workflow_streams_session_from_upstream_replays():
     )
     for name, history in recorded.items():
         await replayer.replay_workflow(WorkflowHistory.from_json(f"wf-{name}", history))
+
+
+def test_the_default_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
+    monkeypatch.setitem(sys.modules, "temporalio.contrib.streams", None)
+    monkeypatch.delitem(sys.modules, "temporal_agent_harness.harness.contrib_stream", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
+        importlib.import_module("temporal_agent_harness.harness.contrib_stream")

@@ -1,5 +1,5 @@
-# ABOUTME: The temporalio.contrib.streams backend of the agent event stream. An agent selects it
-# with ``AgentWorkflowRunner(config, stream=ContribStream())``. Workflow Streams is the default.
+# ABOUTME: The temporalio.contrib.streams backend of the agent event stream, the default of
+# ``AgentWorkflowRunner``. An agent picks Workflow Streams with ``stream=WorkflowStream()``.
 #
 # An agent tree shares ONE Stream, which the root agent creates (``AgentEvents``). Each agent
 # publishes on its own Topic (``turn_events`` for the root, ``subagent_topic(agent_id)`` below
@@ -8,7 +8,7 @@
 # through a ``BufferedPublisher``, and a client reads it through ``StreamClient``.
 #
 # Only this module imports ``temporalio.contrib.streams``, which no SDK release has yet. The rest
-# of the harness imports it lazily, so an agent on Workflow Streams runs on a released SDK.
+# of the harness imports it lazily, so an agent on ``WorkflowStream()`` runs on a released SDK.
 
 from __future__ import annotations
 
@@ -45,8 +45,9 @@ try:
     from temporalio.contrib.streams.workflow import create_stream_nowait
 except ModuleNotFoundError as exc:
     raise RuntimeError(
-        "ContribStream needs a temporalio build with temporalio.contrib.streams, which no "
-        "release has yet. Workflow Streams, the default stream=, runs on a release."
+        "The default stream= of AgentWorkflowRunner, ContribStream, needs a temporalio build "
+        "with temporalio.contrib.streams, which no release has yet. Run "
+        "`just install-streams-sdk`, or pass stream=WorkflowStream() to run on a release."
     ) from exc
 
 from temporal_agent_harness.harness.agent_protocol import (
@@ -73,9 +74,9 @@ _LIVENESS_CHECK = timedelta(seconds=5)
 _memory: StreamPlugin | None = None
 # Said when a worker has no Stream plugin, which fails the Workflow Task until one has.
 _NO_PLUGIN = (
-    "ContribStream needs a Stream plugin on the worker's client, such as "
-    "Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()]) with STREAMS_STORE "
-    "set. Workflow Streams, the default stream=, needs none."
+    "The default stream= of AgentWorkflowRunner, ContribStream, needs a Stream plugin on the "
+    "worker's client, such as Client.connect(..., plugins=[AgentHarnessPlugin(), "
+    "streams_from_env()]) with STREAMS_STORE set. stream=WorkflowStream() needs none."
 )
 
 
@@ -102,7 +103,7 @@ def streams_from_env() -> StreamPlugin | None:
     workers are separate processes, and they must all reach one Redis. ``STREAMS_KEY_PREFIX``
     puts the keys under a prefix of their own, which keeps two deployments (or two test runs)
     on one Redis apart. ``memory`` keeps the Streams in this process, for tests and a single
-    process only. Unset means the process serves Workflow Streams agents only.
+    process only. Unset means the process serves agents on ``WorkflowStream()`` only.
 
     Register the result once, as ``Client.connect(..., plugins=[streams])``. Workers built from
     that client take it. One plugin serves one client connection, so a second connection needs
@@ -131,10 +132,10 @@ def streams_from_env() -> StreamPlugin | None:
 class ContribStream(StreamBackend):
     """Selects ``temporalio.contrib.streams`` for an agent tree's turn events.
 
-    Pass it as ``AgentWorkflowRunner(config, stream=ContribStream())`` in a root agent. The
-    root creates the tree's Stream, and its subagents publish there too, whatever their own
-    ``stream=`` says. The worker's client needs a Stream plugin, such as the one
-    ``streams_from_env`` gives.
+    ``AgentWorkflowRunner`` uses ``ContribStream()`` when an agent passes no ``stream=``. Pass
+    one of your own for another backend or retention. The root agent creates the tree's
+    Stream, and its subagents publish there too, whatever their own ``stream=`` says. The
+    worker's client needs a Stream plugin, such as the one ``streams_from_env`` gives.
 
     Args:
         backend: The name of the Stream plugin's backend. ``None`` is the worker's.

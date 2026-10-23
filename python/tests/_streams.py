@@ -1,10 +1,11 @@
 """Which event-stream backend the test agents use, and a reader that works on both.
 
-Without ``STREAMS_STORE`` the test agents use Workflow Streams, the default. With
-``STREAMS_STORE=memory`` or ``redis`` they use ``ContribStream`` on that store, and
-``tests/conftest.py`` puts the Stream plugin on every test client. ``redis`` needs a Redis at
-``STREAMS_REDIS_URL``. The lane puts its keys under a prefix of its own,
-``STREAMS_KEY_PREFIX`` unless it is set, so two runs on one Redis never meet.
+With ``STREAMS_STORE=memory`` or ``redis`` the test agents pass no ``stream=``, so they use the
+default ``ContribStream`` on that store, and ``tests/conftest.py`` puts the Stream plugin on
+every test client. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``. The lane puts its keys
+under a prefix of its own, ``STREAMS_KEY_PREFIX`` unless it is set, so two runs on one Redis
+never meet. Without ``STREAMS_STORE`` they pass ``stream=WorkflowStream()``, which a released
+SDK has. The Bazel build runs them so.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from temporalio.client import Client
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
+from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_STATUS_QUERY,
@@ -29,7 +30,6 @@ from temporal_agent_harness.harness.agent_protocol import (
 STORE = os.environ.get("STREAMS_STORE") or None
 if STORE:
     os.environ.setdefault("STREAMS_KEY_PREFIX", f"harness-test-{uuid.uuid4().hex[:12]}")
-    from temporal_agent_harness.harness.contrib_stream import ContribStream
 
 
 def stream_plugins() -> list[Any]:
@@ -41,15 +41,21 @@ def stream_plugins() -> list[Any]:
     return [streams_from_env()]
 
 
-def agent_stream() -> Any:
-    """The ``stream=`` choice of a test agent: the default Workflow Streams, or a ``ContribStream``.
+def agent_stream() -> WorkflowStream | None:
+    """The ``stream=`` choice of a test agent, which calls it from its ``__init__``.
 
-    ``None`` makes the runner build its default ``WorkflowStream``, which accepts only a caller
-    named ``__init__``.
+    ``None`` on a Stream lane gives the runner's default ``ContribStream``.
     """
-    if STORE is None:
+    if STORE is not None:
         return None
-    return ContribStream()
+    return _OwnWorkflowStream().stream
+
+
+class _OwnWorkflowStream:
+    def __init__(self) -> None:
+        # ``WorkflowStream`` accepts only a caller named ``__init__``. The test agent's own
+        # ``__init__`` calls ``agent_stream``, so the stream is still built at workflow init.
+        self.stream = WorkflowStream()
 
 
 async def turn_events(

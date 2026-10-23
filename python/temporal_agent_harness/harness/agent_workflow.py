@@ -1368,24 +1368,23 @@ class _WorkflowStreamsSink:
     def accepted_cursor(self) -> str:
         return str(self.accepted_offset())
 
-    def child_place(self, agent_id: str) -> AgentStream | None:
-        return None
+    def child_place(self, agent_id: str) -> AgentStream:
+        # A place with no Stream keeps the subagent on Workflow Streams, whatever its own
+        # ``stream=`` says, since a client merges a Workflow Streams tree from each agent's log.
+        return AgentStream(handle={}, topic=TURN_EVENTS_TOPIC)
 
     def activity_stream(self) -> None:
         return None
 
 
-def _open_place(place: AgentStream) -> Any:
-    """The sink for a place that ``AgentConfig.stream`` passes down.
-
-    It is a ``ContribStream`` root's Stream, which every agent of that tree writes, or this
-    agent's own after continue-as-new.
-    """
+def _contrib_stream() -> Any:
+    """The ``contrib_stream`` module, which only an agent on ``temporalio.contrib.streams``
+    imports, so an agent on ``WorkflowStream()`` runs on a released SDK."""
     # The harness is deterministic library code, so the sandbox can share it.
     with workflow.unsafe.imports_passed_through():
-        from temporal_agent_harness.harness.contrib_stream import open_place
+        from temporal_agent_harness.harness import contrib_stream
 
-    return open_place(place)
+    return contrib_stream
 
 
 # ---------------------------------------------------------------------------
@@ -2037,7 +2036,6 @@ class AgentWorkflowRunner:
 
             self._runner = AgentWorkflowRunner(
                 config,
-                stream=WorkflowStream(),
                 approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             )
 
@@ -2046,11 +2044,13 @@ class AgentWorkflowRunner:
         (``approval_policy_default`` is required — the author must make a deliberate
         safe-by-default choice).
 
-        ``stream`` picks where the agent publishes its turn events. A ``WorkflowStream`` of
-        ``temporalio.contrib.workflow_streams``, the default, keeps them in the workflow's own
-        history. A ``ContribStream`` puts the whole agent tree on one Stream of
-        ``temporalio.contrib.streams``. A subagent of a ``ContribStream`` root publishes on the
-        root's Stream, whatever it passes here. The README compares the two.
+        ``stream`` picks where the agent publishes its turn events. The default, a
+        ``ContribStream``, puts the whole agent tree on one Stream of
+        ``temporalio.contrib.streams``. It needs a temporalio build that has that module
+        (``just install-streams-sdk``) and a Stream plugin on the worker. A ``WorkflowStream``
+        of ``temporalio.contrib.workflow_streams`` keeps them in the workflow's own history
+        and runs on a released SDK. A subagent publishes where its parent does, whatever it
+        passes here. The README compares the two.
 
         ``auto_approval_criteria_default`` is the agent's built-in auto-mode rulebook (see
         :class:`AutoApprovalCriteria`) — the named criteria sets its own tools point at, and
@@ -2103,15 +2103,22 @@ class AgentWorkflowRunner:
         # (unit tests) has no run.
         self._run_id: str | None = workflow.info().run_id if workflow.in_workflow() else None
         # A place in the config wins over the agent's own choice.
+        place = config.stream
+        backend = callable(getattr(type(stream), "open_sink", None))
         self._sink: _WorkflowStreamsSink | Any
-        if config.stream is not None:
-            self._sink = _open_place(config.stream)
-        elif callable(getattr(type(stream), "open_sink", None)):
-            self._sink = cast(StreamBackend, stream).open_sink()
-        else:
+        if place is not None and not place.handle:
             # Built in this method because ``WorkflowStream`` accepts only a caller named
             # ``__init__``.
-            self._sink = _WorkflowStreamsSink(stream if stream is not None else WorkflowStream())
+            own = stream if stream is not None and not backend else WorkflowStream()
+            self._sink = _WorkflowStreamsSink(own)
+        elif place is not None:
+            self._sink = _contrib_stream().open_place(place)
+        elif stream is None:
+            self._sink = _contrib_stream().ContribStream().open_sink()
+        elif backend:
+            self._sink = cast(StreamBackend, stream).open_sink()
+        else:
+            self._sink = _WorkflowStreamsSink(stream)
         _assert_async_auto_mode_evaluator(auto_mode_evaluator)
         _assert_auto_mode_has_an_evaluator(approval_policy, auto_mode_evaluator)
         self._auto_mode_evaluator = auto_mode_evaluator
@@ -3188,9 +3195,11 @@ class AgentWorkflowRunner:
     def continue_as_new_config(self, config: AgentConfig) -> AgentConfig:
         """``config`` for the next run, so it writes the same Stream and keeps counting events.
 
-        Pass the result to ``workflow.continue_as_new``. On Workflow Streams it is ``config``.
+        Pass the result to ``workflow.continue_as_new``. On Workflow Streams it keeps
+        ``config.stream``, so a subagent stays on them.
         """
-        return config.model_copy(update={"stream": self.stream, "agent_id": self._agent_id})
+        stream = self.stream if self._sink.place is not None else config.stream
+        return config.model_copy(update={"stream": stream, "agent_id": self._agent_id})
 
     def _handle_close(self) -> None:
         self._closed = True

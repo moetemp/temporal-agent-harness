@@ -51,8 +51,8 @@ def ensure_temporal_address(explicit_address: str | None) -> None:
 def stream_plugins() -> list[Any]:
     """The Stream plugin that ``STREAMS_STORE`` names, in a list, or none when it is unset.
 
-    A process that reads or runs ``ContribStream`` agents needs it. Unset keeps the process on
-    Workflow Streams, which a released SDK serves.
+    A process that reads or runs ``ContribStream`` agents, the default, needs it. Unset serves
+    agents on ``WorkflowStream()`` only, which a released SDK has.
     """
     if not os.environ.get("STREAMS_STORE"):
         return []

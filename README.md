@@ -525,55 +525,57 @@ on the client is enough — Temporal applies a client's plugins to workers built
 ## Choosing the event stream
 
 An agent publishes its turn events on one of two backends, and `stream=` on
-`AgentWorkflowRunner` picks it. Workflow Streams (`temporalio.contrib.workflow_streams`) is the
-default:
+`AgentWorkflowRunner` picks it. The default, `ContribStream`, puts the agent's events on a Stream
+of `temporalio.contrib.streams`, in a store such as Redis. `stream=WorkflowStream()` keeps them
+in the workflow's own history with `temporalio.contrib.workflow_streams`, as upstream does:
 
 ```python
-self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # Workflow Streams
+self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # ContribStream
 self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_policy_default=...)
 ```
 
-`ContribStream` puts the agent's events on a Stream of `temporalio.contrib.streams`, in a store
-such as Redis:
+A `ContribStream` deployment has the same Stream plugin on every client and worker:
 
 ```python
-with workflow.unsafe.imports_passed_through():
-    from temporal_agent_harness.harness.contrib_stream import ContribStream, streams_from_env
+from temporal_agent_harness.harness.contrib_stream import streams_from_env
 
-self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_policy_default=...)
-
-# Every client and worker of the deployment has the same Stream plugin.
 client = await Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()])
 ```
 
 `streams_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL` and
 `STREAMS_KEY_PREFIX`. The web app and the Nexus adapter add the same plugin when `STREAMS_STORE`
-is set. `ContribStream` needs an SDK build with `temporalio.contrib.streams`, which no release has
-yet, and `just install-streams-sdk` installs the one the harness is tested with. The harness
-imports it only for a `ContribStream` agent, so a Workflow Streams agent runs on a released SDK.
+is set.
+
+`ContribStream` needs an SDK build with `temporalio.contrib.streams`, which no release has yet.
+`just install-streams-sdk` installs the one the harness is tested with. Without it, an agent that
+passes no `stream=` fails its Workflow Task with an error that says so. The harness imports
+`temporalio.contrib.streams` only for a `ContribStream` agent, so an agent on
+`stream=WorkflowStream()` runs on a released SDK. The examples pass `stream=WorkflowStream()`.
 
 The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
 web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
 subagent's answer comes back from the child's `await_message` update, not from its events, so a
 lost event can't lose a subagent's result. Resume points are opaque strings on both.
 
-On `ContribStream` the whole agent tree shares the root's Stream, each agent on a Topic of its
-own. A subagent publishes there whatever its own `stream=` says. A Workflow Streams root needs
-subagents on Workflow Streams too. An agent that continues as new passes its Stream on:
+A subagent publishes where its parent does, whatever its own `stream=` says. On `ContribStream`
+the whole agent tree shares the root's Stream, each agent on a Topic of its own. On Workflow
+Streams each agent has its own log. An agent that continues as new passes its Stream on:
 `workflow.continue_as_new(self._runner.continue_as_new_config(config))`.
 
-| | Workflow Streams (default) | `ContribStream` |
+| | `ContribStream` (default) | Workflow Streams |
 | --- | --- | --- |
-| What it needs | Temporal only | A Stream store, a Stream plugin on every process, an SDK build with `temporalio.contrib.streams` |
-| Where events go | Into each workflow's own log, in its history | Into the store, for the Stream's retention |
-| Temporal Cloud Actions | Each activity flush is a Signal and each client read an Update, one Action each | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store |
-| History | The Signals and Updates, with their payloads | One Local Activity marker per write batch, with no event payloads |
-| Subagents | One stream per agent, which the client merges. A resume point advances on root events only | One Stream per tree in one order. A resume point advances on every event |
-| A retried attempt | Its events show twice | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets |
-| A store outage | No store to fail | The agent goes on, and the live view misses what it wrote meanwhile |
+| What it needs | A Stream store, a Stream plugin on every process, an SDK build with `temporalio.contrib.streams` | Temporal only |
+| Where events go | Into the store, for the Stream's retention | Into each workflow's own log, in its history |
+| Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store | Each activity flush is a Signal and each client read an Update, one Action each |
+| History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |
+| Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
+| A retried attempt | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets | Its events show twice |
+| A store outage | The agent goes on, and the live view misses what it wrote meanwhile | No store to fail |
 
 Changing an agent's backend changes its workflow code, so drain or terminate its open sessions
-first, or deploy it with worker versioning.
+first, or deploy it with worker versioning. Upgrade the workers before the clients, since a client
+of this version reads `AgentStatus.last_event_seq` and `AgentEvent.seq`, which an older worker
+does not send.
 
 ## Code Mode
 

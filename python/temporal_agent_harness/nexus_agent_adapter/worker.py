@@ -6,7 +6,8 @@
 #
 # Env vars: TEMPORAL_ADDRESS, AGENT_NAMESPACE, AGENT_WORKFLOW_NAME (required),
 # AGENT_WORKFLOW_ID_PREFIX, AGENT_TASK_QUEUE, NEXUS_AGENT_TASK_QUEUE — see defaults below.
-# STREAMS_STORE and the variables beside it give the Stream plugin of ContribStream agents.
+# STREAMS_STORE and the variables beside it give the Stream plugin of ContribStream agents,
+# the default.
 
 from __future__ import annotations
 
