@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -13,6 +12,7 @@ import pytest
 from temporalio.api.streamservice.v1 import ProducerKind
 from temporalio.contrib.streams import (
     ActivityStream,
+    ActivityTopic,
     Closed,
     Record,
     StreamNotFoundError,
@@ -44,11 +44,11 @@ from temporal_agent_harness.harness.stream_transport import (
 )
 
 
-@dataclass
-class _FakeTopic:
-    name: str
-    type: Any = None
-    batches: list[tuple[Any, ...]] = field(default_factory=list)
+class _FakeTopic(ActivityTopic[Any]):
+    # A real Topic class, since a BufferedPublisher takes anything else for a whole Stream.
+    def __init__(self, name: str, type: Any = None) -> None:
+        super().__init__(None, name, type)
+        self.batches: list[tuple[Any, ...]] = []
 
     async def publish(self, *values: Any) -> int:
         self.batches.append(values)
