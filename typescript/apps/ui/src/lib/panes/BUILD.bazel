@@ -17,7 +17,6 @@ js_library(
         ":launcher",
         ":registry",
         "//typescript/apps/ui:node_modules/@lucide/svelte",
-        "//typescript/apps/ui/src/lib/components/primitives:IconButton",
         "//typescript/apps/ui/src/lib/state:dismissable.svelte",
         "//typescript/apps/ui/src/lib/state:paneStack.svelte",
     ],
@@ -70,6 +69,17 @@ js_library(
 
 # One target per test file, depending on what it imports and the files it reads by path.
 vitest_test(
+    name = "chatTitle_test",
+    src = "chatTitle.test.mjs",
+    deps = [
+        ":PaneRail",
+        ":registry",
+        "//typescript/apps/ui:node_modules/svelte",
+        "//typescript/apps/ui/src/lib/state:paneStack.svelte",
+    ],
+)
+
+vitest_test(
     name = "foldedSpine_test",
     src = "foldedSpine.test.mjs",
     deps = [
@@ -87,5 +97,26 @@ vitest_test(
         ":launcher",
         "//typescript/apps/ui/src/lib/state:dismissable.svelte",
         "//typescript/apps/ui/src/lib/state:paneStack.svelte",
+    ],
+)
+
+vitest_test(
+    name = "paneDragOwnership_test",
+    src = "paneDragOwnership.test.mjs",
+    deps = [
+        ":PaneRail",
+        "//typescript/apps/ui/src:App",
+    ],
+)
+
+vitest_test(
+    name = "paneKeys_test",
+    src = "paneKeys.test.mjs",
+    deps = [
+        ":PaneMinimap",
+        "//typescript/apps/ui:node_modules/svelte",
+        "//typescript/apps/ui/src/lib/state:agentRunStorage",
+        "//typescript/apps/ui/src/lib/state:paneStack.svelte",
+        "//typescript/apps/ui/tests/support:controllerHarness",
     ],
 )
