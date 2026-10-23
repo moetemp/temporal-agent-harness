@@ -2276,17 +2276,21 @@ class AgentWorkflowRunner:
 
     async def _handle_await_message(self, message_id: str) -> MessageResult:
         """Wait until a message from ``send_subagent_message`` is done, and return its result."""
+        # Another waiter can take the result between the validator and this handler.
+        self._validate_await_message(message_id)
         self._waiters[message_id] = self._waiters.get(message_id, 0) + 1
         try:
             # A close still drains the open turn, so the result can come after the close.
             await workflow.wait_condition(
-                lambda: self._message_results.get(message_id) is not None
+                lambda: message_id not in self._message_results
+                or self._message_results[message_id] is not None
                 or (self._closed and not self._status.turn_active)
             )
         finally:
             self._waiters[message_id] -= 1
             if not self._waiters[message_id]:
                 del self._waiters[message_id]
+        self._validate_await_message(message_id)
         result = self._message_results.get(message_id)
         # Every waiter of the message gets the result. A waiter that comes after that finds
         # no message and fails at once.
@@ -3472,7 +3476,12 @@ class AgentWorkflowRunner:
         # On a Stream, the child also gets the place to publish on, which is this tree's Stream
         # and a Topic of its own.
         child_config = (config if config is not None else AgentConfig()).model_copy(
-            update={"agent_id": handle, "stream": self._sink.child_place(handle)}
+            update={
+                "agent_id": handle,
+                "stream": self._sink.child_place(handle),
+                # The results this agent's own run passed on are not the child's.
+                "unclaimed_results": [],
+            }
         )
         await workflow.start_child_workflow(
             workflow_type,

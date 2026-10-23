@@ -1516,6 +1516,14 @@ def test_continue_as_new_passes_on_the_results_no_one_read(offline_build):
     assert offline_build(config)._message_results == {"m1": done}
 
 
+def test_await_message_for_a_message_it_has_no_result_for_fails_at_once(offline_build):
+    runner = offline_build(AgentConfig())
+
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(runner._handle_await_message("m1"))
+    assert excinfo.value.type == "UnknownMessage"
+
+
 def test_accepted_turn_from_error_raises_when_detail_absent():
     """An accepted-but-errored turn with no ``subagent_turn`` detail is a broken activity
     contract. The parent raises loudly rather than closing the bracket on an invented number
