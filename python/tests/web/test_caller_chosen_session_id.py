@@ -189,6 +189,12 @@ class _RecordingAgentClient:
 
         return _Reply()
 
+    async def attach(self, *, on_item, resume="", subagent_stall_grace_seconds=None):
+        from temporal_agent_harness.harness.agent_client import TurnCursorError
+
+        _RecordingAgentClient.calls.append({"resume": resume})
+        raise TurnCursorError("no such position")
+
 
 @pytest.fixture
 def messages_app(monkeypatch):
@@ -218,3 +224,15 @@ def test_omitting_request_id_lets_temporal_mint_one(messages_app) -> None:
     )
 
     assert _RecordingAgentClient.calls[0]["update_id"] is None
+
+
+def test_a_resume_point_the_store_lacks_is_a_400_the_console_starts_over_on(messages_app):
+    """The console reads the session again from the beginning on this code, rather than
+    spending its retry budget on a point that can never work."""
+    response = TestClient(messages_app).get(
+        "/api/attach", params={"session_id": "s", "resume": "3@1879862925380812801"}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_resume_point"
+    assert "1879862925380812801" not in response.text

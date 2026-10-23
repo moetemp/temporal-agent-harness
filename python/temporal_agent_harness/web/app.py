@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from temporalio.api.enums.v1 import EventType
@@ -315,7 +315,7 @@ def create_agent_harness_app(
     @app.get("/api/attach")
     async def attach(
         session_id: str, resume: str = "", from_offset: int | None = None
-    ) -> StreamingResponse:
+    ) -> Response:
         client = AgentClient(temporal=app.state.temporal, workflow_id=session_id)
         if from_offset is not None and not resume:
             # A tab from before opaque resume points sends a Workflow Streams root offset.
@@ -324,9 +324,12 @@ def create_agent_harness_app(
             items = await client.attach(on_item=_yield_item, resume=resume)
         except (ValueError, TurnCursorError) as e:
             # A stale tab after a store switch, or a point from another backend. The UI starts
-            # over from the beginning on a 400. The token is the caller's and is not echoed.
+            # over from the beginning on this code. The token is the caller's and is not echoed.
             logger.info("attach refused a resume point for %s: %r", session_id, e)
-            raise HTTPException(status_code=400, detail="invalid resume point") from e
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_resume_point", "message": "invalid resume point"},
+            )
         return StreamingResponse(items, media_type="text/event-stream", headers=_sse_headers())
 
     @app.post("/api/approve")
@@ -756,9 +759,13 @@ def _update_id(req: ChatRequestBody) -> str | None:
 
 
 def _reply_json(reply: AgentMessageReply) -> dict[str, Any]:
-    # The place and the cursors are for a reader in this process. A browser keeps the resume
-    # points of the frames instead, and a contrib offset is past what a JavaScript number holds.
-    return {k: v for k, v in asdict(reply).items() if k not in ("stream", "accepted_cursor")}
+    # The place and the raw cursor are for a reader in this process, and a Stream offset is past
+    # what a JavaScript number holds. A caller attaches from ``resume`` to catch this dispatch.
+    content = {k: v for k, v in asdict(reply).items() if k not in ("stream", "accepted_cursor")}
+    offset = getattr(reply, "accepted_offset", 0)
+    cursor = getattr(reply, "accepted_cursor", "") or (str(offset) if offset else "")
+    content["resume"] = ResumePoint(cursor=cursor).encode()
+    return content
 
 
 def _sse(event: str, data: dict, resume: ResumePoint | None = None) -> bytes:
