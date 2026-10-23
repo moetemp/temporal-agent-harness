@@ -22,25 +22,32 @@ from typing import Any
 
 from pydantic import TypeAdapter
 from temporalio import workflow
-from temporalio.api.streamservice.v1 import ProducerKind
 from temporalio.client import Client, WorkflowExecutionStatus
-from temporalio.contrib import streams
-from temporalio.contrib.streams import (
-    ActivityStream,
-    BufferedPublisher,
-    ClientStream,
-    Closed,
-    Record,
-    StreamClient,
-    StreamConfigError,
-    StreamNotFoundError,
-    StreamOffsetError,
-    StreamPlugin,
-    Subscription,
-    Superseded,
-    WorkflowStream,
-)
-from temporalio.contrib.streams.workflow import create_stream_nowait
+
+try:
+    from temporalio.api.streamservice.v1 import ProducerKind
+    from temporalio.contrib import streams
+    from temporalio.contrib.streams import (
+        ActivityStream,
+        BufferedPublisher,
+        ClientStream,
+        Closed,
+        Record,
+        StreamClient,
+        StreamConfigError,
+        StreamNotFoundError,
+        StreamOffsetError,
+        StreamPlugin,
+        Subscription,
+        Superseded,
+        WorkflowStream,
+    )
+    from temporalio.contrib.streams.workflow import create_stream_nowait
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "ContribStream needs a temporalio build with temporalio.contrib.streams, which no "
+        "release has yet. Workflow Streams, the default stream=, runs on a release."
+    ) from exc
 
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
