@@ -129,22 +129,3 @@ class SubagentMessage(BaseModel):
 
     message: AgentMessage
     dispatch: SubagentDispatch
-
-
-class MessageResult(BaseModel):
-    """What ``await_message`` returns once a message's turn has ended.
-
-    The turn ends after the handler, so nothing the message started still runs. Exactly one
-    of ``output`` and ``error`` is set.
-    """
-
-    message_id: str
-    turn_id: str
-    turn_number: int
-    output: dict[str, Any] | None = None
-    error: str | None = None
-    stream_offset: int = Field(
-        default=0,
-        description="On Workflow Streams, the child's stream head just past the turn's "
-        "``turn_end``. The parent passes it on as the next turn's ``from_offset``.",
-    )

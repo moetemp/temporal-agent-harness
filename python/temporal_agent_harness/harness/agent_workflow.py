@@ -121,7 +121,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TurnEnded,
     TurnStarted,
     AgentMessageReply,
-    subtree_prefix,
+    subagent_topic,
 )
 
 # TurnStreamContext (the activity-side stream-publishing carrier this runner builds + consumes)
@@ -317,6 +317,10 @@ async def _cancel_and_settle(task: asyncio.Future[Any]) -> None:
 # caller that has its own configured cadence, such as an SDK plugin threading
 # ``streaming_batch_interval``, passes that instead.
 DEFAULT_PUBLISH_BATCH_INTERVAL = timedelta(milliseconds=50)
+
+# How long a closed agent waits for its parent to read a subagent result, as the parent's
+# activity does between its send and its read, also across a retry of that activity.
+_RESULT_CLAIM_GRACE = timedelta(minutes=1)
 
 _InjectedT = TypeVar("_InjectedT")
 
@@ -2158,12 +2162,15 @@ class AgentWorkflowRunner:
         # garbage-collected mid-flight; turn accounting lives in the refcount, not here.
         self._participant_tasks: set[asyncio.Future[None]] = set()
         # The result of each message that came through ``send_subagent_message``, for
-        # ``await_message``. ``None`` until its turn ends, and dropped once it is returned.
-        self._message_results: dict[str, MessageResult | None] = {}
+        # ``await_message``. ``None`` until its turn ends, and dropped once it is returned. The
+        # run before a continue-as-new passes on the results that no one has read.
+        self._message_results: dict[str, MessageResult | None] = {
+            result.message_id: result for result in config.unclaimed_results
+        }
         # Results of messages whose turn is still open, by turn id.
         self._turn_results: dict[str, list[MessageResult]] = {}
-        # How many ``await_message`` handlers are running. Close waits for them to return.
-        self._awaiting: int = 0
+        # How many ``await_message`` handlers wait for each message. Close waits for them.
+        self._waiters: dict[str, int] = {}
 
         # Register protocol handlers dynamically so the containing workflow doesn't need to.
         workflow.set_update_handler(
@@ -2247,12 +2254,18 @@ class AgentWorkflowRunner:
         parent = message.dispatch.parent_stream_context
         own_parent = self._agent_id.rpartition("-")[0]
         place = self._sink.place
-        foreign = workflow.info().parent is None or parent.agent_id != own_parent
+        started_by = workflow.info().parent
+        foreign = started_by is None or parent.agent_id != own_parent
         if parent.stream is not None:
+            # The root agent owns the Stream and publishes on its first Topic.
+            root = place is not None and (
+                started_by is not None and started_by.workflow_id == place.handle.get("workflowId")
+            )
             foreign = foreign or (
                 place is None
                 or parent.stream.id != place.handle.get("id")
-                or not place.topic.startswith(subtree_prefix(parent.topic))
+                or parent.topic != (TURN_EVENTS_TOPIC if root else subagent_topic(own_parent))
+                or place.topic != subagent_topic(self._agent_id)
             )
         if foreign:
             raise ApplicationError(
@@ -2263,14 +2276,22 @@ class AgentWorkflowRunner:
 
     async def _handle_await_message(self, message_id: str) -> MessageResult:
         """Wait until a message from ``send_subagent_message`` is done, and return its result."""
-        self._awaiting += 1
+        self._waiters[message_id] = self._waiters.get(message_id, 0) + 1
         try:
+            # A close still drains the open turn, so the result can come after the close.
             await workflow.wait_condition(
-                lambda: self._message_results.get(message_id) is not None or self._closed
+                lambda: self._message_results.get(message_id) is not None
+                or (self._closed and not self._status.turn_active)
             )
         finally:
-            self._awaiting -= 1
-        result = self._message_results.pop(message_id, None)
+            self._waiters[message_id] -= 1
+            if not self._waiters[message_id]:
+                del self._waiters[message_id]
+        result = self._message_results.get(message_id)
+        # Every waiter of the message gets the result. A waiter that comes after that finds
+        # no message and fails at once.
+        if message_id not in self._waiters:
+            self._message_results.pop(message_id, None)
         if result is None:
             raise ApplicationError(
                 f"agent closed before message {message_id!r} finished",
@@ -3199,7 +3220,13 @@ class AgentWorkflowRunner:
         ``config.stream``, so a subagent stays on them.
         """
         stream = self.stream if self._sink.place is not None else config.stream
-        return config.model_copy(update={"stream": stream, "agent_id": self._agent_id})
+        return config.model_copy(
+            update={
+                "stream": stream,
+                "agent_id": self._agent_id,
+                "unclaimed_results": self._unclaimed(),
+            }
+        )
 
     def _handle_close(self) -> None:
         self._closed = True
@@ -3264,7 +3291,20 @@ class AgentWorkflowRunner:
         # and "it is safe to complete" cannot disagree.
         await workflow.wait_condition(lambda: not self._status.turn_active)
         # An ``await_message`` that the close released still has to return its answer.
-        await workflow.wait_condition(lambda: self._awaiting == 0)
+        await workflow.wait_condition(lambda: not self._waiters)
+        # A parent reads a result in a second call after its send, so a result can be ready
+        # with no reader yet. Give that reader time before the run ends.
+        if self._unclaimed():
+            try:
+                await workflow.wait_condition(
+                    lambda: not self._unclaimed() and not self._waiters,
+                    timeout=_RESULT_CLAIM_GRACE,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    def _unclaimed(self) -> list[MessageResult]:
+        return [result for result in self._message_results.values() if result is not None]
 
     def _spawn_participant(self, agent: object, admitted: _Admission, *, joined: bool) -> None:
         """Run one admitted message inside its turn, as its own asyncio task.

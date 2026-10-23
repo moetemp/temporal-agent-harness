@@ -647,6 +647,25 @@ class AgentStream(BaseModel):
     )
 
 
+class MessageResult(BaseModel):
+    """What ``await_message`` returns once a message's turn has ended.
+
+    The turn ends after the handler, so nothing the message started still runs. Exactly one
+    of ``output`` and ``error`` is set.
+    """
+
+    message_id: str
+    turn_id: str
+    turn_number: int
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    stream_offset: int = Field(
+        default=0,
+        description="On Workflow Streams, the child's stream head just past the turn's "
+        "``turn_end``. The parent passes it on as the next turn's ``from_offset``.",
+    )
+
+
 class AgentConfig(BaseModel):
     """The single, harness-defined input contract every agent workflow accepts.
 
@@ -708,16 +727,21 @@ class AgentConfig(BaseModel):
     generates its own single-segment id. This is the one ``AgentConfig`` field a parent populates
     per-child rather than passing through unchanged.
 
-    ``stream`` is where a subagent of a ``ContribStream`` root publishes (see
+    ``stream`` is where a subagent publishes, on its parent's backend (see
     :class:`AgentStream`). The parent sets it with ``agent_id``. A run that continues as new
     passes its own on with ``AgentWorkflowRunner.continue_as_new_config``. ``None`` → the
     agent's own ``stream=`` choice.
+
+    ``unclaimed_results`` are the results of a parent's messages that the parent had not read
+    when the run continued as new, so the next run still gives them to ``await_message``.
+    ``continue_as_new_config`` sets it.
     """
 
     approval_policy: ToolApprovalPolicy | None = None
     auto_approval_criteria: AutoApprovalCriteria | None = None
     agent_id: AgentId | None = None
     stream: AgentStream | None = None
+    unclaimed_results: list[MessageResult] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

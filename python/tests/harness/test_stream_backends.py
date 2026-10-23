@@ -88,6 +88,8 @@ class BackendChild:
         """Answer, after a join when asked to wait for one."""
         if message.text == "hang":
             await workflow.wait_condition(lambda: False)
+        if message.text == "sleep":
+            await workflow.sleep(1)
         if message.text == "wait-for-join":
             await workflow.wait_condition(lambda: self._joined)
         if message.text == "fail":
@@ -296,6 +298,11 @@ async def test_a_subagent_s_own_failure_fails_the_parent_s_call(client_and_queue
 
     reply = _reply(items)
     assert reply.startswith("error:SubagentTurnError:") and "ours blew up" in reply
+    # The child ran the turn and failed it, so the parent still closes the turn's bracket.
+    parent_id = items[0][0].agent_id
+    assert (parent_id, AgentEventType.SUBAGENT_REPLY_RECEIVED) in [
+        (item.agent_id, item.event.type) for item, _ in items if isinstance(item, AgentEvent)
+    ]
 
 
 async def test_a_terminated_subagent_ends_the_parent_s_call(client_and_queue):
@@ -306,6 +313,16 @@ async def test_a_terminated_subagent_ends_the_parent_s_call(client_and_queue):
     await client.get_workflow_handle(child).terminate()
 
     assert _reply(await reply).startswith("error:SubagentNoReply:")
+
+
+async def test_a_subagent_closed_mid_turn_still_answers(client_and_queue):
+    client, task_queue = client_and_queue
+    parent = await _start(client, task_queue)
+    reply = asyncio.create_task(_turn(parent, "delegate", "sleep"))
+    child = await _running_child(client, parent)
+    await client.get_workflow_handle(child).signal("close")
+
+    assert _reply(await reply) == "ours"
 
 
 async def test_only_the_parent_sends_send_subagent_message(client_and_queue):

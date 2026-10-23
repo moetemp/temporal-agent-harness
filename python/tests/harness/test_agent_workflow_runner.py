@@ -55,6 +55,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     MessageContext,
     MessageDisposition,
     MessageHandlerEnd,
+    MessageResult,
     MidTurn,
     SubagentReplyReceived,
     TextMessage,
@@ -1502,6 +1503,17 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
     assert rr.outcome == "error"
     assert rr.workflow_id == "child-wf-1"
     assert rr.subagent_id == "aaaaaa-bbbbbb"
+
+
+def test_continue_as_new_passes_on_the_results_no_one_read(offline_build):
+    runner = offline_build(AgentConfig())
+    done = MessageResult(message_id="m1", turn_id="t1", turn_number=1, output={"text": "x"})
+    runner._message_results.update({"m1": done, "m2": None})
+
+    config = runner.continue_as_new_config(AgentConfig())
+
+    assert config.unclaimed_results == [done]
+    assert offline_build(config)._message_results == {"m1": done}
 
 
 def test_accepted_turn_from_error_raises_when_detail_absent():
