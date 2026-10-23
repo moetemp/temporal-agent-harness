@@ -19,6 +19,7 @@ from temporalio.client import Client, WorkflowHandle
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
+from tests._streams import stream_plugins
 from temporalio.worker import (
     Interceptor,
     Replayer,
@@ -104,6 +105,7 @@ async def _replay(handle: WorkflowHandle[Any, Any]) -> None:
     arguments included."""
     history = await handle.fetch_history()
     await Replayer(
+        plugins=stream_plugins(),
         workflows=[CodeModeE2EParentWorkflow],
         data_converter=pydantic_data_converter,
         interceptors=[_RecordScheduledActivities()],

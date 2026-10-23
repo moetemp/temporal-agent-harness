@@ -32,6 +32,15 @@ if STORE:
     from temporal_agent_harness.harness.contrib_stream import ContribStream
 
 
+def stream_plugins() -> list[Any]:
+    """The lane's Stream plugin for a client or ``Replayer`` that the conftest does not build."""
+    if STORE is None:
+        return []
+    from temporal_agent_harness.harness.contrib_stream import streams_from_env
+
+    return [streams_from_env()]
+
+
 def agent_stream() -> Any:
     """The ``stream=`` choice of a test agent: the default Workflow Streams, or a ``ContribStream``.
 

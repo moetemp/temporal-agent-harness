@@ -52,7 +52,7 @@ from _activity_fs_parent import (
     StoreConfig,
     StoreFileSystem,
 )
-from tests._streams import turn_records
+from tests._streams import stream_plugins, turn_records
 
 
 def _by_name(fs: type[agent.ActivityFileSystem[Any]]) -> dict[str, Any]:
@@ -292,6 +292,7 @@ async def test_a_mounted_activity_filesystem_is_indexed(client_and_queue, store)
     assert entries["out/r.md"] == {"is_dir": False, "size": 3, "mtime": None, "writes": 1}
 
     await Replayer(
+        plugins=stream_plugins(),
         workflows=[ActivityFsParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(await handle.fetch_history())
 
@@ -404,6 +405,7 @@ async def test_an_okf_code_mode_tool_writes_lists_and_links_concepts(client_and_
     ]
     assert len(walks) == 2  # one per okf_concepts / okf_links call, not one per file
     await Replayer(
+        plugins=stream_plugins(),
         workflows=[OKFParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(history)
 

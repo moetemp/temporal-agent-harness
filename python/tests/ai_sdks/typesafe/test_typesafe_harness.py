@@ -19,7 +19,7 @@ from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from temporal_agent_harness.ai_sdks.typesafe_harness import HarnessTypeSafe
 from temporal_agent_harness.plugin import AgentHarnessPlugin
-from tests._streams import turn_records
+from tests._streams import stream_plugins, turn_records
 
 
 @workflow.defn
@@ -96,7 +96,7 @@ async def test_native_round_trip_events_and_replay(mode):
                     await handle.signal(Probe.cancel_call)
                 result = await handle.result()
                 history = await handle.fetch_history()
-            await Replayer(workflows=[Probe], workflow_runner=UnsandboxedWorkflowRunner(),
+            await Replayer(plugins=stream_plugins(), workflows=[Probe], workflow_runner=UnsandboxedWorkflowRunner(),
                            data_converter=client.data_converter).replay_workflow(history)
     assert [event["type"] for event in result["events"]] == [
         "model_interaction_started", "model_interaction_ended"]

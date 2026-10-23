@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -225,7 +225,7 @@ def _handle_json(stream: Any) -> dict[str, str]:
 @asynccontextmanager
 async def activity_publisher(
     context: TurnStreamContext, *, max_delay: timedelta
-) -> AsyncIterator[Callable[[AgentEvent], None]]:
+) -> AsyncIterator[BufferedPublisher[AgentEvent]]:
     """Buffer an activity's events for the Stream and Topic that ``context`` names.
 
     Leaving the block writes the tail, also when the activity fails, so a reader sees what
@@ -234,7 +234,7 @@ async def activity_publisher(
     assert context.stream is not None
     topic = context.stream.topic(context.topic, type=AgentEvent)
     async with BufferedPublisher(topic, max_delay=max_delay) as events:
-        yield events.publish
+        yield events
 
 
 # ---------------------------------------------------------------------------

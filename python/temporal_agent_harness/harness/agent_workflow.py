@@ -2105,7 +2105,7 @@ class AgentWorkflowRunner:
         self._sink: _WorkflowStreamsSink | Any
         if config.stream is not None:
             self._sink = _open_place(config.stream)
-        elif callable(getattr(stream, "open_sink", None)):
+        elif callable(getattr(type(stream), "open_sink", None)):
             self._sink = cast(StreamBackend, stream).open_sink()
         else:
             # Built in this method because ``WorkflowStream`` accepts only a caller named
