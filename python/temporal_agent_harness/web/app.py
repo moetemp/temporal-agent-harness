@@ -166,7 +166,7 @@ def create_agent_harness_app(
         # payload is only readable by a process using the matching converter, so this app must
         # not spell one out of its own. The plugin's activity registration is a WORKER concern
         # and this app hosts no worker, so it simply doesn't apply here. The Stream plugin, if
-        # any, is the one the workers' clients carry, because this process reads agent Streams.
+        # any, is the one the workers' clients have, because this process reads agent Streams.
         app.state.temporal = await Client.connect(
             **connect_config,
             plugins=[

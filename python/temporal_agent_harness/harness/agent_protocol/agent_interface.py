@@ -1138,7 +1138,7 @@ class AgentStatus:
     # ``turn_active`` an honest answer rather than "the first participant is still going".
     turn_participants: int = 0
     # The ``AgentEvent.seq`` of the newest event the agent published from workflow code. A
-    # stream position can't tell a reader that nothing follows, and this count can.
+    # stream position can't tell a reader that nothing comes after it, and this count can.
     last_event_seq: int = 0
     # Where the agent publishes, or ``None`` on Workflow Streams.
     stream: AgentStream | None = None

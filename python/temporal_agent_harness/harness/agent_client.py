@@ -525,13 +525,13 @@ class AgentClient:
                 consistent across both entry points.
             timeout: Max seconds to wait for the turn to complete (``None`` = no limit).
             subagent_stall_grace_seconds: Liveness backstop (seconds) for the stream merge, on
-                Workflow Streams only — how
-                long a subagent whose reply the parent is already waiting on may stay silent on its
-                OWN stream before the merge presumes it unreachable, gives up on its detail, and
-                lets the parent's reply flow. NOT an ordering input (ordering is clock-free); it
-                only bounds the wait on a close-gate-blocking subagent. Raise it on slow/overloaded
-                workers (a healthy-but-laggy subagent is given up only if it exceeds this); lower it
-                for snappier degradation. A genuinely idle/slow subagent that ISN'T blocking the
+                Workflow Streams only. It is how long a subagent whose reply the parent is
+                already waiting on may stay silent on its OWN stream before the merge presumes
+                it unreachable, gives up on its detail, and lets the parent's reply flow. NOT an
+                ordering input (ordering is clock-free); it only bounds the wait on a
+                close-gate-blocking subagent. Raise it on slow/overloaded workers (a
+                healthy-but-laggy subagent is given up only if it exceeds this); lower it for
+                snappier degradation. A genuinely idle/slow subagent that ISN'T blocking the
                 parent's reply is never affected.
             update_id: Idempotency key for the send, for a caller whose delivery can be
                 repeated (a redelivered chat-platform webhook). A repeat gets the original
@@ -650,7 +650,7 @@ class AgentClient:
         it back to resume. How fine-grained that is depends on the backend.
 
         * **Workflow Streams.** The point is a ROOT-stream offset that advances ONLY on root
-          events. Every subagent event between two root events carries the SAME point, so a
+          events. Every subagent event between two root events has the SAME point, so a
           consumer that disconnects *mid a subagent's turn* and resumes will NOT re-receive the
           rest of that subagent's turn detail (the merge starts past that subagent's
           ``subagent_message_sent`` and never re-mounts it). The parent's reply and everything
@@ -742,7 +742,7 @@ class AgentClient:
             except Exception:  # noqa: BLE001 — workflow gone (e.g. failed after an errored turn)
                 return True
             # Caught up when this terminal event is the last thing the agent published and it
-            # is idle. An activity-published event carries no seq and is never the last word.
+            # is idle. An activity-published event has no seq and is never the last word.
             return (
                 not status.turn_active
                 and not status.pending_turns

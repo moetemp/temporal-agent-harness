@@ -1885,7 +1885,7 @@ export class AgentRunController {
   }
 
   /**
-   * Retire what a failed attempt already staged: exactly the frames the marker lists.
+   * Drop what a failed attempt already staged: exactly the frames the marker lists.
    *
    * A Stream withdraws one attempt's records, so the other events of the turn stay. The
    * buffer shrinks here, which breaks the "equal lengths mean nothing new" shortcut the

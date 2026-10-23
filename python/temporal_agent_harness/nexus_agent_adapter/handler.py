@@ -72,8 +72,8 @@ _WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
 # again.
 _MAX_STREAM_POLL_SECONDS = 8.0
 _STREAM_POLL_BATCH_LIMIT = 100
-# Once one event has arrived, gather what follows it within this window and answer, rather than
-# keeping the batch open for the whole timeout.
+# Once one event has arrived, gather the events after it within this window and answer, rather
+# than keeping the batch open for the whole timeout.
 _STREAM_POLL_BATCH_GRACE_SECONDS = 0.05
 
 

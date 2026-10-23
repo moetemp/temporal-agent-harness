@@ -311,7 +311,7 @@ async def next_offset(client: Client, place: AgentStream) -> int:
 
 
 async def check_turn_cursor(client: Client, place: AgentStream, after: str) -> None:
-    """Raise ``TurnCursorError`` now if ``after`` is not a position on the agent's Stream.
+    """Raise ``TurnCursorError`` at once if ``after`` is not a position on the agent's Stream.
 
     A caller that must refuse a bad cursor before it starts a response, such as an SSE route,
     calls this first. It reads at most one item and does not wait for new ones.

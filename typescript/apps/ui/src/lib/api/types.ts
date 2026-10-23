@@ -7,7 +7,7 @@ export type ResumePoint = string;
 
 /**
  * One event's own offset. With the tree-unique `agent_id` this IDENTIFIES the
- * event — it is stable across redeliveries and distinct between two events of the
+ * event. It is stable across redeliveries and distinct between two events of the
  * same agent, which is not true of `resume` (on Workflow Streams that one is a
  * root-stream point, the same for every event of a subagent's turn).
  *

@@ -527,7 +527,7 @@ on the client is enough — Temporal applies a client's plugins to workers built
 An agent publishes its turn events on one of two backends, and `stream=` on
 `AgentWorkflowRunner` picks it. The default, `ContribStream`, puts the agent's events on a Stream
 of `temporalio.contrib.streams`, in a store such as Redis. `stream=WorkflowStream()` keeps them
-in the workflow's own history with `temporalio.contrib.workflow_streams`, as upstream does:
+in the workflow's own history with `temporalio.contrib.workflow_streams`:
 
 ```python
 self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # ContribStream

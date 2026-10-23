@@ -3376,7 +3376,7 @@ class AgentWorkflowRunner:
         # to whichever participant happened to leave last.
         if self._status.leave_turn():
             self._pub(turn_id, turn_number, TurnEnded(), message_id=None)
-            # A parent gets the result only now, so the turn is over on the child's side.
+            # A parent gets the result only at the turn's end, so the child's turn is over.
             for done in self._turn_results.pop(turn_id, []):
                 done.stream_offset = self._sink.accepted_offset()
                 self._message_results[done.message_id] = done
