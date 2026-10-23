@@ -522,6 +522,59 @@ The worker declares only its workflows. Adding the plugin brings:
 Order it last, after any AI SDK's plugin, so that SDK's payload converter wins. Registering it
 on the client is enough — Temporal applies a client's plugins to workers built from it.
 
+## Choosing the event stream
+
+An agent publishes its turn events on one of two backends, and `stream=` on
+`AgentWorkflowRunner` picks it. Workflow Streams (`temporalio.contrib.workflow_streams`) is the
+default:
+
+```python
+self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # Workflow Streams
+self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_policy_default=...)
+```
+
+`ContribStream` puts the agent's events on a Stream of `temporalio.contrib.streams`, in a store
+such as Redis:
+
+```python
+with workflow.unsafe.imports_passed_through():
+    from temporal_agent_harness.harness.contrib_stream import ContribStream, streams_from_env
+
+self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_policy_default=...)
+
+# Every client and worker of the deployment carries the same Stream plugin.
+client = await Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()])
+```
+
+`streams_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL` and
+`STREAMS_KEY_PREFIX`. The web app and the Nexus adapter add the same plugin when `STREAMS_STORE`
+is set. `ContribStream` needs an SDK build with `temporalio.contrib.streams`, which no release has
+yet. The harness imports it only for a `ContribStream` agent, so a Workflow Streams agent runs on
+a released SDK.
+
+The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
+web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
+subagent's answer comes back from the child's `await_message` update, not from its events, so a
+lost event can't lose a subagent's result. Resume points are opaque strings on both.
+
+On `ContribStream` the whole agent tree shares the root's Stream, each agent on a Topic of its
+own. A subagent publishes there whatever its own `stream=` says. A Workflow Streams root needs
+subagents on Workflow Streams too. An agent that continues as new passes its Stream on:
+`workflow.continue_as_new(self._runner.continue_as_new_config(config))`.
+
+| | Workflow Streams (default) | `ContribStream` |
+| --- | --- | --- |
+| What it needs | Temporal only | A Stream store, a Stream plugin on every process, an SDK build with `temporalio.contrib.streams` |
+| Where events go | Into each workflow's own log, in its history | Into the store, for the Stream's retention |
+| Temporal Cloud Actions | Each activity flush is a Signal and each client read an Update, one Action each | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store |
+| History | The Signals and Updates, with their payloads | One Local Activity marker per write batch, with no event payloads |
+| Subagents | One stream per agent, which the client merges. A resume point moves on root events only | One Stream per tree in one order. A resume point moves on every event |
+| A retried attempt | Its events show twice | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets |
+| A store outage | No store to fail | The agent goes on, and the live view misses what it wrote meanwhile |
+
+Changing an agent's backend changes its workflow code, so drain or terminate its open sessions
+first, or deploy it with worker versioning.
+
 ## Code Mode
 
 Most agents call tools one at a time — a round-trip per call. **Code Mode** hands the model a

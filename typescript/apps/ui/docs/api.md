@@ -258,8 +258,12 @@ type SubmitMessageResponse = {
   message_id: string
   accepted_offset: number
   disposition: "opened" | "joined" | "queued"
+  resume: string
 }
 ```
+
+`resume` is the point to attach from to catch this message's events. `accepted_offset` is the
+same point as a Workflow Streams offset, and `0` on a `ContribStream` agent.
 
 `message_id` identifies this message for the rest of its life: every event its dispatch
 produces carries it on the envelope, so a client correlates its own reply, deltas and tool
@@ -272,7 +276,7 @@ own outcome on the stream. A client that wants to act only on an idle agent read
 `GET /api/status/{session_id}` first; that is a UX choice, not a protocol requirement.
 
 The shared UI uses this endpoint for queued sends, then keeps one
-`GET /api/attach` stream open from its last `resume_offset`. This avoids
+`GET /api/attach` stream open from its last `resume`. This avoids
 starting many concurrent Temporal Updates and long-lived merged streams when a
 user sends several queued messages quickly.
 
@@ -296,17 +300,20 @@ The packaged UI keeps a familiar affordance on top of this: typing `/` in the
 composer opens a picker over the handlers `agent_interface` returned. That is
 purely a client-side convention — the harness has no notion of a slash.
 
-### `GET /api/attach?session_id=...&from_offset=0`
+### `GET /api/attach?session_id=...&resume=`
 
-Replays or tails an existing merged session stream.
+Replays or tails an existing session stream, subagents included.
 
 Response media type: `text/event-stream`.
 
-When `from_offset` is `0`, the server replays the merged session event history.
-When it is non-zero, pass a prior frame's `resume_offset`; only newer root-stream
-positions are streamed. The stream returns when the workflow is idle and caught
-up. `resume_offset` is a root-stream cursor, not a display ordinal: several
-subagent frames may carry the same value.
+With an empty `resume`, the server replays the session's event history. To resume, pass the
+last `resume` a frame carried; only later events are streamed. The stream returns when the
+workflow is idle and caught up. A resume point is opaque, so a client stores the newest one
+and never compares two. On Workflow Streams several subagent frames may carry the same one.
+
+A point the server holds no position for, such as one from before a store switch, gets a
+`400` with `error` `invalid_resume_point`. The client then attaches again with an empty
+`resume`. `from_offset=N` is still read, as the Workflow Streams point at root offset `N`.
 
 ## Error Responses
 
@@ -328,6 +335,7 @@ Known status codes:
   `POST /api/messages` plus one `GET /api/attach` instead.
 - `409` from `POST /api/approve`: `error` is usually
   `UnknownToolApproval` or `ToolApprovalAlreadyResolved`.
+- `400` from `GET /api/attach`: `error` is `invalid_resume_point` (see above).
 - `422` from FastAPI/Pydantic validation: standard FastAPI validation payload.
 
 ## SSE Transport
@@ -352,19 +360,25 @@ For normal agent events, `data` is a flat object containing:
   message. **Group by this, not by `turn_id`:** a turn is refcounted, so several messages can
   publish under one `turn_id` and keying on the turn merges concurrent participants together.
 - `timestamp` epoch seconds
-- `resume_offset`, the root-stream cursor the client should pass as `from_offset`
+- `seq`, the agent's own count of the events it published from workflow code, or `null` for an
+  event an activity published. A client that has seen the `seq` of
+  `GET /api/status`'s `last_event_seq` while the agent is idle has caught up.
+- `resume`, the opaque point the client passes back as `resume`. A frame with no point to give
+  leaves it out.
+- `event_offset`, on a `ContribStream` agent only: the event's own offset as a decimal string.
+  An `attempt_superseded` event lists the offsets of the events to drop.
 
 Example:
 
 ```txt
 event: reply_delta
-data: {"type":"reply_delta","agent_id":"root","turn_id":"t1","turn_number":1,"timestamp":1710000001,"resume_offset":2,"text":"Hi"}
+data: {"type":"reply_delta","agent_id":"root","turn_id":"t1","turn_number":1,"timestamp":1710000001,"seq":2,"resume":"2@2","text":"Hi"}
 
 ```
 
 `POST /api/chat` can also emit `stream_error` frames, which the server synthesizes for a turn
 timeout or for this turn's own `message_handler_error`. They are not agent events — nothing
-published them on the stream — so they carry `kind`, `message` and `resume_offset` but no
+published them on the stream — so they carry `kind`, `message` and `resume` but no
 `type` or turn/message metadata.
 
 ## SSE Event Payloads
@@ -534,6 +548,12 @@ subagent_stream_unavailable: {
   reason: string
 }
 
+// ContribStream only: a failed attempt's events were withdrawn. Drop the frames of the
+// envelope's agent whose `event_offset` is in the list.
+attempt_superseded: {
+  withdrawn_offsets: string[]
+}
+
 reply_delta: {
   text: string
 }
@@ -573,22 +593,22 @@ A basic text turn can be mocked as:
 
 ```txt
 event: message_accepted
-data: {"type":"message_accepted","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000000,"resume_offset":1,"handler":"ask","payload":{"text":"hello"},"disposition":"opened"}
+data: {"type":"message_accepted","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000000,"seq":1,"resume":"1@1","handler":"ask","payload":{"text":"hello"},"disposition":"opened"}
 
 event: turn_started
-data: {"type":"turn_started","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":null,"timestamp":1710000000,"resume_offset":2}
+data: {"type":"turn_started","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":null,"timestamp":1710000000,"seq":2,"resume":"2@2"}
 
 event: message_handler_start
-data: {"type":"message_handler_start","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000000,"resume_offset":3}
+data: {"type":"message_handler_start","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000000,"seq":3,"resume":"3@3"}
 
 event: reply_delta
-data: {"type":"reply_delta","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000001,"resume_offset":4,"text":"Hi"}
+data: {"type":"reply_delta","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000001,"seq":4,"resume":"4@4","text":"Hi"}
 
 event: message_handler_end
-data: {"type":"message_handler_end","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000002,"resume_offset":5,"output":{"text":"Hi there."}}
+data: {"type":"message_handler_end","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":"m1","timestamp":1710000002,"seq":5,"resume":"5@5","output":{"text":"Hi there."}}
 
 event: turn_end
-data: {"type":"turn_end","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":null,"timestamp":1710000003,"resume_offset":6}
+data: {"type":"turn_end","agent_id":"root","turn_id":"t1","turn_number":1,"message_id":null,"timestamp":1710000003,"seq":6,"resume":"6@6"}
 
 ```
 
