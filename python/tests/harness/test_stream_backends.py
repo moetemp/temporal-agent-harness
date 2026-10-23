@@ -10,16 +10,18 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from temporalio import workflow
-from temporalio.client import Client, WorkflowUpdateFailedError
+from temporalio.client import Client, WorkflowHistory, WorkflowUpdateFailedError
 from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.exceptions import ActivityError
 from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from temporal_agent_harness.harness import agent
 from temporal_agent_harness.harness.agent_client import (
@@ -492,3 +494,57 @@ def _payload_converter_event(data: str) -> AgentEvent:
     payload.ParseFromString(base64.b64decode(data))
     [event] = pydantic_data_converter.payload_converter.from_payloads([payload], [AgentEvent])
     return event
+
+
+# The agents of histories/workflow_streams_subagent.json, which upstream main recorded on
+# Workflow Streams. They must stay as they were recorded.
+@agent.defn
+class ReplayChild:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = AgentWorkflowRunner(
+            config,
+            stream=WorkflowStream(),
+            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
+        )
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def ask(self, message: TextMessage) -> TextReply:
+        """Answer."""
+        return TextReply(text="child:" + message.text)
+
+
+@agent.defn
+class ReplayParent:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = AgentWorkflowRunner(
+            config,
+            stream=WorkflowStream(),
+            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
+        )
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def delegate(self, message: TextMessage) -> TextReply:
+        """Ask a subagent twice."""
+        handle = await self._runner.start_subagent(
+            "child", "ReplayChild", workflow.info().task_queue
+        )
+        out = await self._runner.run_subagent_turn(handle, "ask", {"text": message.text})
+        out = await self._runner.run_subagent_turn(handle, "ask", {"text": out["text"]})
+        await self._runner.stop_subagent(handle)
+        return TextReply(text=out["text"])
+
+
+async def test_a_workflow_streams_session_from_upstream_replays():
+    """An open Workflow Streams session keeps running after this code deploys."""
+    recorded = json.loads(
+        (Path(__file__).parent / "histories" / "workflow_streams_subagent.json").read_text()
+    )
+    replayer = Replayer(
+        workflows=[ReplayParent, ReplayChild],
+        data_converter=pydantic_data_converter,
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    )
+    for name, history in recorded.items():
+        await replayer.replay_workflow(WorkflowHistory.from_json(f"wf-{name}", history))

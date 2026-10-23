@@ -317,6 +317,7 @@ harness_pytest_test(
 harness_pytest_test(
     name = "test_stream_backends",
     srcs = ["test_stream_backends.py"],
+    data = ["histories/workflow_streams_subagent.json"],
     imports = ["../.."],
     deps = [
         "//python/temporal_agent_harness:__init__",
