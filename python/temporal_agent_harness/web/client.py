@@ -9,7 +9,7 @@ in two launchers that could drift apart; here it lives once, so ``serve`` and
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from temporalio.client import Client
@@ -48,13 +48,27 @@ def ensure_temporal_address(explicit_address: str | None) -> None:
         os.environ["TEMPORAL_ADDRESS"] = DEFAULT_TEMPORAL_ADDRESS
 
 
+def stream_plugins() -> list[Any]:
+    """The Stream plugin that ``STREAMS_STORE`` names, in a list, or none when it is unset.
+
+    A process that reads or runs ``ContribStream`` agents needs it. Unset keeps the process on
+    Workflow Streams, which a released SDK serves.
+    """
+    if not os.environ.get("STREAMS_STORE"):
+        return []
+    from temporal_agent_harness.harness.contrib_stream import streams_from_env
+
+    return [streams_from_env()]
+
+
 async def connect_client() -> "Client":
     """Connect a Temporal client carrying the harness plugin.
 
     The plugin is where the shared data converter is DEFINED, so the session-manager worker, the
     web server, and every agent worker can read each other's payloads only because they all add
     it. Its default large-payload storage matches ``create_agent_harness_app``'s, keeping the
-    packaged entrypoints mutually readable out of the box.
+    packaged entrypoints mutually readable out of the box. With ``STREAMS_STORE`` set it also
+    carries the Stream plugin (see :func:`stream_plugins`).
     """
     from temporalio.client import Client
     from temporalio.envconfig import ClientConfig
@@ -63,7 +77,9 @@ async def connect_client() -> "Client":
 
     connect_config = ClientConfig.load_client_connect_config()
     try:
-        return await Client.connect(**connect_config, plugins=[AgentHarnessPlugin()])
+        return await Client.connect(
+            **connect_config, plugins=[AgentHarnessPlugin(), *stream_plugins()]
+        )
     except RuntimeError as exc:
         # "no server running" is the commonest way a first run fails, and the SDK reports it as a
         # dozen frames of tonic/bridge internals. Translate just that failure into the two things
