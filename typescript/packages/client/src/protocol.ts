@@ -75,6 +75,10 @@ export interface AgentEvent {
    */
   timestamp: number;
   /**
+   * The publishing agent's own count of the events it published from workflow code, from 1. `None` for an event that an activity published. A client compares it with `AgentStatus.last_event_seq` to know it has caught up.
+   */
+  seq: number | null;
+  /**
    * The wrapped stream-event payload — a discriminated union over `type` that Temporal's Pydantic converter reconstructs to the concrete payload subtype on read.
    */
   event:
@@ -104,6 +108,7 @@ export interface AgentEvent {
     | SubagentMessageSent
     | SubagentReplyReceived
     | SubagentStreamUnavailable
+    | AttemptSuperseded
     | ReplyDelta
     | ThoughtSummaryDelta
     | TextAnnotationDelta
@@ -157,6 +162,21 @@ export interface AgentStateSnapshot {
   value: {
     [k: string]: unknown | undefined;
   };
+}
+/**
+ * Records of a failed attempt that a consumer must drop.
+ *
+ * An activity that streams half an answer and then fails leaves those records in the Stream.
+ * Its retry calls the model again and writes other words. A Workflow Task that fails after
+ * its Local Activities wrote leaves records too. The store can't remove them, so the reader
+ * tells the consumer which ones they are. The envelope names the agent that wrote them.
+ */
+export interface AttemptSuperseded {
+  type: "attempt_superseded";
+  /**
+   * The Stream offsets of the withdrawn records that this read gave, in order, as decimal strings. They pass 2**53, so a JavaScript number can't hold them.
+   */
+  withdrawn_offsets: string[];
 }
 /**
  * An automatic approval evaluator returned a verdict, closing its bracket.
@@ -838,6 +858,7 @@ export type AgentStreamItem =
   | SubagentMessageSent
   | SubagentReplyReceived
   | SubagentStreamUnavailable
+  | AttemptSuperseded
   | ReplyDelta
   | ThoughtSummaryDelta
   | TextAnnotationDelta

@@ -340,8 +340,8 @@ describe("history arriving over the stream", () => {
 });
 
 /* Frames do not all arrive on one attach. Within a single attach the server's
-   `replay` mark is ordered (it is resume_offset <= head, and resume_offset only
-   advances), but a subagent gets a CONCURRENT attach with its own head, and its
+   `replay` mark is ordered (it covers what existed when the stream opened, and one
+   attach delivers the root stream in order), but a subagent gets a CONCURRENT attach with its own head, and its
    backlog is stamped replay while the root's frames are live. Merged into one
    pipeline the two orderings interleave, so the mode latches at the first live
    frame rather than reading the mark per frame. Proven in

@@ -2,6 +2,7 @@ import {
   SYNTHESIZED,
   type AgentEventType,
   type AgentSseFrame,
+  type EventOffset,
   type FileCitationAnnotation,
   type JsonPatchOp,
   type JsonRecord,
@@ -59,7 +60,7 @@ export interface ReplayLogRow {
   turnId: string;
   messageId?: string;
   evaluationId?: string;
-  eventOffset?: number;
+  eventOffset?: EventOffset;
   timestamp: number;
   // An agent event's own type, or "stream_error" for the client-side frame /api/chat
   // synthesizes — which no agent published, so it is not an AgentEventType.

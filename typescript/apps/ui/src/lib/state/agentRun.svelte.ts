@@ -2,6 +2,8 @@ import type {
   AgentInboundMessage,
   AgentInterfaceFunction,
   AgentSseFrame,
+  AttemptSupersededEvent,
+  ResumePoint,
   ToolId,
   WorkflowExecutionState
 } from "$lib/api/types";
@@ -16,7 +18,7 @@ import type {
   Session
 } from "$lib/api/types";
 import { SYNTHESIZED, isClientSideStreamError } from "$lib/api/types";
-import { HttpAgentApi } from "$lib/api/httpClient";
+import { HttpAgentApi, invalidResumePoint } from "$lib/api/httpClient";
 import { realisticQaScenario } from "$lib/mock/scenarios";
 import { buildUsageTimeline, summarizeCost } from "$lib/cost/pricing";
 import { chooseBootSession } from "./bootSession";
@@ -149,7 +151,7 @@ function yieldToMain(): Promise<void> {
 
 /**
  * The identity #ingestFrame dedupes on. A frame arriving twice is normal — a reconnect replays from
- * a root offset, and the cached frames overlap the live stream — so this has to say "same event"
+ * a root resume point, and the cached frames overlap the live stream — so this has to say "same event"
  * exactly when it is the same event.
  *
  * An event read off a log reports its own offset there, which with the tree-unique `agent_id` is
@@ -174,13 +176,13 @@ export function frameKey(frame: AgentSseFrame): string {
   if (
     "event_offset" in frame.data &&
     "agent_id" in frame.data &&
-    typeof frame.data.event_offset === "number" &&
-    frame.data.event_offset !== SYNTHESIZED
+    (typeof frame.data.event_offset === "string" ||
+      (typeof frame.data.event_offset === "number" && frame.data.event_offset !== SYNTHESIZED))
   ) {
     return `${frame.data.agent_id}|${frame.data.event_offset}`;
   }
   const identityData: Record<string, unknown> = { ...frame.data };
-  delete identityData.resume_offset;
+  delete identityData.resume;
   delete identityData.event_offset;
   return `${frame.event}|${JSON.stringify(identityData)}`;
 }
@@ -251,7 +253,7 @@ export class AgentRunController {
   agents = $state<AgentDescriptor[]>([]);
   sessions = $state<Session[]>([]);
   session = $state<Session | null>(null);
-  lastResumeOffset = $state(0);
+  lastResume = $state<ResumePoint>("");
   #streamVersion = 0;
   #connectionVersion = 0;
   #sendVersion = 0;
@@ -278,12 +280,14 @@ export class AgentRunController {
    */
   #awaitingMessages = new Set<string>();
   #interfaceRequests = new Set<string>();
-  #workflowResumeOffsets = new Map<string, number>();
+  #workflowResume = new Map<string, ResumePoint>();
   #workflowAttachAbort = new Map<string, AbortController>();
   #frameKeys = new Set<string>();
   #frameCacheTimer: number | null = null;
   /** Frames staged but not yet committed. Plain array: writing it must not react. */
   #frameBuffer: AgentSseFrame[] = [];
+  /** A supersession shrank the buffer since the last commit; see #dropSupersededFrames. */
+  #supersededSincePublish = false;
   #flushQueued = false;
   /** Bumped on session change, to strand a flush queued against the old session. */
   #publishGeneration = 0;
@@ -378,7 +382,7 @@ export class AgentRunController {
     if (this.#streamAbort || !session) return;
     if (this.#isWorkflowClosed(session.workflow_id)) return;
     this.connectionError = null;
-    void this.attach(this.lastResumeOffset).catch((error: unknown) => {
+    void this.attach(this.lastResume).catch((error: unknown) => {
       if (!isAbortError(error) && this.session?.workflow_id === session.workflow_id) {
         this.connectionError =
           error instanceof Error ? error.message : "Failed to reconnect.";
@@ -761,9 +765,9 @@ export class AgentRunController {
     this.#applyWorkflowExecutionState(state);
   }
 
-  #resumeOffsetForWorkflow(workflowId: string): number {
-    if (workflowId === this.session?.workflow_id) return this.lastResumeOffset;
-    return this.#workflowResumeOffsets.get(workflowId) ?? 0;
+  #resumeForWorkflow(workflowId: string): ResumePoint {
+    if (workflowId === this.session?.workflow_id) return this.lastResume;
+    return this.#workflowResume.get(workflowId) ?? "";
   }
 
   #messageTargets(): MessageTarget[] {
@@ -911,7 +915,7 @@ export class AgentRunController {
 
       if (!this.#isCurrentConnection(connectionVersion)) return;
       if (this.#isWorkflowClosed(this.session.workflow_id)) return;
-      await this.attach(this.lastResumeOffset);
+      await this.attach(this.lastResume);
     } catch (error) {
       if (this.#isCurrentConnection(connectionVersion) && !isAbortError(error)) {
         this.connectionError =
@@ -1097,7 +1101,7 @@ export class AgentRunController {
       if (this.#isWorkflowClosed(session.workflow_id)) return;
       streaming = true;
       this.#streamInBackground(
-        this.attach(0),
+        this.attach(""),
         connectionVersion,
         "Failed to create agent session."
       );
@@ -1148,7 +1152,7 @@ export class AgentRunController {
       if (this.#isWorkflowClosed(session.workflow_id)) return;
       streaming = true;
       this.#streamInBackground(
-        this.attach(this.lastResumeOffset),
+        this.attach(this.lastResume),
         connectionVersion,
         "Failed to load selected session."
       );
@@ -1192,7 +1196,7 @@ export class AgentRunController {
     return !this.#isWorkflowClosed(workflowId);
   }
 
-  async attach(fromOffset = this.lastResumeOffset): Promise<void> {
+  async attach(resume = this.lastResume): Promise<void> {
     const session = this.session;
     if (!session) return;
 
@@ -1204,13 +1208,13 @@ export class AgentRunController {
     const isCurrentStream = (): boolean =>
       streamVersion === this.#streamVersion &&
       this.session?.workflow_id === session.workflow_id;
-    let offset = Math.max(0, fromOffset);
+    let point = resume;
     let attempt = 0;
     try {
       while (isCurrentStream()) {
         let delivered = false;
         try {
-          for await (const frame of this.#api.attach(session.workflow_id, offset, signal)) {
+          for await (const frame of this.#api.attach(session.workflow_id, point, signal)) {
             if (!isCurrentStream()) break;
             /* An in-band error frame is a fact about the CONNECTION, not about
                the run, so it must not count as the stream having carried
@@ -1228,6 +1232,14 @@ export class AgentRunController {
           }
         } catch (error) {
           if (isAbortError(error) || !isCurrentStream()) break;
+          if (invalidResumePoint(error) && point !== "") {
+            /* The server holds no position for the point, such as after a store
+               switch or the end of retention. Read the session again from the
+               beginning, into an empty view, since the cached frames may be stale. */
+            this.#forgetFrames();
+            point = "";
+            continue;
+          }
           /* Out of retries: surface the transport error the way an un-retried
              attach always did, rather than ending quietly. */
           if (attempt >= reattachBackoffMs.length) throw error;
@@ -1288,11 +1300,11 @@ export class AgentRunController {
         if (!(await this.#streamDroppedMidRun(session.workflow_id))) break;
         await this.#sleepUnlessWoken(reattachBackoffMs[attempt], signal);
         attempt += 1;
-        /* Resume only from an offset the server already proved it holds, by
-           having sent it. An offset past the end answers 200 and then hangs
-           open forever, so inventing one trades a quiet console for a wedged
-           one. */
-        offset = Math.max(offset, this.lastResumeOffset);
+        /* Resume only from a point the server already proved it holds, by
+           having sent it. The point is opaque, so the newest one the stream
+           handed back is the only one to use; nothing here may invent or
+           compare them. */
+        point = this.lastResume || point;
       }
     } catch (error) {
       if (!isAbortError(error)) throw error;
@@ -1364,14 +1376,10 @@ export class AgentRunController {
   }
 
   /**
-   * Ensure a merged stream is live, WITHOUT disturbing one that already is.
+   * Ensure a stream is live, WITHOUT disturbing one that already is.
    *
-   * The second half of the client contract (`stream_merge/README.md`): submit, then
-   * ensure. Re-attaching instead would be actively lossy — the merge starts at the
-   * resume offset with no skip, so a subagent whose turn began earlier is never
-   * re-mounted and the rest of its turn is dropped with no marker. Keeping the open
-   * stream never re-mounts anything, so that loss stays confined to genuine
-   * reconnects.
+   * The second half of the client contract (README.md, "The client contract"): submit,
+   * then ensure. Re-attaching instead costs a new read and a status query for nothing.
    *
    * A stream between attempts in its backoff counts as live — it will re-open by
    * itself — but it is woken so the wait does not add to the round trip.
@@ -1383,7 +1391,7 @@ export class AgentRunController {
       this.#streamWake?.();
       return;
     }
-    void this.attach(this.lastResumeOffset).catch((error: unknown) => {
+    void this.attach(this.lastResume).catch((error: unknown) => {
       if (!isAbortError(error) && this.session?.workflow_id === session.workflow_id) {
         this.connectionError =
           error instanceof Error ? error.message : "Failed to stream messages.";
@@ -1408,13 +1416,13 @@ export class AgentRunController {
        buffer and the buffer only grows, so equal lengths mean nothing new is
        staged, and committing would rebuild every projection to reproduce the
        array already on screen. */
-    if (this.#frameBuffer.length === this.frames.length) return;
+    if (this.#frameBuffer.length === this.frames.length && !this.#supersededSincePublish) return;
     this.#publishFrames();
   }
 
   async #attachWorkflow(
     workflowId: string,
-    fromOffset = this.#resumeOffsetForWorkflow(workflowId)
+    resume = this.#resumeForWorkflow(workflowId)
   ): Promise<void> {
     const session = this.session;
     if (!session || !this.#isKnownWorkflowId(workflowId)) return;
@@ -1425,7 +1433,7 @@ export class AgentRunController {
     try {
       for await (const frame of this.#api.attach(
         workflowId,
-        fromOffset,
+        resume,
         controller.signal
       )) {
         if (
@@ -1564,7 +1572,7 @@ export class AgentRunController {
     }
     void this.#attachWorkflow(
       workflowId,
-      this.#resumeOffsetForWorkflow(workflowId)
+      this.#resumeForWorkflow(workflowId)
     ).catch((error: unknown) => {
       if (!isAbortError(error)) {
         this.connectionError =
@@ -1782,6 +1790,18 @@ export class AgentRunController {
     }, 750);
   }
 
+  /** Drop the view's frames and their cache, for a read that starts over from the beginning. */
+  #forgetFrames(): void {
+    this.frames = [];
+    this.#frameKeys = new Set<string>();
+    this.#frameBuffer = [];
+    this.#supersededSincePublish = false;
+    this.#workflowResume = new Map<string, ResumePoint>();
+    this.lastResume = "";
+    const sessionId = this.session?.workflow_id;
+    if (sessionId) writeCachedFrames(sessionId, []);
+  }
+
   #resetSessionView(): void {
     this.pause();
     this.#stopStream();
@@ -1791,6 +1811,7 @@ export class AgentRunController {
     this.observedSubagents = [];
     this.#frameKeys = new Set<string>();
     this.#frameBuffer = [];
+    this.#supersededSincePublish = false;
     /* Strand any flush already queued: it would republish the old session's
        buffer over the new session's empty one. */
     this.#publishGeneration += 1;
@@ -1801,10 +1822,10 @@ export class AgentRunController {
     this.#catchingUp = false;
     this.#liveFrameSeen = false;
     this.#sinceCatchUpPublish = 0;
-    this.#workflowResumeOffsets = new Map<string, number>();
+    this.#workflowResume = new Map<string, ResumePoint>();
     this.viewIndex = 0;
     this.following = true;
-    this.lastResumeOffset = 0;
+    this.lastResume = "";
   }
 
   /**
@@ -1832,29 +1853,16 @@ export class AgentRunController {
       this.#publisherWorkflowId(frame) ?? options.sourceWorkflowId;
     const isRootFrame = publisherWorkflowId === this.session?.workflow_id;
 
+    if (frame.event === "attempt_superseded") this.#dropSupersededFrames(frame.data);
     this.#frameBuffer.push(frame);
 
-    if (
-      "resume_offset" in frame.data &&
-      typeof frame.data.resume_offset === "number"
-    ) {
-      const resumeOffsetOwner =
+    if ("resume" in frame.data && typeof frame.data.resume === "string") {
+      // The point is opaque, so the newest one on a stream wins. It is already
+      // monotonic along that stream, and nothing here may compare two of them.
+      const resumeOwner =
         options.sourceWorkflowId ?? (isRootFrame ? publisherWorkflowId : undefined);
-      if (resumeOffsetOwner) {
-        this.#workflowResumeOffsets.set(
-          resumeOffsetOwner,
-          Math.max(
-            this.#workflowResumeOffsets.get(resumeOffsetOwner) ?? 0,
-            frame.data.resume_offset
-          )
-        );
-      }
-      if (isRootFrame) {
-        this.lastResumeOffset = Math.max(
-          this.lastResumeOffset,
-          frame.data.resume_offset
-        );
-      }
+      if (resumeOwner) this.#workflowResume.set(resumeOwner, frame.data.resume);
+      if (isRootFrame) this.lastResume = frame.data.resume;
     }
     // Our own message's terminal is what clears `sending` — not the stream going idle. With a
     // shared turn those are different moments, and only this one is about the message we sent.
@@ -1877,6 +1885,28 @@ export class AgentRunController {
   }
 
   /**
+   * Retire what a failed attempt already staged: exactly the frames the marker lists.
+   *
+   * A Stream withdraws one attempt's records, so the other events of the turn stay. The
+   * buffer shrinks here, which breaks the "equal lengths mean nothing new" shortcut the
+   * publish paths take, so the next publish is forced.
+   */
+  #dropSupersededFrames(marker: AttemptSupersededEvent): void {
+    const withdrawn = new Set(marker.withdrawn_offsets);
+    const kept = this.#frameBuffer.filter((frame) => {
+      if (!("type" in frame.data)) return true;
+      if (frame.data.agent_id !== marker.agent_id) return true;
+      const offset = frame.data.event_offset;
+      if (typeof offset !== "string" || !withdrawn.has(offset)) return true;
+      this.#frameKeys.delete(frameKey(frame));
+      return false;
+    });
+    if (kept.length === this.#frameBuffer.length) return;
+    this.#frameBuffer = kept;
+    this.#supersededSincePublish = true;
+  }
+
+  /**
    * Commit everything staged so far, in one reactive write.
    *
    * A commit is O(frames) and stays that way — batching bounded how MANY commits
@@ -1891,8 +1921,12 @@ export class AgentRunController {
    */
   #publishFrames(): void {
     this.#clearCatchUpFlush();
+    this.#supersededSincePublish = false;
     this.frames = this.#frameBuffer.slice();
-    this.viewIndex = cursorAfterPublish(this.following, this.viewIndex, this.total);
+    this.viewIndex = Math.min(
+      cursorAfterPublish(this.following, this.viewIndex, this.total),
+      this.total
+    );
   }
 
   #clearCatchUpFlush(): void {
@@ -1919,7 +1953,7 @@ export class AgentRunController {
     if (this.#catchUpFlushTimer != null || typeof window === "undefined") return;
     /* Nothing staged means nothing to show; committing anyway would re-run every
        projection to produce the array that is already there. */
-    if (this.#frameBuffer.length === this.frames.length) return;
+    if (this.#frameBuffer.length === this.frames.length && !this.#supersededSincePublish) return;
     const generation = this.#publishGeneration;
     const delay = Math.max(0, catchUpCeilingMs - (now() - this.#catchUpStartedAt));
     this.#catchUpFlushTimer = window.setTimeout(() => {
