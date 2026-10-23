@@ -53,6 +53,8 @@ def _streams_lane() -> None:
 
     from temporal_agent_harness.harness.contrib_stream import streams_from_env
 
+    # Read once, since a test of the web app's CLI sets TEMPORAL_ADDRESS for its own process.
+    address = os.environ.get("TEMPORAL_ADDRESS")
     for name in ("start_local", "start_time_skipping"):
         start = getattr(WorkflowEnvironment, name).__func__
 
@@ -62,7 +64,6 @@ def _streams_lane() -> None:
                 cls: type[WorkflowEnvironment], *args: Any, **kwargs: Any
             ) -> WorkflowEnvironment:
                 kwargs["plugins"] = [*kwargs.get("plugins", ()), streams_from_env()]
-                address = os.environ.get("TEMPORAL_ADDRESS")
                 if name == "start_time_skipping" and address:
                     kwargs.pop("test_server_existing_path", None)
                     client = await Client.connect(address, **kwargs)
