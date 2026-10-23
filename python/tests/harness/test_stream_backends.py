@@ -13,12 +13,18 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from temporalio import workflow
-from temporalio.client import Client, WorkflowHistory, WorkflowUpdateFailedError
+from temporalio.client import (
+    Client,
+    WorkflowExecutionStatus,
+    WorkflowHistory,
+    WorkflowUpdateFailedError,
+)
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.exceptions import ActivityError
@@ -438,12 +444,8 @@ async def test_resuming_at_a_marker_keeps_the_record_it_shares_an_offset_with(
     )
     after_marker = await read(marker.cursor, deltas=1)
     # The rewritten record has the marker's offset, so a resume at the marker still gets it,
-    # after the marker again.
-    assert [item.event.event.type for item in after_marker][:2] == [
-        AgentEventType.ATTEMPT_SUPERSEDED,
-        AgentEventType.REPLY_DELTA,
-    ]
-    assert after_marker[0].event == marker.event
+    # and not the marker again.
+    assert [item.event.event.type for item in after_marker][:1] == [AgentEventType.REPLY_DELTA]
 
 
 @needs_a_stream
@@ -543,8 +545,6 @@ async def test_a_nexus_poll_gives_the_last_batch_before_it_says_closed(client_an
 
 @needs_a_stream
 async def test_a_later_nexus_poll_withdraws_what_an_earlier_one_gave(client_and_queue):
-    from types import SimpleNamespace
-
     from temporal_agent_harness.harness.contrib_stream import read_turn_events
     from temporal_agent_harness.nexus_agent_adapter.generated import SendAgentMessageInput
 
@@ -589,6 +589,31 @@ async def test_a_later_nexus_poll_withdraws_what_an_earlier_one_gave(client_and_
 
 
 @needs_a_stream
+async def test_the_nexus_poll_after_a_marker_does_not_give_it_again(client_and_queue, monkeypatch):
+    from temporal_agent_harness.nexus_agent_adapter import handler as nexus_handler
+
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    await client.get_workflow_handle(agent_client.workflow_id).execute_update(
+        BackendParent.fail_task_once, f"retried-{uuid.uuid4()}"
+    )
+    handler = _nexus_handler(client, task_queue)
+
+    def kinds(out: Any) -> list[AgentEventType]:
+        return [_payload_converter_event(item.data).event.type for item in out.items]
+
+    everything = kinds(await _poll(handler, agent_client.workflow_id, None))
+    # End the first batch at the marker.
+    marker = everything.index(AgentEventType.ATTEMPT_SUPERSEDED)
+    monkeypatch.setattr(nexus_handler, "_STREAM_POLL_BATCH_LIMIT", marker + 1)
+    first = await _poll(handler, agent_client.workflow_id, None)
+    then = await _poll(handler, agent_client.workflow_id, first.next_cursor)
+
+    assert kinds(first)[-1] == AgentEventType.ATTEMPT_SUPERSEDED
+    assert AgentEventType.ATTEMPT_SUPERSEDED not in kinds(then)
+
+
+@needs_a_stream
 async def test_a_nexus_poll_of_a_terminated_agent_says_closed(client_and_queue):
     client, task_queue = client_and_queue
     agent_client = await _start(client, task_queue)
@@ -603,8 +628,6 @@ async def test_a_nexus_poll_of_a_terminated_agent_says_closed(client_and_queue):
 
 @needs_a_stream
 async def test_a_nexus_send_gives_the_cursor_where_its_turn_starts(client_and_queue):
-    from types import SimpleNamespace
-
     from temporal_agent_harness.nexus_agent_adapter.generated import SendAgentMessageInput
 
     client, task_queue = client_and_queue
@@ -713,6 +736,34 @@ class _FailingDescribe:
 
     async def describe(self) -> Any:
         raise RPCError("describe failed", self._status, b"")
+
+
+class _UnansweredQuery:
+    """A client whose status query fails, of a workflow that has ``status``."""
+
+    def __init__(self, status: WorkflowExecutionStatus) -> None:
+        self._status = status
+
+    def get_workflow_handle(self, workflow_id: str) -> Any:
+        return self
+
+    async def query(self, *args: Any, **kwargs: Any) -> Any:
+        raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
+
+    async def describe(self) -> Any:
+        return SimpleNamespace(status=self._status)
+
+
+async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_goes_to_workflow_streams():
+    from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
+
+    poll = PollMessagesInput(session_id="wf", cursor=0, timeout_seconds=1.0)
+    closed = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.COMPLETED), "q")
+    running = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.RUNNING), "q")
+
+    assert await closed._stream_place("wf", poll) is None
+    with pytest.raises(RPCError):
+        await running._stream_place("wf", poll)
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():

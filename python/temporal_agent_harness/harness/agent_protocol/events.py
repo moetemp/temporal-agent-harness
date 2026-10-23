@@ -987,8 +987,8 @@ class AttemptSuperseded(StreamEvent[Literal[AgentEventType.ATTEMPT_SUPERSEDED]])
     type: Literal[AgentEventType.ATTEMPT_SUPERSEDED] = AgentEventType.ATTEMPT_SUPERSEDED
     withdrawn_offsets: list[str] = Field(
         description="The Stream offsets of the withdrawn records, in order, as decimal strings. "
-        "A read that resumes from a cursor also lists the ones an earlier read gave. They pass "
-        "2**53, so a JavaScript number can't keep them exact."
+        "A read that resumes from a cursor also lists the ones that an earlier read gave in the "
+        "same turn. They pass 2**53, so a JavaScript number can't keep them exact."
     )
 
 

@@ -385,7 +385,7 @@
           "type": "string"
         },
         "withdrawn_offsets": {
-          "description": "The Stream offsets of the withdrawn records, in order, as decimal strings. A read that resumes from a cursor also lists the ones an earlier read gave. They pass 2**53, so a JavaScript number can't keep them exact.",
+          "description": "The Stream offsets of the withdrawn records, in order, as decimal strings. A read that resumes from a cursor also lists the ones that an earlier read gave in the same turn. They pass 2**53, so a JavaScript number can't keep them exact.",
           "items": {
             "type": "string"
           },

@@ -174,7 +174,7 @@ export interface AgentStateSnapshot {
 export interface AttemptSuperseded {
   type: "attempt_superseded";
   /**
-   * The Stream offsets of the withdrawn records, in order, as decimal strings. A read that resumes from a cursor also lists the ones an earlier read gave. They pass 2**53, so a JavaScript number can't keep them exact.
+   * The Stream offsets of the withdrawn records, in order, as decimal strings. A read that resumes from a cursor also lists the ones that an earlier read gave in the same turn. They pass 2**53, so a JavaScript number can't keep them exact.
    */
   withdrawn_offsets: string[];
 }

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from typing import Any
 from pydantic import TypeAdapter
 from temporalio import workflow
 from temporalio.client import Client, WorkflowExecutionStatus
+from temporalio.common import RawValue
 from temporalio.service import RPCError, RPCStatusCode
 
 try:
@@ -54,6 +56,7 @@ except ModuleNotFoundError as exc:
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentEvent,
+    AgentEventType,
     AgentStream,
     AttemptSuperseded,
     subagent_topic,
@@ -282,17 +285,50 @@ def parse_cursor(cursor: str) -> int | None:
     """The offset in a cursor, or ``None`` for the beginning.
 
     A cursor is the offset to read from next, in decimal. Offsets are above zero, so zero is the
-    beginning too.
+    beginning too. A cursor that a read gives can say more after the offset (``_Position``).
     """
+    return _position(cursor).offset
+
+
+# ``<offset>``, then ``.s`` when the ``Superseded`` item at the offset was given, then
+# ``.t<offset>`` with where the read agent's turn started.
+_CURSOR = re.compile(r"(\d+)(\.s)?(?:\.t(\d+))?", re.ASCII)
+
+
+@dataclass(frozen=True)
+class _Position:
+    """Where a read resumes, and what it needs to know of the reads before it."""
+
+    offset: int | None
+    # A ``Superseded`` item and the first record of its batch share an offset, so a read that
+    # resumes past the item skips it at ``offset``.
+    past_superseded: bool = False
+    # The offset of the read agent's newest ``turn_started``. A retry withdraws records of
+    # its own turn only, so a later read looks back no further.
+    turn_start: int | None = None
+
+    def encode(self) -> str:
+        if self.offset is None:
+            return ""
+        cursor = str(self.offset)
+        if self.past_superseded:
+            cursor += ".s"
+        if self.turn_start is not None:
+            cursor += f".t{self.turn_start}"
+        return cursor
+
+
+def _position(cursor: str) -> _Position:
     if not cursor:
-        return None
-    try:
-        offset = int(cursor)
-    except ValueError:
-        raise TurnCursorError(f"not a turn cursor: {cursor!r}") from None
-    if offset < 0:
+        return _Position(None)
+    parsed = _CURSOR.fullmatch(cursor)
+    if parsed is None:
         raise TurnCursorError(f"not a turn cursor: {cursor!r}")
-    return offset or None
+    offset = int(parsed[1])
+    turn_start = int(parsed[3]) if parsed[3] is not None else None
+    if turn_start is not None and turn_start > offset:
+        raise TurnCursorError(f"not a turn cursor: {cursor!r}")
+    return _Position(offset or None, parsed[2] is not None, turn_start)
 
 
 def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEvents]:
@@ -345,11 +381,10 @@ async def read_turn_events(
     ``place`` is the agent's, from its status or a send's reply. With ``subtree``, the events
     of every subagent below the agent come too, in the one order of the shared Stream.
 
-    A ``Superseded`` item that withdraws records this read or an earlier one gave comes out
-    as an ``AttemptSuperseded`` event with their offsets. A read that starts at such a
-    marker's cursor gives the marker again, with the same offsets. The read ends at the
-    Stream's close, and when ``workflow_id`` or the Stream's owner no longer runs, since a
-    terminated run closes nothing on Redis or memory. A malformed cursor raises
+    A ``Superseded`` item that withdraws records this read gave, or that an earlier read gave
+    in the same turn, comes out as an ``AttemptSuperseded`` event with their offsets. The read
+    ends at the Stream's close, and when ``workflow_id`` or the Stream's owner no longer runs,
+    since a terminated run closes nothing on Redis or memory. A malformed cursor raises
     ``TurnCursorError``.
     """
     reading = _Read(client, place, after=after, subtree=subtree)
@@ -397,14 +432,22 @@ class _Read:
     """One read of an agent's Topic, and what it gave, so a marker can tell what it withdraws."""
 
     def __init__(self, client: Client, place: AgentStream, *, after: str, subtree: bool) -> None:
-        self.start = parse_cursor(after)
+        position = _position(after)
+        self.start = position.offset
         self._place = place
         self._stream = _client_stream(client, place)
         self._topic = self._stream.topic(place.topic, type=AgentEvent)
         self._prefixes = [subtree_prefix(place.topic)] if subtree else []
+        self._converter = client.data_converter.payload_converter
         self._shown: dict[str, _Shown] = {}
-        # What earlier reads gave before ``start``, read at the first ``Superseded`` item.
+        self._turn_start = position.turn_start
+        # The offset of the newest ``Superseded`` item given, by this read or the one before.
+        self._given = self.start if position.past_superseded else None
+        # The items at ``start`` that the read before this one gave.
+        self._skipped: list[Superseded] = []
+        # What the reads before this one gave of the turn, read at the first ``Superseded``.
         self._before: dict[str, _Shown] | None = None
+        self._before_from = position.turn_start
 
     def subscribe(self, start: int | None, **options: Any) -> Subscription[AgentEvent]:
         return self._stream.subscribe(
@@ -413,28 +456,36 @@ class _Read:
 
     async def take(self, item: Any, next_offset: int | None) -> TurnItem | None:
         """The ``TurnItem`` for one item of the read, or ``None`` for an item to skip."""
-        cursor = str(next_offset or "")
         if isinstance(item, Record):
-            shown = self._note(self._shown, item)
-            return TurnItem(
-                event=shown.event, offset=str(item.offset), cursor=cursor, own=shown.own
-            )
+            event = self._event(item)
+            own = item.topic == self._place.topic
+            _note(self._shown, item, own, event)
+            if own and event.event.type == AgentEventType.TURN_STARTED:
+                self._turn_start = item.offset
+            cursor = _Position(next_offset or None, False, self._turn_start).encode()
+            return TurnItem(event=event, offset=str(item.offset), cursor=cursor, own=own)
         if isinstance(item, Superseded):
+            if item.offset == self._given:
+                if item.offset == self.start and self._before is None:
+                    self._skipped.append(item)
+                return None
+            self._given = item.offset
             marked = await self._marker(item)
             if marked is not None:
                 marker, own = marked
+                cursor = _Position(next_offset or None, True, self._turn_start).encode()
                 return TurnItem(event=marker, offset=str(item.offset), cursor=cursor, own=own)
         return None
 
-    def _note(self, shown: dict[str, _Shown], record: Record[Any]) -> _Shown:
-        entry = _Shown(record, _event(record), record.topic == self._place.topic, [])
-        if record.producer is not None:
-            key = repr(record.producer)
-            if key in shown:
-                entry.offsets = shown[key].offsets
-            entry.offsets.append(record.offset)
-            shown[key] = entry
-        return entry
+    def _event(self, record: Record[Any]) -> AgentEvent:
+        data = record.data
+        if isinstance(data, RawValue):
+            [data] = self._converter.from_payloads([data.payload], [AgentEvent])
+        if not isinstance(data, AgentEvent):
+            # A Topic that a prefix matched is made at run time, so the read has no type for it
+            # and gives the plain JSON.
+            data = AgentEvent.model_validate(data)
+        return data
 
     async def _marker(self, item: Superseded) -> tuple[AgentEvent, bool] | None:
         """The marker for one ``Superseded`` item and whether it is the read agent's.
@@ -443,16 +494,16 @@ class _Read:
         Workflow Task retry that wrote no record.
         """
         offsets, newest = _withdraw(item, self._shown)
-        if self.start is not None:
-            # A reader of this Topic got the records before ``start`` from an earlier read.
+        if self.start is not None and self._before_from is not None:
+            # A reader of this Topic got the turn's records before ``start`` from earlier reads.
             if self._before is None:
-                self._before = await self._read_before(self.start)
+                self._before = await self._read_before(self._before_from, self.start)
             earlier, writer = _withdraw(item, self._before)
             offsets += earlier
             newest = newest or writer
         if not offsets or newest is None:
             return None
-        writer = newest.event
+        writer = newest.event or self._event(newest.record)
         marker = AgentEvent(
             agent_id=writer.agent_id,
             turn_id=writer.turn_id,
@@ -462,23 +513,26 @@ class _Read:
         )
         return marker, newest.own
 
-    async def _read_before(self, start: int) -> dict[str, _Shown]:
-        """The records before ``start`` that no ``Superseded`` item withdrew there.
+    async def _read_before(self, turn_start: int, start: int) -> dict[str, _Shown]:
+        """The records of the turn before ``start`` that no ``Superseded`` item withdrew.
 
-        It reads the Topic again, which costs a read only when an attempt superseded another.
+        It costs a read only when an attempt superseded another. The records of a Topic that
+        a prefix matched stay encoded, and only the one that stamps a marker is decoded.
         """
         shown: dict[str, _Shown] = {}
-        earlier = self.subscribe(None, wait_new_records=False)
+        earlier = self.subscribe(turn_start, wait_new_records=False, type=RawValue)
         try:
             async for old in earlier:
                 if old.offset >= start:
                     break
                 if isinstance(old, Record):
-                    self._note(shown, old)
+                    _note(shown, old, old.topic == self._place.topic, None)
                 elif isinstance(old, Superseded):
                     _withdraw(old, shown)
         finally:
             await earlier.aclose()
+        for given in self._skipped:
+            _withdraw(given, shown)
         return shown
 
 
@@ -487,11 +541,22 @@ class _Shown:
     """The records of one Producer that a read gave. ``Superseded.withdraws`` looks at the
     Producer only, so they are withdrawn together."""
 
-    # The newest of them, with its event and whether it is the read agent's own.
+    # The newest of them, whether it is the read agent's own, and its event once decoded.
     record: Record[Any]
-    event: AgentEvent
     own: bool
+    event: AgentEvent | None
     offsets: list[int]
+
+
+def _note(
+    shown: dict[str, _Shown], record: Record[Any], own: bool, event: AgentEvent | None
+) -> None:
+    if record.producer is None:
+        return
+    key = repr(record.producer)
+    offsets = shown[key].offsets if key in shown else []
+    offsets.append(record.offset)
+    shown[key] = _Shown(record, own, event, offsets)
 
 
 def _withdraw(item: Superseded, shown: dict[str, _Shown]) -> tuple[list[int], _Shown | None]:
@@ -506,15 +571,6 @@ def _withdraw(item: Superseded, shown: dict[str, _Shown]) -> tuple[list[int], _S
             if newest is None or entry.record.offset > newest.record.offset:
                 newest = entry
     return offsets, newest
-
-
-def _event(record: Record[Any]) -> AgentEvent:
-    data = record.data
-    if not isinstance(data, AgentEvent):
-        # A Topic that a prefix matched is made at run time, so the read has no type for it
-        # and gives the plain JSON.
-        data = AgentEvent.model_validate(data)
-    return data
 
 
 async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str | None]) -> bool:

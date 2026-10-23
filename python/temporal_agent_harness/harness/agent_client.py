@@ -773,7 +773,8 @@ class AgentClient:
             return head <= int(cursor)
         from temporal_agent_harness.harness import contrib_stream
 
-        return await contrib_stream.next_offset(self._temporal, place) <= int(cursor)
+        offset = contrib_stream.parse_cursor(cursor) or 0
+        return await contrib_stream.next_offset(self._temporal, place) <= offset
 
     async def _check_cursor(self, place: AgentStream | None, cursor: str) -> None:
         """Raise ``TurnCursorError`` if ``cursor`` is not a position on the agent's stream."""

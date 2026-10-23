@@ -393,8 +393,9 @@ class AgentServiceHandler:
         try:
             status = await AgentClient(self._client, workflow_id).get_status()
         except RPCError as e:
-            # The Workflow Streams path answers for a workflow that is gone.
-            if e.status == RPCStatusCode.NOT_FOUND:
+            # The Workflow Streams path answers for a workflow that is gone or closed. A closed
+            # one can fail the query, such as when no worker runs its code any more.
+            if e.status == RPCStatusCode.NOT_FOUND or not await self._running(workflow_id):
                 return None
             raise
         return status.stream
