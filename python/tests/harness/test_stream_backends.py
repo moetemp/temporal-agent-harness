@@ -511,7 +511,9 @@ async def test_attach_at_the_head_of_an_idle_agent_gives_nothing(client_and_queu
 
 def _nexus_handler(client: Client, task_queue: str) -> Any:
     # The Bazel build leaves the Nexus adapter out.
-    handler = pytest.importorskip("temporal_agent_harness.nexus_agent_adapter.handler")
+    handler = pytest.importorskip(
+        "temporal_agent_harness.nexus_agent_adapter.handler", exc_type=ModuleNotFoundError
+    )
     return handler.AgentServiceHandler(
         client,
         handler.Config(
@@ -758,19 +760,45 @@ class _UnansweredQuery:
         raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
 
     async def describe(self) -> Any:
-        return SimpleNamespace(status=self._status)
+        info = SimpleNamespace(first_run_id="run1")
+        return SimpleNamespace(
+            status=self._status, raw_description=SimpleNamespace(workflow_execution_info=info)
+        )
 
 
-async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_goes_to_workflow_streams():
+async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_backend():
     closed = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.COMPLETED), "q")
     running = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.RUNNING), "q")
     from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
 
-    poll = PollMessagesInput(session_id="wf", cursor=0, timeout_seconds=1.0)
+    def poll(stream_cursor: str | None) -> Any:
+        return PollMessagesInput(
+            session_id="wf", cursor=0, timeout_seconds=1.0, stream_cursor=stream_cursor
+        )
 
-    assert await closed._stream_place("wf", poll) is None
+    assert await closed._stream_place("wf", poll(None)) is None
     with pytest.raises(RPCError):
-        await running._stream_place("wf", poll)
+        await running._stream_place("wf", poll(None))
+    pytest.importorskip("temporalio.contrib.streams")
+    from temporal_agent_harness.harness.contrib_stream import root_place
+
+    assert await closed._stream_place("wf", poll("5")) == root_place("wf", "run1")
+
+
+@needs_a_stream
+async def test_the_place_found_without_a_query_is_the_one_the_agent_reports(client_and_queue):
+    from temporal_agent_harness.harness.contrib_stream import root_place
+
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    status = await agent_client.get_status()
+    description = await client.get_workflow_handle(agent_client.workflow_id).describe()
+
+    first_run_id = description.raw_description.workflow_execution_info.first_run_id
+    place = root_place(agent_client.workflow_id, first_run_id)
+    assert status.stream is not None and place.topic == status.stream.topic
+    # Without the backend's name, the reader takes its client's default one.
+    assert place.handle == {k: v for k, v in status.stream.handle.items() if k != "backend"}
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():

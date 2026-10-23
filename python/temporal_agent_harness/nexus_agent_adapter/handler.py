@@ -393,12 +393,35 @@ class AgentServiceHandler:
         try:
             status = await AgentClient(self._client, workflow_id).get_status()
         except RPCError as e:
-            # The Workflow Streams path answers for a workflow that is gone or closed. A closed
-            # one can fail the query, such as when no worker runs its code any more.
-            if e.status == RPCStatusCode.NOT_FOUND or not await self._running(workflow_id):
+            # The Workflow Streams path answers for a workflow that is gone.
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return None
+            return await self._closed_place(workflow_id, input, e)
+        return status.stream
+
+    async def _closed_place(
+        self, workflow_id: str, input: PollMessagesInput, error: RPCError
+    ) -> AgentStream | None:
+        """The place of an agent whose status query failed, which a closed one can do when no
+        worker runs its code any more. ``error`` is raised for a running one.
+
+        A caller with a stream cursor reads a Stream, and its tail is still there. Any other
+        caller goes to the Workflow Streams path, which answers for a closed workflow.
+        """
+        try:
+            description = await self._client.get_workflow_handle(workflow_id).describe()
+        except RPCError as e:
+            if e.status == RPCStatusCode.NOT_FOUND:
                 return None
             raise
-        return status.stream
+        if description.status == WorkflowExecutionStatus.RUNNING:
+            raise error
+        if not input.stream_cursor:
+            return None
+        from temporal_agent_harness.harness import contrib_stream
+
+        info = description.raw_description.workflow_execution_info
+        return contrib_stream.root_place(workflow_id, info.first_run_id)
 
     async def _poll_stream(
         self, workflow_id: str, place: AgentStream, input: PollMessagesInput

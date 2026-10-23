@@ -45,6 +45,7 @@ try:
         Superseded,
         WorkflowStream,
     )
+    from temporalio.contrib.streams._ids import scoped_stream_id
     from temporalio.contrib.streams.workflow import create_stream_nowait
 except ModuleNotFoundError as exc:
     raise RuntimeError(
@@ -84,7 +85,10 @@ _NO_PLUGIN = (
 )
 
 
-@streams.defn(name="agent_events")
+_STREAM_NAME = "agent_events"
+
+
+@streams.defn(name=_STREAM_NAME)
 class AgentEvents:
     """The Stream an agent tree publishes on. The root agent creates it, and its subagents
     write it too.
@@ -238,6 +242,23 @@ def open_place(place: AgentStream) -> ContribSink:
     return ContribSink(stream, place)
 
 
+def root_place(workflow_id: str, first_run_id: str) -> AgentStream:
+    """The place of the root agent ``workflow_id``, found without asking the agent.
+
+    A root's Stream id comes from its workflow id and its first run, as the SDK makes the id
+    of a Stream that a run chain owns. Only the agent's status gives its backend, so this is
+    the client's default one.
+    """
+    stream = WorkflowStream(
+        id=scoped_stream_id(workflow_id, first_run_id, _STREAM_NAME),
+        workflow_id=workflow_id,
+        first_execution_run_id=first_run_id,
+        backend=None,
+        definition=AgentEvents,
+    )
+    return AgentStream(handle=_handle_json(stream), topic=TURN_EVENTS_TOPIC)
+
+
 def _handle_json(stream: Any) -> dict[str, str]:
     return TypeAdapter(WorkflowStream[AgentEvents]).dump_python(stream, mode="json")
 
@@ -292,7 +313,7 @@ def parse_cursor(cursor: str) -> int | None:
 
 
 # ``<offset>``, then ``.s`` when the ``Superseded`` item at the offset was given, then
-# ``.t<offset>`` with where the read agent's turn started.
+# ``.t<offset>`` with where the oldest open turn started.
 _CURSOR = re.compile(r"(\d+)(\.s)?(?:\.t(\d+))?", re.ASCII)
 
 
@@ -304,8 +325,8 @@ class _Position:
     # A ``Superseded`` item and the first record of its batch share an offset, so a read that
     # resumes past the item skips it at ``offset``.
     past_superseded: bool = False
-    # The offset of the read agent's newest ``turn_started``. A retry withdraws records of
-    # its own turn only, so a later read looks back no further.
+    # The first offset of the oldest turn still open. A retry withdraws records of its own
+    # turn only, so a later read looks back no further.
     turn_start: int | None = None
 
     def encode(self) -> str:
@@ -441,7 +462,11 @@ class _Read:
         self._prefixes = [subtree_prefix(place.topic)] if subtree else []
         self._converter = client.data_converter.payload_converter
         self._shown: dict[str, _Shown] = {}
+        # Where the oldest open turn started, for the cursors this read gives. ``_open`` has the
+        # turns this read saw start, by agent, and ``_carried`` the ones open before it.
         self._turn_start = position.turn_start
+        self._open: dict[str, int] = {}
+        self._carried = position.turn_start
         # The offset of the newest ``Superseded`` item given, by this read or the one before.
         self._given = self.start if position.past_superseded else None
         # The items at ``start`` that the read before this one gave.
@@ -461,8 +486,7 @@ class _Read:
             event = self._event(item)
             own = item.topic == self._place.topic
             _note(self._shown, item, own, event)
-            if own and event.event.type == AgentEventType.TURN_STARTED:
-                self._turn_start = item.offset
+            self._track_turns(item, event, own)
             cursor = _Position(next_offset or None, False, self._turn_start).encode()
             return TurnItem(event=event, offset=str(item.offset), cursor=cursor, own=own)
         if isinstance(item, Superseded):
@@ -477,6 +501,25 @@ class _Read:
                 cursor = _Position(next_offset or None, True, self._turn_start).encode()
                 return TurnItem(event=marker, offset="", cursor=cursor, own=own)
         return None
+
+    def _track_turns(self, record: Record[Any], event: AgentEvent, own: bool) -> None:
+        """Move ``_turn_start`` to the first record of the oldest turn that is still open."""
+        kind = event.event.type
+        if kind == AgentEventType.TURN_STARTED:
+            # The Workflow Task that wrote ``turn_started`` can have written the end of the turn
+            # before it, which its retry withdraws too.
+            key = repr(record.producer)
+            first = min(self._shown[key].offsets) if key in self._shown else record.offset
+            self._open[event.agent_id] = first
+        elif kind == AgentEventType.TURN_END:
+            self._open.pop(event.agent_id, None)
+            if own:
+                # A subagent's turn comes inside its root's, so the turns that were open before
+                # this read are over too.
+                self._carried = None
+        starts = [*self._open.values(), *([self._carried] if self._carried is not None else [])]
+        if starts:
+            self._turn_start = min(starts)
 
     def _event(self, record: Record[Any]) -> AgentEvent:
         data = record.data
