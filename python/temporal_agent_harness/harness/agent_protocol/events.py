@@ -35,6 +35,22 @@ from temporal_agent_harness.harness.agent_protocol.agent_interface import (
 TURN_EVENTS_TOPIC = "turn_events"
 
 
+def subagent_topic(agent_id: str) -> str:
+    """The Topic of the subagent ``agent_id`` on its root's Stream (``temporalio.contrib.streams``).
+
+    A subagent's id is its parent's id plus one segment. So the Topics of an agent's subtree are
+    its own Topic and the Topics that start with ``subtree_prefix`` of it.
+    """
+    return f"{TURN_EVENTS_TOPIC}/{agent_id}"
+
+
+def subtree_prefix(topic: str) -> str:
+    """The prefix of the Topics of every subagent below the agent that publishes on ``topic``."""
+    if topic == TURN_EVENTS_TOPIC:
+        return f"{TURN_EVENTS_TOPIC}/"
+    return f"{topic}-"
+
+
 class AgentEventType(StrEnum):
     """Every kind of event the agent publishes on the ``turn_events`` topic.
 
@@ -318,6 +334,13 @@ class AgentEventType(StrEnum):
     missing. The merge does NOT retry — recovery is a fresh ``attach`` (a full page refresh in a
     UI). A drill-in UI keys off the carried ``subagent_id`` to mark that subagent's view degraded.
     See :class:`SubagentStreamUnavailable`."""
+
+    ATTEMPT_SUPERSEDED = "attempt_superseded"
+    """A failed attempt's records are withdrawn, so a consumer drops the ones it rendered.
+
+    Never published by a workflow. The ``temporalio.contrib.streams`` reader synthesizes it for a
+    ``Superseded`` item that withdraws records the read gave. Workflow Streams never gives one.
+    See :class:`AttemptSuperseded`."""
 
     REPLY_DELTA = "reply_delta"
     """An incremental text chunk (word/token) of the agent's reply. See
@@ -952,6 +975,22 @@ class SubagentStreamUnavailable(StreamEvent[Literal[AgentEventType.SUBAGENT_STRE
     )
 
 
+class AttemptSuperseded(StreamEvent[Literal[AgentEventType.ATTEMPT_SUPERSEDED]]):
+    """Records of a failed attempt that a consumer must drop.
+
+    An activity that streams half an answer and then fails leaves those records in the Stream.
+    Its retry calls the model again and writes other words. A Workflow Task that fails after
+    its Local Activities wrote leaves records too. The store can't remove them, so the reader
+    tells the consumer which ones they are. The envelope names the agent that wrote them.
+    """
+
+    type: Literal[AgentEventType.ATTEMPT_SUPERSEDED] = AgentEventType.ATTEMPT_SUPERSEDED
+    withdrawn_offsets: list[str] = Field(
+        description="The Stream offsets of the withdrawn records that this read gave, in "
+        "order, as decimal strings. They pass 2**53, so a JavaScript number can't hold them."
+    )
+
+
 class ReplyDelta(StreamEvent[Literal[AgentEventType.REPLY_DELTA]]):
     """An incremental text chunk of the agent's reply."""
 
@@ -1092,6 +1131,7 @@ AgentStreamItem = Annotated[
     | SubagentMessageSent
     | SubagentReplyReceived
     | SubagentStreamUnavailable
+    | AttemptSuperseded
     | ReplyDelta
     | ThoughtSummaryDelta
     | TextAnnotationDelta
@@ -1151,6 +1191,12 @@ class AgentEvent(BaseModel):
     )
     timestamp: float = Field(
         description="When the harness published this envelope (epoch seconds)."
+    )
+    seq: int | None = Field(
+        default=None,
+        description="The publishing agent's own count of the events it published from workflow "
+        "code, from 1. ``None`` for an event that an activity published. A client compares it "
+        "with ``AgentStatus.last_event_seq`` to know it has caught up.",
     )
     event: AgentStreamItem = Field(
         description="The wrapped stream-event payload — a discriminated union over ``type`` that "
