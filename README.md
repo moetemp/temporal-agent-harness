@@ -549,8 +549,8 @@ client = await Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_e
 `streams_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL` and
 `STREAMS_KEY_PREFIX`. The web app and the Nexus adapter add the same plugin when `STREAMS_STORE`
 is set. `ContribStream` needs an SDK build with `temporalio.contrib.streams`, which no release has
-yet. The harness imports it only for a `ContribStream` agent, so a Workflow Streams agent runs on
-a released SDK.
+yet, and `just install-streams-sdk` installs the one the harness is tested with. The harness
+imports it only for a `ContribStream` agent, so a Workflow Streams agent runs on a released SDK.
 
 The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
 web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
