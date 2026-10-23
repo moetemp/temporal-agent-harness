@@ -390,19 +390,32 @@ async def test_attach_reads_through_continue_as_new(client_and_queue):
     assert texts == ["before", "after"]
 
 
-@needs_a_stream
-async def test_attach_to_a_terminated_agent_ends(client_and_queue):
+async def test_attach_to_an_agent_terminated_mid_turn_ends(client_and_queue):
+    """A terminated run closes nothing on Redis or memory, so the read has to find out."""
+    client, task_queue = client_and_queue
+    parent = await _start(client, task_queue)
+    reply = asyncio.create_task(_turn(parent, "delegate", "hang"))
+    await _running_child(client, parent)
+    await client.get_workflow_handle(parent.workflow_id).terminate()
+    reply.cancel()
+
+    stream = await parent.attach(on_item=lambda item, point: item)
+    async with asyncio.timeout(30):
+        replayed = [item async for item in stream]
+    assert AgentEventType.TURN_END not in [item.event.type for item in replayed]
+
+
+async def test_attach_at_the_head_of_an_idle_agent_gives_nothing(client_and_queue):
+    """A point with no seq, such as a send's ``resume`` or a ``from_offset``, is caught up when
+    nothing was written past it, and the attach must not wait for the next turn."""
     client, task_queue = client_and_queue
     agent_client = await _start(client, task_queue)
     turn = await _turn(agent_client, "echo", "hi")
-    resume = turn[-1][1]
-    await client.get_workflow_handle(agent_client.workflow_id).terminate()
 
-    # Past the last event, but with no seq, so attach has to wait for more.
     stream = await agent_client.attach(
-        on_item=lambda item, point: item, resume=ResumePoint(cursor=resume.cursor).encode()
+        on_item=lambda item, point: item, resume=ResumePoint(cursor=turn[-1][1].cursor).encode()
     )
-    async with asyncio.timeout(30):
+    async with asyncio.timeout(10):
         assert [item async for item in stream] == []
 
 

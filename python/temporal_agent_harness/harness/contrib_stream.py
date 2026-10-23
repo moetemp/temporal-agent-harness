@@ -300,6 +300,14 @@ def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEven
     )
 
 
+async def next_offset(client: Client, place: AgentStream) -> int:
+    """The offset where the agent's Stream takes its next record, or 0 before its create."""
+    try:
+        return await _client_stream(client, place).get_offset()
+    except StreamNotFoundError:
+        return 0
+
+
 async def check_turn_cursor(client: Client, place: AgentStream, after: str) -> None:
     """Raise ``TurnCursorError`` now if ``after`` is not a position on the agent's Stream.
 

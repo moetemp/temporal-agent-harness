@@ -19,6 +19,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from temporalio.client import Client, WithStartWorkflowOperation, WorkflowUpdateFailedError
+from temporalio.contrib.workflow_streams import WorkflowStreamClient
 
 from temporalio.common import WorkflowIDConflictPolicy
 
@@ -679,13 +680,13 @@ class AgentClient:
         # Checked here, before the response starts, rather than at the read's first step.
         await self._check_cursor(status.stream, point.cursor)
         # Already caught up (the point is at or past the agent's last word) and the agent is
-        # idle, so there is nothing to stream.
-        if (
-            not status.turn_active
-            and not status.pending_turns
-            and point.seq >= status.last_event_seq
-        ):
-            return self._empty()
+        # idle, so there is nothing to stream. A point with no seq, such as a ``from_offset`` or
+        # a send's ``resume``, is caught up when nothing was written past it.
+        if not status.turn_active and not status.pending_turns:
+            if point.seq >= status.last_event_seq or (
+                point.seq == 0 and await self._at_head(status.stream, point.cursor)
+            ):
+                return self._empty()
         return self._attached(
             on_item=on_item,
             place=status.stream,
@@ -762,6 +763,17 @@ class AgentClient:
                 yield on_item(ev, point)
         finally:
             await events.aclose()
+
+    async def _at_head(self, place: AgentStream | None, cursor: str) -> bool:
+        """Whether ``cursor`` is where the agent's stream takes its next record."""
+        if not cursor:
+            return False
+        if place is None:
+            head = await WorkflowStreamClient.create(self._temporal, self._workflow_id).get_offset()
+            return head <= int(cursor)
+        from temporal_agent_harness.harness import contrib_stream
+
+        return await contrib_stream.next_offset(self._temporal, place) <= int(cursor)
 
     async def _check_cursor(self, place: AgentStream | None, cursor: str) -> None:
         """Raise ``TurnCursorError`` if ``cursor`` is not a position on the agent's stream."""
