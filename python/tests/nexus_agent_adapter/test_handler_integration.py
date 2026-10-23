@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.api.enums.v1 import EventType
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -32,6 +31,7 @@ from temporal_agent_harness.nexus_agent_adapter.generated import (
     SendAgentMessageInput,
 )
 from temporal_agent_harness.nexus_agent_adapter.handler import AgentServiceHandler, Config
+from tests._streams import agent_stream
 
 # The time-skipping test server has no dynamic config, so these run on a real dev server.
 # A stock `temporal` CLI release carries the features; only the flags below need enabling.
@@ -68,7 +68,7 @@ class ProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -369,7 +369,7 @@ class GatedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
 

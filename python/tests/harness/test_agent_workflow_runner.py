@@ -34,7 +34,6 @@ from temporalio.client import (
     WorkflowUpdateFailedError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -77,6 +76,7 @@ from temporal_agent_harness.harness.agent_workflow import (
     agent_init_data,
 )
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
+from tests._streams import agent_stream, turn_records
 
 
 def _ctx(tool_name: str, **kwargs) -> AutoApprovalContext:
@@ -155,7 +155,7 @@ class TypedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._seen: list[str] = []
@@ -192,7 +192,7 @@ class NoEvaluatorProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.allow_tools(["get_order"]),
         )
         self._seen: list[str] = []
@@ -225,7 +225,7 @@ class MidTurnProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._released: set[str] = set()
@@ -285,7 +285,7 @@ class LifecycleProbeAgent:
     def __init__(self, config: AgentConfig, data: TripData | None = None) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._data = data
@@ -436,14 +436,8 @@ def _subscribe_all(client: Client, workflow_id: str):
     """Subscribe to a workflow's whole event log from the start (live-tailing)."""
     from datetime import timedelta
 
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
 
-    return WorkflowStreamClient.create(client, workflow_id).subscribe(
-        topics=["turn_events"],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_records(client, workflow_id)
 
 
 async def _collect_until_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:
@@ -886,17 +880,12 @@ def test_a_tool_call_closed_after_eviction_unwinds_quietly():
     call.close()  # closed from this one; raises if the unwind does anything but exit
 
 
-def test_stream_and_approval_policy_default_are_required():
-    """``stream`` and ``approval_policy_default`` are required keyword-only constructor
-    args, so omitting either is a call-site TypeError — no runtime ``build()`` check to
-    forget. The author must make a deliberate safe-by-default approval choice."""
+def test_approval_policy_default_is_required():
+    """``approval_policy_default`` is a required keyword-only constructor arg, so omitting it
+    is a call-site TypeError — no runtime ``build()`` check to forget. The author must make a
+    deliberate safe-by-default approval choice."""
     stream = MagicMock()
     stream.topic.return_value = MagicMock()
-    with pytest.raises(TypeError):
-        AgentWorkflowRunner(  # type: ignore[call-arg]  — missing stream
-            AgentConfig(),
-            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
-        )
     with pytest.raises(TypeError):
         AgentWorkflowRunner(  # type: ignore[call-arg]  — missing approval_policy_default
             AgentConfig(),
@@ -1505,7 +1494,7 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, outcome="error"
     )
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = [c.args[0] for c in runner._sink._events.publish.call_args_list]
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event

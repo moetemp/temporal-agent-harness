@@ -425,7 +425,7 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     agent_client = AgentClient(client, parent_id)
     attached: list[AgentEvent] = []
     async for item in await agent_client.attach(
-        on_item=lambda it, _o: it, from_offset=0, subagent_stall_grace_seconds=2.0
+        on_item=lambda it, _o: it, subagent_stall_grace_seconds=2.0
     ):
         if isinstance(item, AgentEvent):
             attached.append(item)

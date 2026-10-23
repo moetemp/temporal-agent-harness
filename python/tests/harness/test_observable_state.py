@@ -28,12 +28,12 @@ from temporalio import workflow
 # passed through so that re-import stays cheap and the only things the sandbox actually
 # rebuilds are this module's own classes -- which is the behaviour under test.
 with workflow.unsafe.imports_passed_through():
+    from tests._streams import agent_stream, turn_records
     import jsonpatch
     import pytest
     import pytest_asyncio
     from temporalio.client import Client, WorkflowHandle
     from temporalio.contrib.pydantic import pydantic_data_converter
-    from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
     from temporalio.testing import WorkflowEnvironment
     from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -80,7 +80,7 @@ class StateProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -117,7 +117,7 @@ class EarlyStateProbeAgent:
             d.goal = "set before the runner existed"
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -174,15 +174,9 @@ async def _run_turn(
 
 
 async def _collect(client: Client, workflow_id: str) -> list[AgentEvent]:
-    stream = WorkflowStreamClient.create(client, workflow_id)
     events: list[AgentEvent] = []
     async with asyncio.timeout(60):
-        async for item in stream.subscribe(
-            topics=["turn_events"],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
-        ):
+        async for item in turn_records(client, workflow_id):
             events.append(item.data)
             if item.data.event.type == AgentEventType.TURN_END:
                 break
@@ -357,8 +351,7 @@ async def test_attach_to_a_brand_new_session_delivers_the_snapshot_and_stops(
     agent_client = AgentClient(client, handle.id)
 
     stream = await agent_client.attach(
-        from_offset=0,
-        on_item=lambda item, _resume_offset: item,
+        on_item=lambda item, _resume: item,
     )
     items: list[AgentEvent] = []
     async with asyncio.timeout(10):

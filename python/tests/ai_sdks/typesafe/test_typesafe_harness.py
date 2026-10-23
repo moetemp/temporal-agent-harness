@@ -19,6 +19,7 @@ from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from temporal_agent_harness.ai_sdks.typesafe_harness import HarnessTypeSafe
 from temporal_agent_harness.plugin import AgentHarnessPlugin
+from tests._streams import turn_records
 
 
 @workflow.defn
@@ -138,7 +139,6 @@ async def test_typed_example_uses_real_harness_and_sandbox():
     from examples.typesafe_hello.workflow import TypeSafeHelloAgent
     from temporal_agent_harness.harness.agent_protocol import (
         AgentConfig, AgentMessage, AgentMessageReply, SEND_AGENT_MESSAGE_UPDATE)
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
     from temporal_agent_harness.harness.agent_protocol import AgentEvent
 
     def transport(request):
@@ -156,10 +156,9 @@ async def test_typed_example_uses_real_harness_and_sandbox():
                 await handle.execute_update(SEND_AGENT_MESSAGE_UPDATE,
                     AgentMessage(type="classify", payload={"text": "Fix typo"}),
                     result_type=AgentMessageReply)
-                stream = WorkflowStreamClient.create(client, queue)
                 events = []
                 async with asyncio.timeout(10):
-                    async for item in stream.subscribe(topics=["turn_events"], from_offset=0, result_type=AgentEvent):
+                    async for item in turn_records(client, queue):
                         events.append(item.data.event.type)
                         if item.data.event.type == "turn_end":
                             break
