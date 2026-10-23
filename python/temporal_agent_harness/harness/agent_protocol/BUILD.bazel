@@ -37,6 +37,7 @@ py_library(
     imports = ["../../.."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_interface",
         "//python/temporal_agent_harness/harness:stream_context",
         "@pypi//pydantic",
     ],
