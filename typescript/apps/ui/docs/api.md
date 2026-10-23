@@ -366,7 +366,7 @@ For normal agent events, `data` is a flat object containing:
 - `resume`, the opaque point the client passes back as `resume`. A frame with no point to give
   leaves it out.
 - `event_offset`, on a `ContribStream` agent only: the event's own offset as a decimal string.
-  An `attempt_superseded` event lists the offsets of the events to drop.
+  An `attempt_superseded` event lists the offsets of the events to drop, and has none of its own.
 
 Example:
 

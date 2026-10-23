@@ -515,7 +515,8 @@ describe("frame arrival", () => {
   });
 
   // A Stream withdraws one failed attempt's records. The marker lists their
-  // offsets, and only those go.
+  // offsets, and only those go. Its Superseded item shares an offset with the
+  // first record of the retry, so the marker has no offset, and that record stays.
   it("a superseded attempt drops exactly the frames it names", async () => {
     const stream = controllableStream();
     const { controller, attachCalls, finish } = boot({
@@ -542,18 +543,17 @@ describe("frame arrival", () => {
           turn_number: 1,
           timestamp: 2,
           resume: "4@c",
-          event_offset: "1879862925380812804",
           withdrawn_offsets: ["1879862925380812802"]
         }
       },
-      onStream("root", "1879862925380812805", "whole")
+      onStream("root", "1879862925380812804", "whole")
     );
     finish("wf-retry");
     stream.end();
     await waitFor("the frames to reach the view", () => controller.frames.length === 4);
     assert.deepEqual(
       controller.frames.map((f) => f.data.event_offset),
-      ["1879862925380812801", "1879862925380812803", "1879862925380812804", "1879862925380812805"]
+      ["1879862925380812801", "1879862925380812803", undefined, "1879862925380812804"]
     );
   });
 

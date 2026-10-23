@@ -399,6 +399,9 @@ async def test_a_retried_tool_withdraws_exactly_its_first_attempt(client_and_que
     ][:2]
     markers = [item for item, _ in items if item.event.type == AgentEventType.ATTEMPT_SUPERSEDED]
     assert len(markers) == 1
+    # The marker's ``Superseded`` item shares an offset with the retry's first record, which a
+    # client tells apart by its offset, so the marker reports none.
+    assert [point.offset for item, point in items if item in markers] == [""]
     assert markers[0].event.withdrawn_offsets == first
     assert markers[0].agent_id == items[0][0].agent_id
     assert _reply(items) == f"ok:{text}"
@@ -446,6 +449,8 @@ async def test_resuming_at_a_marker_keeps_the_record_it_shares_an_offset_with(
     # The rewritten record has the marker's offset, so a resume at the marker still gets it,
     # and not the marker again.
     assert [item.event.event.type for item in after_marker][:1] == [AgentEventType.REPLY_DELTA]
+    # A client tells events apart by their offsets, so the marker has none of its own.
+    assert marker.offset == "" and after_marker[0].offset
 
 
 @needs_a_stream

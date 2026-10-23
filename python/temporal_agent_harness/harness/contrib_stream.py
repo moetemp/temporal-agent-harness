@@ -272,8 +272,9 @@ class TurnItem:
     """One event a read gives, with where it is on the Stream."""
 
     event: AgentEvent
-    # The record's own offset, in decimal. A synthesized marker has the offset of its
-    # ``Superseded`` item.
+    # The record's own offset, in decimal. A marker has none, since its ``Superseded`` item
+    # shares an offset with the first record of the next attempt, and a client tells events
+    # apart by their offsets.
     offset: str
     # The cursor that resumes just past this item.
     cursor: str
@@ -474,7 +475,7 @@ class _Read:
             if marked is not None:
                 marker, own = marked
                 cursor = _Position(next_offset or None, True, self._turn_start).encode()
-                return TurnItem(event=marker, offset=str(item.offset), cursor=cursor, own=own)
+                return TurnItem(event=marker, offset="", cursor=cursor, own=own)
         return None
 
     def _event(self, record: Record[Any]) -> AgentEvent:

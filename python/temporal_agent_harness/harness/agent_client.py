@@ -157,8 +157,8 @@ class ResumePoint:
     has caught up (``AgentStatus.last_event_seq``), which a stream position can't.
 
     ``offset`` is the stream position of the event itself, on ``temporalio.contrib.streams``
-    only. An ``AttemptSuperseded`` event lists the events to drop by it. It is not part of the
-    encoded point.
+    only. An ``AttemptSuperseded`` event lists the events to drop by it, and has none of its
+    own. It is not part of the encoded point.
     """
 
     cursor: str = ""
