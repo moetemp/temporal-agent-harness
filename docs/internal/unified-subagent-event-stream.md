@@ -1,10 +1,5 @@
 # Unified Subagent Event Stream (client-side stream merge)
 
-> **Replaced on the Brook build.** Every agent of a tree publishes on its root's Stream, each on a
-> Topic of its own, so one read gives the whole tree in order and the client-side merge below is
-> gone. See the README, [Streams](../../README.md#streams). This page keeps the merge design for
-> the record.
-
 **Status:** ✅ **Implemented** (W1–W4 landed; see [Workstreams](#workstreams)). The merge layer
 lives in [`harness/stream_merge/`](../temporal_agent_harness/harness/stream_merge) and is wired into
 `AgentClient.send_message` / `attach`; the protocol deltas + the in-workflow `subagent_reply_received`
@@ -21,13 +16,6 @@ explicitly-deferred client work committed in [`agents-as-subagents.md`](agents-a
 **Decision #6** ("Collecting multiple agents' streams for a UI is a client-side concern:
 `agent_client.py` will later learn to ad-hoc mount subagent workflow streams on demand so a UI can
 assemble them … only the *consuming* of the child streams is deferred").
-
-> **Names below are the ones this was designed against.** The port to the shared stream
-> interface replaced the numeric offsets with one opaque `ResumePoint`: `from_offset` became
-> `after_cursor`, `AgentMessageReply.accepted_offset` is gone (a workflow does not see where its
-> own records land), and the private `_on_offset()` reach-in went with them. The design and the
-> decisions still hold; for the current contract read
-> [`stream_merge/README.md`](../../temporal_agent_harness/harness/stream_merge/README.md).
 
 **Scope (planned):** a new `agent_client`-side merge layer (its own subdirectory — see
 [Code layout](#code-layout)) consumed transparently by `AgentClient.send_message` / `attach`; small
