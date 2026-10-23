@@ -1,0 +1,490 @@
+"""The failure paths of the two event-stream backends, against a real worker.
+
+Each test runs on the lane's backend (``tests/_streams.py``): Workflow Streams by default, and
+``ContribStream`` on the memory and Redis lanes. A test of something only a Stream has skips
+on Workflow Streams.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from typing import Any
+
+import pytest
+import pytest_asyncio
+from temporalio import workflow
+from temporalio.client import Client, WorkflowUpdateFailedError
+from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.exceptions import ActivityError
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+from temporal_agent_harness.harness import agent
+from temporal_agent_harness.harness.agent_client import (
+    AgentClient,
+    AgentTurnError,
+    ResumePoint,
+)
+from temporal_agent_harness.harness.agent_protocol import (
+    SEND_SUBAGENT_MESSAGE_UPDATE,
+    AgentConfig,
+    AgentEvent,
+    AgentEventType,
+    AgentMessage,
+    AgentMessageReply,
+    MidTurn,
+    ReplyDelta,
+    SubagentDispatch,
+    SubagentMessage,
+    TextMessage,
+    TextReply,
+    ToolApprovalPolicy,
+)
+from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+from temporal_agent_harness.harness.stream_context import TurnStreamContext
+from temporal_agent_harness.plugin import AgentHarnessPlugin
+from tests._streams import STORE, agent_stream
+
+needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.contrib.streams")
+
+# How many times each text went through ``flaky_tool``, so its first attempt can fail.
+_TOOL_ATTEMPTS: dict[str, int] = {}
+# The tags whose ``fail_task_once`` update already failed a Workflow Task.
+_FAILED_TASKS: set[str] = set()
+
+
+@agent.activity_tool_defn()
+async def flaky_tool(text: str) -> str:
+    """Fails its first attempt for each text, as a model call that hits a rate limit does."""
+    _TOOL_ATTEMPTS[text] = _TOOL_ATTEMPTS.get(text, 0) + 1
+    if _TOOL_ATTEMPTS[text] == 1:
+        raise RuntimeError("the first attempt fails")
+    return f"ok:{text}"
+
+
+def _runner(config: AgentConfig) -> AgentWorkflowRunner:
+    return AgentWorkflowRunner(
+        config,
+        stream=agent_stream(),
+        approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
+    )
+
+
+@agent.defn
+class BackendChild:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = _runner(config)
+        self._joined = False
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def ask(self, message: TextMessage) -> TextReply:
+        """Answer, after a join when asked to wait for one."""
+        if message.text == "hang":
+            await workflow.wait_condition(lambda: False)
+        if message.text == "wait-for-join":
+            await workflow.wait_condition(lambda: self._joined)
+        if message.text == "fail":
+            raise ValueError("ours blew up")
+        return TextReply(text="ours")
+
+    @agent.accepts(mid_turn=MidTurn.ACCEPT)
+    async def join(self, message: TextMessage) -> TextReply:
+        """Join the open turn."""
+        self._joined = True
+        if message.text == "fail":
+            raise ValueError("theirs blew up")
+        return TextReply(text="theirs")
+
+
+@agent.defn
+class BackendParent:
+    @agent.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = _runner(config)
+        self._child: str | None = None
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def delegate(self, message: TextMessage) -> TextReply:
+        """Ask a subagent, started on first use."""
+        if self._child is None:
+            self._child = await self._runner.start_subagent(
+                "child", "BackendChild", workflow.info().task_queue
+            )
+        try:
+            out = await self._runner.run_subagent_turn(
+                self._child, "ask", {"text": message.text}
+            )
+        except ActivityError as e:
+            return TextReply(text=f"error:{getattr(e.cause, 'type', None)}:{e.cause}")
+        return TextReply(text=out["text"])
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def use_tool(self, message: TextMessage) -> TextReply:
+        """Run the flaky tool once."""
+        return TextReply(text=await self._runner.run_tool("t1", flaky_tool, message.text))
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def echo(self, message: TextMessage) -> TextReply:
+        """Answer at once."""
+        return TextReply(text=message.text)
+
+    @workflow.query
+    def child(self) -> str | None:
+        """The subagent's workflow id, once it runs."""
+        status = self._runner._status.to_agent_status()
+        return status.subagents[0].workflow_id if status.subagents else None
+
+    @workflow.update
+    async def fail_task_once(self, tag: str) -> None:
+        """Write a record, then fail the Workflow Task the first time, after the write."""
+        sink = self._runner._sink
+        before = sink.accepted_cursor()
+        self._runner._pub("", 0, ReplyDelta(text=tag))
+        await workflow.wait_condition(lambda: sink.accepted_cursor() != before)
+        if tag not in _FAILED_TASKS:
+            _FAILED_TASKS.add(tag)
+            raise RuntimeError("fail this Workflow Task")
+
+
+
+@workflow.defn
+class ContinuingAgent:
+    """Continues as new the first time it is closed, so a test reads both runs."""
+
+    @workflow.init
+    def __init__(self, config: AgentConfig) -> None:
+        self._runner = _runner(config)
+
+    @workflow.run
+    async def run(self, config: AgentConfig) -> None:
+        await self._runner.run(self)
+        if config.stream is None:
+            workflow.continue_as_new(self._runner.continue_as_new_config(config))
+
+    @agent.accepts(mid_turn=MidTurn.ENQUEUE)
+    async def echo(self, message: TextMessage) -> TextReply:
+        """Answer at once."""
+        return TextReply(text=message.text)
+
+
+@pytest_asyncio.fixture
+async def client_and_queue():
+    env = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)
+    task_queue = f"stream-backends-{uuid.uuid4()}"
+    async with Worker(
+        env.client,
+        task_queue=task_queue,
+        workflows=[BackendParent, BackendChild, ContinuingAgent],
+        plugins=[AgentHarnessPlugin(tools=[flaky_tool])],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ):
+        try:
+            yield env.client, task_queue
+        finally:
+            await env.shutdown()
+
+
+async def _start(client: Client, task_queue: str) -> AgentClient:
+    handle = await client.start_workflow(
+        BackendParent.run,
+        AgentConfig(),
+        id=f"BackendParent-{uuid.uuid4()}",
+        task_queue=task_queue,
+    )
+    return AgentClient(client, handle.id)
+
+
+async def _turn(agent_client: AgentClient, handler: str, text: str, **kwargs: Any) -> list[Any]:
+    stream = await agent_client.send_message(
+        handler, {"text": text}, on_item=lambda item, point: (item, point), **kwargs
+    )
+    async with asyncio.timeout(30):
+        return [item async for item in stream]
+
+
+def _reply(items: list[Any]) -> str:
+    return next(
+        item.event.output["text"]
+        for item, _ in items
+        if isinstance(item, AgentEvent) and item.event.type == AgentEventType.MESSAGE_HANDLER_END
+    )
+
+
+async def test_a_repeated_update_id_streams_the_original_turn(client_and_queue):
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    first = await _turn(agent_client, "echo", "one", update_id="send-1")
+    await _turn(agent_client, "echo", "two", update_id="send-2")
+
+    repeat = await _turn(agent_client, "echo", "one", update_id="send-1")
+
+    assert _reply(repeat) == _reply(first) == "one"
+    assert not any(isinstance(item, AgentTurnError) for item, _ in repeat)
+
+
+async def test_a_subagent_answer_is_its_own_message_s_in_a_shared_turn(client_and_queue):
+    client, task_queue = client_and_queue
+    parent = await _start(client, task_queue)
+    reply = asyncio.create_task(_turn(parent, "delegate", "wait-for-join"))
+    async with asyncio.timeout(30):
+        while (child := await client.get_workflow_handle(parent.workflow_id).query("child")) is None:
+            await asyncio.sleep(0.05)
+        while not (await AgentClient(client, child).get_status()).turn_active:
+            await asyncio.sleep(0.05)
+    await AgentClient(client, child).submit_message("join", {"text": "fail"})
+
+    assert _reply(await reply) == "ours"
+
+
+async def test_a_subagent_s_own_failure_fails_the_parent_s_call(client_and_queue):
+    client, task_queue = client_and_queue
+    items = await _turn(await _start(client, task_queue), "delegate", "fail")
+
+    reply = _reply(items)
+    assert reply.startswith("error:SubagentTurnError:") and "ours blew up" in reply
+
+
+async def test_a_terminated_subagent_ends_the_parent_s_call(client_and_queue):
+    client, task_queue = client_and_queue
+    parent = await _start(client, task_queue)
+    reply = asyncio.create_task(_turn(parent, "delegate", "hang"))
+    async with asyncio.timeout(30):
+        while (child := await client.get_workflow_handle(parent.workflow_id).query("child")) is None:
+            await asyncio.sleep(0.05)
+        while not (await AgentClient(client, child).get_status()).turn_active:
+            await asyncio.sleep(0.05)
+    await client.get_workflow_handle(child).terminate()
+
+    assert _reply(await reply).startswith("error:SubagentNoReply:")
+
+
+async def test_only_the_parent_sends_send_subagent_message(client_and_queue):
+    client, task_queue = client_and_queue
+    target = await _start(client, task_queue)
+    status = await target.get_status()
+    forged = SubagentMessage(
+        message=AgentMessage(type="echo", payload={"text": "x"}),
+        dispatch=SubagentDispatch(
+            agent_key="child",
+            parent_stream_context=TurnStreamContext(
+                turn_id="t", turn_number=1, agent_id=status.agent_id
+            ),
+        ),
+    )
+    with pytest.raises(WorkflowUpdateFailedError) as raised:
+        await client.get_workflow_handle(target.workflow_id).execute_update(
+            SEND_SUBAGENT_MESSAGE_UPDATE, forged, result_type=AgentMessageReply
+        )
+    assert getattr(raised.value.cause, "type", None) == "NotTheParent"
+
+
+@needs_a_stream
+async def test_a_subagent_turn_comes_between_its_markers_on_the_shared_stream(
+    client_and_queue,
+):
+    client, task_queue = client_and_queue
+    items = await _turn(await _start(client, task_queue), "delegate", "hi")
+
+    kinds = [(item.agent_id, item.event.type) for item, _ in items]
+    parent_id = kinds[0][0]
+    sent = kinds.index((parent_id, AgentEventType.SUBAGENT_MESSAGE_SENT))
+    received = kinds.index((parent_id, AgentEventType.SUBAGENT_REPLY_RECEIVED))
+    child = [i for i, (agent_id, _) in enumerate(kinds) if agent_id != parent_id]
+    assert child and sent < min(child) and max(child) < received
+    assert kinds[max(child)][1] == AgentEventType.TURN_END
+
+
+@needs_a_stream
+async def test_a_retried_tool_withdraws_exactly_its_first_attempt(client_and_queue):
+    client, task_queue = client_and_queue
+    text = f"flaky-{uuid.uuid4()}"
+    items = await _turn(await _start(client, task_queue), "use_tool", text)
+
+    first = [
+        point.offset
+        for item, point in items
+        if item.event.type in (AgentEventType.TOOL_START, AgentEventType.TOOL_ERROR)
+    ][:2]
+    markers = [item for item, _ in items if item.event.type == AgentEventType.ATTEMPT_SUPERSEDED]
+    assert len(markers) == 1
+    assert markers[0].event.withdrawn_offsets == first
+    assert markers[0].agent_id == items[0][0].agent_id
+    assert _reply(items) == f"ok:{text}"
+
+
+@needs_a_stream
+async def test_resuming_at_a_marker_keeps_the_record_it_shares_an_offset_with(
+    client_and_queue,
+):
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    tag = f"retried-{uuid.uuid4()}"
+    await client.get_workflow_handle(agent_client.workflow_id).execute_update(
+        BackendParent.fail_task_once, tag
+    )
+
+    from temporal_agent_harness.harness.contrib_stream import read_turn_events
+
+    status = await agent_client.get_status()
+    assert status.stream is not None
+
+    async def read(after: str, deltas: int) -> list[Any]:
+        found = []
+        items = read_turn_events(
+            client, status.stream, workflow_id=agent_client.workflow_id, after=after
+        )
+        try:
+            async with asyncio.timeout(5):
+                async for item in items:
+                    found.append(item)
+                    kinds = [f.event.event.type for f in found]
+                    if kinds.count(AgentEventType.REPLY_DELTA) == deltas:
+                        break
+        except TimeoutError:
+            pass
+        finally:
+            await items.aclose()
+        return found
+
+    everything = await read("", deltas=2)
+    marker = next(
+        item for item in everything if item.event.event.type == AgentEventType.ATTEMPT_SUPERSEDED
+    )
+    after_marker = await read(marker.cursor, deltas=1)
+    # The rewritten record has the marker's offset, so a resume at the marker still gets it.
+    assert [item.event.event.type for item in after_marker][:1] == [AgentEventType.REPLY_DELTA]
+
+
+@needs_a_stream
+async def test_attach_reads_through_continue_as_new(client_and_queue):
+    client, task_queue = client_and_queue
+    handle = await client.start_workflow(
+        ContinuingAgent.run,
+        AgentConfig(),
+        id=f"ContinuingAgent-{uuid.uuid4()}",
+        task_queue=task_queue,
+    )
+    agent_client = AgentClient(client, handle.id)
+    await _turn(agent_client, "echo", "before")
+    await handle.signal("close")
+    async with asyncio.timeout(30):
+        while (await handle.describe()).run_id == handle.result_run_id:
+            await asyncio.sleep(0.05)
+    await _turn(agent_client, "echo", "after")
+
+    stream = await agent_client.attach(on_item=lambda item, point: item)
+    async with asyncio.timeout(30):
+        texts = [
+            item.event.output["text"]
+            async for item in stream
+            if item.event.type == AgentEventType.MESSAGE_HANDLER_END
+        ]
+    assert texts == ["before", "after"]
+
+
+@needs_a_stream
+async def test_attach_to_a_terminated_agent_ends(client_and_queue):
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    turn = await _turn(agent_client, "echo", "hi")
+    resume = turn[-1][1]
+    await client.get_workflow_handle(agent_client.workflow_id).terminate()
+
+    # Past the last event, but with no seq, so attach has to wait for more.
+    stream = await agent_client.attach(
+        on_item=lambda item, point: item, resume=ResumePoint(cursor=resume.cursor).encode()
+    )
+    async with asyncio.timeout(30):
+        assert [item async for item in stream] == []
+
+
+def _nexus_handler(client: Client, task_queue: str) -> Any:
+    from temporal_agent_harness.nexus_agent_adapter.handler import AgentServiceHandler, Config
+
+    return AgentServiceHandler(
+        client,
+        Config(agent_task_queue=task_queue, workflow_name="BackendParent", workflow_id_prefix=""),
+    )
+
+
+async def _poll(handler: Any, workflow_id: str, cursor: str | None) -> Any:
+    from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
+
+    place = (await AgentClient(handler._client, workflow_id).get_status()).stream
+    return await handler._poll_stream(
+        workflow_id,
+        place,
+        PollMessagesInput(
+            session_id=workflow_id, cursor=0, timeout_seconds=2.0, stream_cursor=cursor
+        ),
+    )
+
+
+@needs_a_stream
+async def test_a_nexus_poll_gives_the_last_batch_before_it_says_closed(client_and_queue):
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    await _turn(agent_client, "echo", "bye")
+    handle = client.get_workflow_handle(agent_client.workflow_id)
+    await handle.signal("close")
+    await handle.result()
+    handler = _nexus_handler(client, task_queue)
+
+    first = await _poll(handler, agent_client.workflow_id, None)
+    then = await _poll(handler, agent_client.workflow_id, first.next_cursor)
+
+    assert first.items and not first.closed
+    assert not then.items and then.closed
+
+
+@needs_a_stream
+async def test_a_nexus_poll_of_a_terminated_agent_says_closed(client_and_queue):
+    client, task_queue = client_and_queue
+    agent_client = await _start(client, task_queue)
+    turn = await _turn(agent_client, "echo", "hi")
+    await client.get_workflow_handle(agent_client.workflow_id).terminate()
+
+    out = await _poll(_nexus_handler(client, task_queue), agent_client.workflow_id, turn[-1][1].cursor)
+
+    assert not out.items and out.closed
+
+
+@needs_a_stream
+async def test_a_nexus_send_gives_the_cursor_where_its_turn_starts(client_and_queue):
+    from types import SimpleNamespace
+
+    from temporal_agent_harness.nexus_agent_adapter.generated import SendAgentMessageInput
+
+    client, task_queue = client_and_queue
+    handler = _nexus_handler(client, task_queue)
+    session = f"BackendParent-{uuid.uuid4()}"
+
+    async def send(text: str) -> Any:
+        return await handler.send_agent_message(
+            SimpleNamespace(request_id=str(uuid.uuid4())),
+            SendAgentMessageInput(session_id=session, msg_type="echo", payload=f'{{"text": "{text}"}}'),
+        )
+
+    await send("one")
+    await _turn(AgentClient(client, session), "echo", "two")
+    sent = await send("three")
+    out = await _poll(handler, session, sent.stream_cursor)
+
+    events = [
+        _payload_converter_event(item.data) for item in out.items
+    ]
+    assert sent.stream_cursor
+    assert {e.turn_number for e in events} == {sent.turn_number}
+
+
+def _payload_converter_event(data: str) -> AgentEvent:
+    import base64
+
+    from temporalio.api.common.v1 import Payload
+
+    payload = Payload()
+    payload.ParseFromString(base64.b64decode(data))
+    [event] = pydantic_data_converter.payload_converter.from_payloads([payload], [AgentEvent])
+    return event
