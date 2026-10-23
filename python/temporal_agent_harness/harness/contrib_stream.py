@@ -23,6 +23,7 @@ from typing import Any
 from pydantic import TypeAdapter
 from temporalio import workflow
 from temporalio.client import Client, WorkflowExecutionStatus
+from temporalio.service import RPCError, RPCStatusCode
 
 try:
     from temporalio.api.streamservice.v1 import ProducerKind
@@ -344,61 +345,42 @@ async def read_turn_events(
     ``place`` is the agent's, from its status or a send's reply. With ``subtree``, the events
     of every subagent below the agent come too, in the one order of the shared Stream.
 
-    A ``Superseded`` item that withdraws records this read gave comes out as an
-    ``AttemptSuperseded`` event with their offsets. The read ends at the Stream's close, and
-    when ``workflow_id`` or the Stream's owner no longer runs, since a terminated run closes
-    nothing on Redis or memory. A malformed cursor raises ``TurnCursorError``.
+    A ``Superseded`` item that withdraws records this read or an earlier one gave comes out
+    as an ``AttemptSuperseded`` event with their offsets. A read that starts at such a
+    marker's cursor gives the marker again, with the same offsets. The read ends at the
+    Stream's close, and when ``workflow_id`` or the Stream's owner no longer runs, since a
+    terminated run closes nothing on Redis or memory. A malformed cursor raises
+    ``TurnCursorError``.
     """
-    offset = parse_cursor(after)
-    stream = _client_stream(client, place)
-    items: Subscription[AgentEvent] = stream.subscribe(
-        stream.topic(place.topic, type=AgentEvent),
-        prefixes=[subtree_prefix(place.topic)] if subtree else (),
-        from_offset=offset,
-        create_wait=_WAIT_FOR_CREATE,
-    )
-    # The newest record of each run and each activity that wrote a record this read gave, to
-    # stamp a marker with. A Superseded item withdraws one run's or one activity's records, so
-    # one agent's. One entry per run and per activity, not per record.
-    writers: dict[str, tuple[AgentEvent, bool]] = {}
+    reading = _Read(client, place, after=after, subtree=subtree)
     owner = (place.handle.get("workflowId"), place.handle.get("firstExecutionRunId"))
+    items = reading.subscribe(reading.start, create_wait=_WAIT_FOR_CREATE)
     pending: asyncio.Future[Any] | None = None
     try:
         while True:
             if pending is None:
                 pending = asyncio.ensure_future(items.__anext__())
             done, _ = await asyncio.wait({pending}, timeout=_LIVENESS_CHECK.total_seconds())
-            if not done:
-                if await _ended(client, workflow_id, owner):
-                    return
+            if not done and not await _ended(client, workflow_id, owner):
                 continue
             ready, pending = pending, None
+            if not ready.done():
+                # The records that the run wrote just before it ended can still be on their
+                # way, so the read goes on to the newest record and no further.
+                ready.cancel()
+                await asyncio.gather(ready, return_exceptions=True)
+                await items.aclose()
+                items = reading.subscribe(items.next_offset, wait_new_records=False)
+                continue
             try:
-                item = ready.result()
+                record = ready.result()
             except StopAsyncIteration:
                 return
-            cursor = str(items.next_offset or "")
-            if isinstance(item, Record):
-                data = item.data
-                if not isinstance(data, AgentEvent):
-                    # A Topic that a prefix matched is made at run time, so the read has no
-                    # type for it and gives the plain JSON.
-                    data = AgentEvent.model_validate(data)
-                own = item.topic == place.topic
-                producer = item.producer
-                if producer is not None:
-                    if producer.run_id:
-                        writers[producer.run_id] = (data, own)
-                    if producer.kind == ProducerKind.PRODUCER_KIND_ACTIVITY:
-                        writers[producer.id] = (data, own)
-                yield TurnItem(event=data, offset=str(item.offset), cursor=cursor, own=own)
-            elif isinstance(item, Superseded):
-                marked = _superseded_marker(item, writers)
-                if marked is not None:
-                    marker, own = marked
-                    yield TurnItem(event=marker, offset=str(item.offset), cursor=cursor, own=own)
-            elif isinstance(item, Closed):
+            if isinstance(record, Closed):
                 return
+            item = await reading.take(record, items.next_offset)
+            if item is not None:
+                yield item
     except StreamOffsetError as err:
         raise TurnCursorError(str(err)) from err
     except StreamNotFoundError:
@@ -411,40 +393,128 @@ async def read_turn_events(
         await items.aclose()
 
 
-def _superseded_marker(
-    item: Superseded, writers: dict[str, tuple[AgentEvent, bool]]
-) -> tuple[AgentEvent, bool] | None:
-    """The marker for one ``Superseded`` item and whether it is the read agent's.
+class _Read:
+    """One read of an agent's Topic, and what it gave, so a marker can tell what it withdraws."""
 
-    ``None`` when it withdraws nothing this read gave, such as a Workflow Task retry that
-    wrote no record.
-    """
-    if not item.withdrawn_offsets:
-        return None
-    supersession = item.supersession
-    found = next(
-        (
-            writers[key]
-            for key in (
-                supersession.producer_id,
-                supersession.run_id or "",
-                supersession.withdraw_run or "",
+    def __init__(self, client: Client, place: AgentStream, *, after: str, subtree: bool) -> None:
+        self.start = parse_cursor(after)
+        self._place = place
+        self._stream = _client_stream(client, place)
+        self._topic = self._stream.topic(place.topic, type=AgentEvent)
+        self._prefixes = [subtree_prefix(place.topic)] if subtree else []
+        self._shown: dict[str, _Shown] = {}
+        # What earlier reads gave before ``start``, read at the first ``Superseded`` item.
+        self._before: dict[str, _Shown] | None = None
+
+    def subscribe(self, start: int | None, **options: Any) -> Subscription[AgentEvent]:
+        return self._stream.subscribe(
+            self._topic, prefixes=self._prefixes, from_offset=start, **options
+        )
+
+    async def take(self, item: Any, next_offset: int | None) -> TurnItem | None:
+        """The ``TurnItem`` for one item of the read, or ``None`` for an item to skip."""
+        cursor = str(next_offset or "")
+        if isinstance(item, Record):
+            shown = self._note(self._shown, item)
+            return TurnItem(
+                event=shown.event, offset=str(item.offset), cursor=cursor, own=shown.own
             )
-            if key in writers
-        ),
-        None,
-    )
-    if found is None:
+        if isinstance(item, Superseded):
+            marked = await self._marker(item)
+            if marked is not None:
+                marker, own = marked
+                return TurnItem(event=marker, offset=str(item.offset), cursor=cursor, own=own)
         return None
-    writer, own = found
-    marker = AgentEvent(
-        agent_id=writer.agent_id,
-        turn_id=writer.turn_id,
-        turn_number=writer.turn_number,
-        timestamp=writer.timestamp,
-        event=AttemptSuperseded(withdrawn_offsets=[str(o) for o in item.withdrawn_offsets]),
-    )
-    return marker, own
+
+    def _note(self, shown: dict[str, _Shown], record: Record[Any]) -> _Shown:
+        entry = _Shown(record, _event(record), record.topic == self._place.topic, [])
+        if record.producer is not None:
+            key = repr(record.producer)
+            if key in shown:
+                entry.offsets = shown[key].offsets
+            entry.offsets.append(record.offset)
+            shown[key] = entry
+        return entry
+
+    async def _marker(self, item: Superseded) -> tuple[AgentEvent, bool] | None:
+        """The marker for one ``Superseded`` item and whether it is the read agent's.
+
+        ``None`` when it withdraws nothing that a reader of this Topic was given, such as a
+        Workflow Task retry that wrote no record.
+        """
+        offsets, newest = _withdraw(item, self._shown)
+        if self.start is not None:
+            # A reader of this Topic got the records before ``start`` from an earlier read.
+            if self._before is None:
+                self._before = await self._read_before(self.start)
+            earlier, writer = _withdraw(item, self._before)
+            offsets += earlier
+            newest = newest or writer
+        if not offsets or newest is None:
+            return None
+        writer = newest.event
+        marker = AgentEvent(
+            agent_id=writer.agent_id,
+            turn_id=writer.turn_id,
+            turn_number=writer.turn_number,
+            timestamp=writer.timestamp,
+            event=AttemptSuperseded(withdrawn_offsets=[str(o) for o in sorted(offsets)]),
+        )
+        return marker, newest.own
+
+    async def _read_before(self, start: int) -> dict[str, _Shown]:
+        """The records before ``start`` that no ``Superseded`` item withdrew there.
+
+        It reads the Topic again, which costs a read only when an attempt superseded another.
+        """
+        shown: dict[str, _Shown] = {}
+        earlier = self.subscribe(None, wait_new_records=False)
+        try:
+            async for old in earlier:
+                if old.offset >= start:
+                    break
+                if isinstance(old, Record):
+                    self._note(shown, old)
+                elif isinstance(old, Superseded):
+                    _withdraw(old, shown)
+        finally:
+            await earlier.aclose()
+        return shown
+
+
+@dataclass
+class _Shown:
+    """The records of one Producer that a read gave. ``Superseded.withdraws`` looks at the
+    Producer only, so they are withdrawn together."""
+
+    # The newest of them, with its event and whether it is the read agent's own.
+    record: Record[Any]
+    event: AgentEvent
+    own: bool
+    offsets: list[int]
+
+
+def _withdraw(item: Superseded, shown: dict[str, _Shown]) -> tuple[list[int], _Shown | None]:
+    """Drop from ``shown`` what ``item`` withdraws, and give its offsets and newest record."""
+    offsets: list[int] = []
+    newest: _Shown | None = None
+    for key, entry in list(shown.items()):
+        if item.withdraws(entry.record):
+            # A withdrawn record stays withdrawn, so a later item does not withdraw it again.
+            del shown[key]
+            offsets += entry.offsets
+            if newest is None or entry.record.offset > newest.record.offset:
+                newest = entry
+    return offsets, newest
+
+
+def _event(record: Record[Any]) -> AgentEvent:
+    data = record.data
+    if not isinstance(data, AgentEvent):
+        # A Topic that a prefix matched is made at run time, so the read has no type for it
+        # and gives the plain JSON.
+        data = AgentEvent.model_validate(data)
+    return data
 
 
 async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str | None]) -> bool:
@@ -454,12 +524,14 @@ async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str 
             continue
         try:
             description = await client.get_workflow_handle(wid).describe()
-        except Exception:  # noqa: BLE001, since a workflow that is gone writes nothing more
-            return True
+        except RPCError as err:
+            # A workflow that is gone writes nothing more. Another error tells nothing about it.
+            if err.status == RPCStatusCode.NOT_FOUND:
+                return True
+            raise
         info = description.raw_description.workflow_execution_info
         if first_run_id and info.first_run_id and info.first_run_id != first_run_id:
             return True
         if description.status != WorkflowExecutionStatus.RUNNING:
             return True
     return False
-

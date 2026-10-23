@@ -16,7 +16,7 @@ from nexusrpc.handler import StartOperationContext, service_handler, sync_operat
 from temporalio import nexus
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.contrib.workflow_streams import PollInput
-from temporalio.service import RPCError
+from temporalio.service import RPCError, RPCStatusCode
 
 from temporal_agent_harness.harness.agent_client import (
     AgentClient,
@@ -392,9 +392,11 @@ class AgentServiceHandler:
             return None
         try:
             status = await AgentClient(self._client, workflow_id).get_status()
-        except RPCError:
+        except RPCError as e:
             # The Workflow Streams path answers for a workflow that is gone.
-            return None
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return None
+            raise
         return status.stream
 
     async def _poll_stream(
@@ -418,8 +420,10 @@ class AgentServiceHandler:
         events = contrib_stream.read_turn_events(
             self._client, place, workflow_id=workflow_id, after=cursor
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         try:
-            async with asyncio.timeout(timeout) as window:
+            async with asyncio.timeout_at(deadline) as window:
                 async for item in events:
                     payload = converter.to_payloads([item.event])[0]
                     cursor = item.cursor
@@ -435,7 +439,7 @@ class AgentServiceHandler:
                         more_ready = True
                         break
                     window.reschedule(
-                        asyncio.get_running_loop().time() + _STREAM_POLL_BATCH_GRACE_SECONDS
+                        min(deadline, loop.time() + _STREAM_POLL_BATCH_GRACE_SECONDS)
                     )
                 else:
                     ended = True
@@ -458,6 +462,9 @@ class AgentServiceHandler:
     async def _running(self, workflow_id: str) -> bool:
         try:
             description = await self._client.get_workflow_handle(workflow_id).describe()
-        except RPCError:
-            return False
+        except RPCError as e:
+            # Only a workflow that is gone is not running. Another error tells nothing about it.
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return False
+            raise
         return description.status == WorkflowExecutionStatus.RUNNING

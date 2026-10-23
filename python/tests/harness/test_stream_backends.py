@@ -22,6 +22,7 @@ from temporalio.client import Client, WorkflowHistory, WorkflowUpdateFailedError
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.exceptions import ActivityError
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
@@ -436,8 +437,13 @@ async def test_resuming_at_a_marker_keeps_the_record_it_shares_an_offset_with(
         item for item in everything if item.event.event.type == AgentEventType.ATTEMPT_SUPERSEDED
     )
     after_marker = await read(marker.cursor, deltas=1)
-    # The rewritten record has the marker's offset, so a resume at the marker still gets it.
-    assert [item.event.event.type for item in after_marker][:1] == [AgentEventType.REPLY_DELTA]
+    # The rewritten record has the marker's offset, so a resume at the marker still gets it,
+    # after the marker again.
+    assert [item.event.event.type for item in after_marker][:2] == [
+        AgentEventType.ATTEMPT_SUPERSEDED,
+        AgentEventType.REPLY_DELTA,
+    ]
+    assert after_marker[0].event == marker.event
 
 
 @needs_a_stream
@@ -533,6 +539,53 @@ async def test_a_nexus_poll_gives_the_last_batch_before_it_says_closed(client_an
 
     assert first.items and not first.closed
     assert not then.items and then.closed
+
+
+@needs_a_stream
+async def test_a_later_nexus_poll_withdraws_what_an_earlier_one_gave(client_and_queue):
+    from types import SimpleNamespace
+
+    from temporal_agent_harness.harness.contrib_stream import read_turn_events
+    from temporal_agent_harness.nexus_agent_adapter.generated import SendAgentMessageInput
+
+    client, task_queue = client_and_queue
+    handler = _nexus_handler(client, task_queue)
+    session = f"BackendParent-{uuid.uuid4()}"
+    sent = await handler.send_agent_message(
+        SimpleNamespace(request_id=str(uuid.uuid4())),
+        SendAgentMessageInput(
+            session_id=session,
+            msg_type="use_tool",
+            payload=json.dumps({"text": f"flaky-{uuid.uuid4()}"}),
+        ),
+    )
+    # The retry waits out the activity's backoff, so the poll that gives attempt 1 ends first.
+    polls: list[list[AgentEventType]] = []
+    markers: list[AgentEvent] = []
+    cursor = sent.stream_cursor
+    async with asyncio.timeout(30):
+        while AgentEventType.TURN_END not in sum(polls, []):
+            out = await _poll(handler, session, cursor)
+            events = [_payload_converter_event(item.data) for item in out.items]
+            polls.append([e.event.type for e in events])
+            markers += [e for e in events if e.event.type == AgentEventType.ATTEMPT_SUPERSEDED]
+            cursor = out.next_cursor
+
+    status = await AgentClient(client, session).get_status()
+    first: list[str] = []
+    items = read_turn_events(client, status.stream, workflow_id=session)
+    async with asyncio.timeout(30):
+        async for item in items:
+            if item.event.event.type in (AgentEventType.TOOL_START, AgentEventType.TOOL_ERROR):
+                first.append(item.offset)
+            if item.event.event.type == AgentEventType.TURN_END:
+                break
+    await items.aclose()
+
+    shown = next(i for i, kinds in enumerate(polls) if AgentEventType.TOOL_ERROR in kinds)
+    marked = next(i for i, kinds in enumerate(polls) if AgentEventType.ATTEMPT_SUPERSEDED in kinds)
+    assert shown < marked
+    assert markers[0].event.withdrawn_offsets == first[:2]
 
 
 @needs_a_stream
@@ -646,3 +699,32 @@ def test_the_default_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
 
     with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
         importlib.import_module("temporal_agent_harness.harness.contrib_stream")
+
+
+
+class _FailingDescribe:
+    """A client whose ``describe`` fails with ``status``."""
+
+    def __init__(self, status: RPCStatusCode) -> None:
+        self._status = status
+
+    def get_workflow_handle(self, workflow_id: str) -> Any:
+        return self
+
+    async def describe(self) -> Any:
+        raise RPCError("describe failed", self._status, b"")
+
+
+async def test_only_a_workflow_that_is_gone_ends_a_read():
+    pytest.importorskip("temporalio.contrib.streams")
+    from temporal_agent_harness.harness.contrib_stream import _ended
+
+    flaky = _FailingDescribe(RPCStatusCode.UNAVAILABLE)
+    gone = _FailingDescribe(RPCStatusCode.NOT_FOUND)
+
+    with pytest.raises(RPCError):
+        await _ended(flaky, "wf", (None, None))  # type: ignore[arg-type]
+    with pytest.raises(RPCError):
+        await _nexus_handler(flaky, "q")._running("wf")
+    assert await _ended(gone, "wf", (None, None))  # type: ignore[arg-type]
+    assert not await _nexus_handler(gone, "q")._running("wf")
