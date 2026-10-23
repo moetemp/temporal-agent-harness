@@ -43,6 +43,11 @@ export function approvalAlreadyResolved(error: unknown): boolean {
   return error instanceof ApiError && error.code === "ToolApprovalAlreadyResolved";
 }
 
+/** The server has no position for the resume point, such as after a store switch. */
+export function invalidResumePoint(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "invalid_resume_point";
+}
+
 /** The callback was fulfilled (or timed out) before this result landed — e.g. by a CLI client. */
 export function callbackAlreadyResolved(error: unknown): boolean {
   return (
@@ -166,11 +171,13 @@ export class HttpAgentApi implements AgentApi {
 
   async *attach(
     sessionId: WorkflowId,
-    fromOffset = 0,
+    resume = "",
     signal?: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
     const response = await fetch(
-      apiPath(`attach?session_id=${encodeURIComponent(sessionId)}&from_offset=${fromOffset}`),
+      apiPath(
+        `attach?session_id=${encodeURIComponent(sessionId)}&resume=${encodeURIComponent(resume)}`
+      ),
       { signal }
     );
     if (!response.ok) {

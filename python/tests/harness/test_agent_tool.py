@@ -18,7 +18,6 @@ from datetime import timedelta
 import pytest_asyncio
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -37,6 +36,7 @@ from temporal_agent_harness.harness.agent_protocol import (
 )
 from temporal_agent_harness.harness.agent import Injected
 from temporal_agent_harness.harness.agent_workflow import _injected_param_names
+from tests._streams import agent_stream, turn_records
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ class ToolProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -115,14 +115,8 @@ async def client_and_queue():
 async def _collect_until_turn_end(
     client: Client, workflow_id: str
 ) -> list[AgentEvent]:
-    stream = WorkflowStreamClient.create(client, workflow_id)
     events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    ):
+    async for item in turn_records(client, workflow_id):
         envelope: AgentEvent = item.data
         events.append(envelope)
         if envelope.event.type == AgentEventType.TURN_END:

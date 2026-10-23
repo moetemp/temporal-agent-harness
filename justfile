@@ -55,6 +55,16 @@ gazelle:
 buildifier:
     bazel run //:buildifier
 
+# The temporalio build that ContribStream needs, since no release has temporalio.contrib.streams
+# yet: moetemp/sdk-python#361 at this commit, with the bridge's `streams` feature. The lock keeps
+# the released temporalio, which Workflow Streams and the Bazel build use.
+streams_sdk := "git+https://github.com/moetemp/sdk-python@604ee9f370750d67180381d54c2da1f89ee2d87e"
+
+# Install that build into python/.venv (`uv sync` makes it), for ContribStream agents and the
+# STREAMS_STORE test lanes. It compiles the Rust bridge, so it needs cargo and protoc.
+install-streams-sdk:
+    cd "{{python}}" && uv pip install --no-deps --reinstall -C build-args="--features streams" "temporalio @ {{streams_sdk}}"
+
 # Minimum `temporal` CLI for the Nexus recipes. Older builds reject the dynamic config
 # keys below, so fail here rather than at the first Nexus call.
 temporal_cli_min := "1.9.1"

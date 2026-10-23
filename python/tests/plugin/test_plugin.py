@@ -73,7 +73,8 @@ def _registered_activity_names(worker: Worker) -> set[str]:
     """The activity names a built ``Worker`` will actually serve.
 
     ``active_config=True`` is the post-plugin view; the default returns the arguments the
-    caller passed, which is exactly what the plugin is meant to shrink.
+    caller passed, which is exactly what the plugin is meant to shrink. The Stream plugin of a
+    streams test lane adds its own activities, which are not the harness plugin's.
     """
     return {
         name
@@ -83,7 +84,7 @@ def _registered_activity_names(worker: Worker) -> set[str]:
             )
             for fn in worker.config(active_config=True)["activities"]
         )
-        if name is not None
+        if name is not None and not name.startswith("__temporal_streams_")
     }
 
 
@@ -204,8 +205,7 @@ async def test_hand_registered_harness_activities_are_not_duplicated():
             activities=hand_written,
             plugins=[AgentHarnessPlugin(tools=[durable_tool])],
         )
-        activities = worker.config(active_config=True)["activities"]
-        assert len(activities) == len(hand_written)
+        assert len(_registered_activity_names(worker)) == len(hand_written)
         assert _registered_activity_names(worker) == {
             "durable_tool",
             RUN_SUBAGENT_TURN_ACTIVITY,

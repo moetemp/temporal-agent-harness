@@ -21,7 +21,7 @@ function ended(overrides = {}) {
     turn_number: 2,
     message_id: "msg-2",
     timestamp: 120,
-    resume_offset: 9,
+    resume: "9@c",
     tool_id: "tool-refund",
     tool_name: "issue_refund",
     evaluation_id: "evaluation-1",

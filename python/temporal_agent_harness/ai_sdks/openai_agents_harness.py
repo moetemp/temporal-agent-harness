@@ -80,7 +80,7 @@ from temporal_agent_harness.harness.agent_workflow import (
     TurnEventPublisher,
     _apply_approval_policy,
 )
-from temporal_agent_harness.harness.stream_context import TurnStreamContext
+from temporal_agent_harness.harness.stream_context import TurnStreamContext, TurnStreamToken
 
 if TYPE_CHECKING:
     from agents import Tool
@@ -302,17 +302,9 @@ def _to_token_usage(usage: Any) -> TokenUsage | None:
     )
 
 
-class _HarnessStreamToken(BaseModel):
-    """The opaque routing token the harness hands the streaming activity.
-
-    Bundles the in-flight turn's :class:`TurnStreamContext` with the requested model id,
-    so the observer can open the model-interaction bracket — naming the model — at
-    dispatch (``__aenter__``), before any event arrives. Rides the streaming activity
-    input as an untyped field, so the factory rehydrates it from a plain dict.
-    """
-
-    context: TurnStreamContext
-    model: str | None = None
+# The token a harness turn hands the streaming activity. It gives the model id, so the observer
+# opens the model-interaction bracket at dispatch (``__aenter__``), before any event arrives.
+_HarnessStreamToken = TurnStreamToken
 
 
 def stream_to_provider(model: str | None, run_context: Any) -> _HarnessStreamToken | None:
@@ -337,17 +329,16 @@ def harness_observer_factory(
 ) -> StreamObserver[Any]:
     """Turn a streamed call's opaque routing token into a fresh observer.
 
-    The token is the :class:`_HarnessStreamToken` produced by :func:`stream_to_provider`;
-    it arrives here rehydrated as a plain dict (it rides the activity input as an untyped
-    ``Any`` field), so we validate it back into the model. Wired onto the plugin as
-    ``observer_factory=...``.
+    The token is the :class:`TurnStreamToken` produced by :func:`stream_to_provider`. The
+    activity input decodes it as one, and a dict from a hand-made call is validated into one.
+    Wired onto the plugin as ``observer_factory=...``.
 
     ``batch_interval`` is the plugin's configured
     ``ModelActivityParameters.streaming_batch_interval``, handed to every factory by
     ``select_observer`` and forwarded to the observer's publisher — so raising that one
-    field genuinely coarsens this path's flush cadence (one Signal per flush) instead of
-    being ignored the moment a factory is wired. Defaulted so the factory stays callable
-    by hand (e.g. in tests), where ``None`` means "use the harness default".
+    field genuinely coarsens this path's flush cadence (one Signal or store write per flush)
+    instead of being ignored the moment a factory is wired. Defaulted so the factory stays
+    callable by hand (e.g. in tests), where ``None`` means "use the harness default".
     """
     tok = (
         token

@@ -361,6 +361,43 @@ func TestPoll_Closed(t *testing.T) {
 	assert.Empty(t, result.Events)
 }
 
+// A batch can have the last events of an agent that just finished, so they go out with the
+// close.
+func TestPoll_ClosedBatchKeepsItsEvents(t *testing.T) {
+	last := streamItem{TurnNumber: 1, Event: turnEvent{Type: "reply_delta", Text: "last words"}}
+	items := []harnessgen.StreamItem{makeTestStreamItem(t, last, 0, turnEventsTopic)}
+	result := poll(t, items, true, turnHandle{SessionID: "s", TurnNumber: 1})
+	assert.True(t, result.Done)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, "last words", result.Events[0].Chunk.Text)
+}
+
+// An agent on temporalio.contrib.streams has a string cursor, which the handle passes back.
+func TestPoll_StreamCursorGoesToTheNextPoll(t *testing.T) {
+	const sent, next = "1879862925380812801", "1879862925380812802"
+	var got *string
+	svc := agentService(nexus.NewSyncOperation(harnessgen.AgentService.PollMessages.Name(),
+		func(ctx context.Context, input harnessgen.PollMessagesInput,
+			_ nexus.StartOperationOptions) (harnessgen.PollMessagesOutput, error) {
+			got = input.StreamCursor
+			return harnessgen.PollMessagesOutput{
+				Items: []harnessgen.StreamItem{}, NextCursor: ptr(next),
+			}, nil
+		}))
+	handle, err := json.Marshal(turnHandle{SessionID: "s", TurnNumber: 1, StreamCursor: sent})
+	require.NoError(t, err)
+	env := newTestEnv(t, svc)
+	env.ExecuteWorkflow(runPoll, router.Handle(handle))
+	require.NoError(t, env.GetWorkflowError())
+	var result router.Poll
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.NotNil(t, got)
+	assert.Equal(t, sent, *got)
+	assert.JSONEq(t,
+		`{"sessionId":"s","turnNumber":1,"cursor":0,"streamCursor":"`+next+`"}`,
+		string(result.Handle))
+}
+
 // makeTestStreamItem encodes a streamItem into the wire format expected by decodeTurnEvent:
 // base64(proto.Marshal(Payload{encoding:"json/plain", data:<json>}))
 func makeTestStreamItem(t *testing.T, si streamItem, offset int64, topic string) harnessgen.StreamItem {

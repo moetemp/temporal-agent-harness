@@ -2,12 +2,13 @@
  * Where this view's history is discontinuous — the seam left when a stale frame
  * cache is spliced onto a window the server could only serve from later.
  *
- * The mechanism, end to end. On continue-as-new the workflow keeps only a
+ * The mechanism, end to end, on the Workflow Streams provider. On continue-as-new
+ * the workflow keeps only a
  * bounded tail of its stream log (`_truncate_stream_for_handover`, 512 KiB) and
  * carries `base_offset` with it, so offsets stay monotonic and a client polling
  * at the head resumes seamlessly. A client that was NOT at the head does not:
  * it hydrates its per-session `sessionStorage` cache, calls
- * `attach(lastResumeOffset)`, and `/api/attach` answers from the oldest offset
+ * `attach(lastResume)`, and `/api/attach` answers from the oldest offset
  * it still holds without saying that is what it did. Measured on a live
  * session: `from_offset=2000` returned a first event at `event_offset: 4906`,
  * and the console spliced 2,023 cached frames onto 2,044 new ones and drew

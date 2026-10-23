@@ -626,6 +626,46 @@ class ToolApprovalPolicy(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AgentStream(BaseModel):
+    """Where an agent publishes its turn events on ``temporalio.contrib.streams``.
+
+    Every agent of a tree writes the Stream that its root creates, each on a Topic of its own.
+    So one read of the Stream gives the whole tree in one order. An agent on Workflow Streams
+    reports no ``AgentStream``. A parent on Workflow Streams gives its subagents one with an
+    empty ``handle``, which keeps them on Workflow Streams too.
+    """
+
+    handle: dict[str, str] = Field(
+        description="The root agent's Stream, in the proto JSON form of a ``StreamRef``. Empty "
+        "means Workflow Streams."
+    )
+    topic: str = Field(description="The Topic this agent publishes its turn events on.")
+    seq: int = Field(
+        default=0,
+        description="How many events the agent has published from workflow code. A run that "
+        "continues as new passes it on, so ``AgentEvent.seq`` keeps counting.",
+    )
+
+
+class MessageResult(BaseModel):
+    """What ``await_message`` returns once a message's turn has ended.
+
+    The turn ends after the handler, so nothing the message started still runs. Exactly one
+    of ``output`` and ``error`` is set.
+    """
+
+    message_id: str
+    turn_id: str
+    turn_number: int
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    stream_offset: int = Field(
+        default=0,
+        description="On Workflow Streams, the child's stream head just past the turn's "
+        "``turn_end``. The parent passes it on as the next turn's ``from_offset``.",
+    )
+
+
 class AgentConfig(BaseModel):
     """The single, harness-defined input contract every agent workflow accepts.
 
@@ -686,11 +726,22 @@ class AgentConfig(BaseModel):
     id the parent (and a UI merging the streams) already knows it by. ``None`` → a top-level agent
     generates its own single-segment id. This is the one ``AgentConfig`` field a parent populates
     per-child rather than passing through unchanged.
+
+    ``stream`` is where a subagent publishes, on its parent's backend (see
+    :class:`AgentStream`). The parent sets it with ``agent_id``. A run that continues as new
+    passes its own on with ``AgentWorkflowRunner.continue_as_new_config``. ``None`` → the
+    agent's own ``stream=`` choice.
+
+    ``unclaimed_results`` are the results of a parent's messages that the parent had not read
+    when the run continued as new, so the next run still gives them to ``await_message``.
+    ``continue_as_new_config`` sets it.
     """
 
     approval_policy: ToolApprovalPolicy | None = None
     auto_approval_criteria: AutoApprovalCriteria | None = None
     agent_id: AgentId | None = None
+    stream: AgentStream | None = None
+    unclaimed_results: list[MessageResult] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +935,12 @@ class AgentMessageReply:
     turn's ``turn_started`` offset, which capture-at-acceptance guarantees); the BFF/UI never
     sees or stores it. For a queued message it is the head mid the active prior turn; the
     skip-to-``turn_started`` preamble normalizes that.
+
+    ``accepted_cursor`` is the same read-start hint as an opaque cursor, on both stream
+    backends. On ``temporalio.contrib.streams`` a workflow can't read the head. It gives the
+    position past the newest record that this run knows its own writes reached.
+
+    ``stream`` is where the agent publishes, or ``None`` on Workflow Streams.
     """
 
     turn_number: int
@@ -891,6 +948,8 @@ class AgentMessageReply:
     message_id: str
     disposition: MessageDisposition
     accepted_offset: int = 0
+    accepted_cursor: str = ""
+    stream: AgentStream | None = None
 
 
 @dataclass
@@ -1078,6 +1137,11 @@ class AgentStatus:
     # closes — and ``turn_end`` publishes — when this reaches 0, which is what makes
     # ``turn_active`` an honest answer rather than "the first participant is still going".
     turn_participants: int = 0
+    # The ``AgentEvent.seq`` of the newest event the agent published from workflow code. A
+    # stream position can't tell a reader that nothing comes after it, and this count can.
+    last_event_seq: int = 0
+    # Where the agent publishes, or ``None`` on Workflow Streams.
+    stream: AgentStream | None = None
     pending_turns: list[PendingTurn] = field(default_factory=list)
     pending_approvals: list[PendingApproval] = field(default_factory=list)
     # Callback tool calls currently awaiting a client-supplied result (its own machine executes

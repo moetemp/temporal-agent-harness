@@ -16,7 +16,6 @@ import pytest_asyncio
 from pydantic import BaseModel
 from temporalio.client import Client, WorkflowHandle
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
@@ -53,6 +52,7 @@ from _activity_fs_parent import (
     StoreConfig,
     StoreFileSystem,
 )
+from tests._streams import stream_plugins, turn_records
 
 
 def _by_name(fs: type[agent.ActivityFileSystem[Any]]) -> dict[str, Any]:
@@ -243,10 +243,7 @@ async def _send(client: Client, handle: WorkflowHandle[Any, Any], script: str) -
         AgentMessage(type="run_code", payload={"script": script}),
         result_type=AgentMessageReply,
     )
-    stream = WorkflowStreamClient.create(client, handle.id)
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
-    ):
+    async for item in turn_records(client, handle.id):
         envelope: AgentEvent = item.data
         if (
             envelope.message_id == accepted.message_id
@@ -295,18 +292,16 @@ async def test_a_mounted_activity_filesystem_is_indexed(client_and_queue, store)
     assert entries["out/r.md"] == {"is_dir": False, "size": 3, "mtime": None, "writes": 1}
 
     await Replayer(
+        plugins=stream_plugins(),
         workflows=[ActivityFsParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(await handle.fetch_history())
 
 
 async def _first_turn(client: Client, handle: WorkflowHandle[Any, Any]) -> list[AgentEvent]:
     """Every event the agent published up to the end of its first turn."""
-    stream = WorkflowStreamClient.create(client, handle.id)
     events: list[AgentEvent] = []
     async with asyncio.timeout(10):
-        async for item in stream.subscribe(
-            topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
-        ):
+        async for item in turn_records(client, handle.id):
             events.append(item.data)
             if item.data.event.type == AgentEventType.TURN_END:
                 break
@@ -328,7 +323,7 @@ async def test_a_new_session_with_a_declared_mount_publishes_only_its_snapshot(
     )
 
     stream = await AgentClient(client, handle.id).attach(
-        from_offset=0, on_item=lambda item, _resume_offset: item
+        on_item=lambda item, _resume: item
     )
     items: list[AgentEvent] = []
     async with asyncio.timeout(10):
@@ -410,6 +405,7 @@ async def test_an_okf_code_mode_tool_writes_lists_and_links_concepts(client_and_
     ]
     assert len(walks) == 2  # one per okf_concepts / okf_links call, not one per file
     await Replayer(
+        plugins=stream_plugins(),
         workflows=[OKFParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(history)
 

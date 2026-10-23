@@ -14,7 +14,10 @@ py_library(
     srcs = ["conftest.py"],
     imports = [".."],
     visibility = ["//:__subpackages__"],
-    deps = ["@pypi//temporalio"],
+    deps = [
+        "//python/temporal_agent_harness/harness:contrib_stream",
+        "@pypi//temporalio",
+    ],
 )
 
 harness_pytest_test(
@@ -28,5 +31,17 @@ harness_pytest_test(
         "//python/temporal_agent_harness",  # keep
         ":conftest",
         "@pypi//pytest",
+    ],
+)
+
+py_library(
+    name = "_streams",
+    srcs = ["_streams.py"],
+    imports = [".."],
+    visibility = ["//python:__subpackages__"],
+    deps = [
+        "//python/temporal_agent_harness/harness:contrib_stream",
+        "//python/temporal_agent_harness/harness/agent_protocol:__init__",
+        "@pypi//temporalio",
     ],
 )

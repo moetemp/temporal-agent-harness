@@ -28,8 +28,8 @@
  *    case times out — the live-session gap, back again.
  *  - Emptying reattachBackoffMs, or otherwise not re-attaching a RUNNING
  *    workflow: "dropped stream" times out waiting for the second attach.
- *  - Resuming a reconnect from 0 rather than the last offset the server sent:
- *    the from_offset assertion fails. Replaying from zero is not harmless — it
+ *  - Resuming a reconnect from 0 rather than the last point the server sent:
+ *    the resume assertion fails. Replaying from zero is not harmless — it
  *    re-sends the whole history on every blip.
  *  - Never registering the `online` listener: "connectivity returns" times out,
  *    which is a reader stranded by an outage that outlasted the retry budget.
@@ -60,6 +60,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 
 import { installBrowserSurface, sleep } from "../../../tests/support/controllerHarness.mjs";
+import { ApiError } from "../api/httpClient.ts";
 import { AgentRunController } from "./agentRun.svelte.ts";
 import { framePublishChunkSize } from "./hydration.ts";
 
@@ -111,7 +112,7 @@ const session = (id, over = {}) => ({
 
 /**
  * A frame shaped like the wire's. `replay` is what puts the pipeline in
- * catch-up, and `resume_offset` is what a reconnect resumes from, so both have
+ * catch-up, and `resume` is what a reconnect resumes from, so both have
  * to be real for this to test anything.
  */
 const frame = (agentId, offset, { replay = true } = {}) => ({
@@ -122,7 +123,7 @@ const frame = (agentId, offset, { replay = true } = {}) => ({
     turn_id: "t1",
     turn_number: 1,
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     delta: `${agentId}#${offset} `,
     replay
@@ -130,11 +131,10 @@ const frame = (agentId, offset, { replay = true } = {}) => ({
 });
 
 /**
- * The two parent-stream frames a client sees for a child the merge could not
- * mount. `subagent_started` is the parent's, so it carries the parent's
- * `agent_id`; the marker is synthesized (hence `event_offset: -1`) and stamped
- * with the child's `agent_id`, matching `_unavailable_event` in
- * `stream_merge/merge.py`.
+ * The two parent-stream frames a client sees for a child whose events it could not
+ * obtain. `subagent_started` is the parent's, so it carries the parent's `agent_id`;
+ * the marker is synthesized (hence `event_offset: -1`) and stamped with the child's
+ * `agent_id`.
  */
 const subagentStarted = (subagentId, workflowId, offset) => ({
   event: "subagent_started",
@@ -144,7 +144,7 @@ const subagentStarted = (subagentId, workflowId, offset) => ({
     turn_id: "t1",
     turn_number: 1,
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     subagent_id: subagentId,
     agent_key: "qa",
@@ -260,8 +260,8 @@ function fakeApi({ streamFor, statusFor }) {
         const status = statusFor(workflowId);
         return { workflow_id: workflowId, execution_status: status, closed: status !== "RUNNING" };
       },
-      attach(sessionId, fromOffset, signal) {
-        attachCalls.push({ sessionId, fromOffset });
+      attach(sessionId, resume, signal) {
+        attachCalls.push({ sessionId, resume });
         return streamFor(sessionId).iterate(signal);
       }
     }
@@ -436,7 +436,7 @@ describe("frame arrival", () => {
 
     void controller.selectSession("wf-drop");
     await waitFor("the first attach", () => attachCalls.length === 1);
-    assert.equal(attachCalls[0].fromOffset, 0, "a first attach starts from the beginning");
+    assert.equal(attachCalls[0].resume, "", "a first attach starts from the beginning");
 
     stream.push(...Array.from({ length: 3 }, (_, i) => frame("root", i)));
     await sleep(80);
@@ -444,9 +444,9 @@ describe("frame arrival", () => {
 
     await waitFor("a re-attach after the drop", () => attachCalls.length === 2, 6_000);
     assert.equal(
-      attachCalls[1].fromOffset,
-      3,
-      "a reconnect must resume from the last offset the server sent, not replay from 0"
+      attachCalls[1].resume,
+      "3@c",
+      "a reconnect must resume from the last point the server sent, not replay from the beginning"
     );
 
     stream.push(...Array.from({ length: 2 }, (_, i) => frame("root", 3 + i)));
@@ -467,6 +467,93 @@ describe("frame arrival", () => {
       attachCalls.length,
       2,
       "once the workflow closes, the stream ending must not start another attach"
+    );
+  });
+
+  // A point the server no longer has, such as after a store switch, is a 400 with
+  // its own code. Retrying it would spend the budget on a request that cannot work.
+  it("a resume point the server no longer has", async () => {
+    const stream = controllableStream();
+    const refusing = {
+      iterate() {
+        return (async function* () {
+          throw new ApiError("invalid resume point", "invalid_resume_point");
+        })();
+      }
+    };
+    let first = true;
+    const { controller, attachCalls, finish } = boot({
+      sessions: [session("wf-stale")],
+      streamFor: () => {
+        if (first) {
+          first = false;
+          return stream;
+        }
+        return attachCalls.at(-1).resume === "" ? stream : refusing;
+      }
+    });
+
+    void controller.selectSession("wf-stale");
+    await waitFor("the first attach", () => attachCalls.length === 1);
+    stream.push(...Array.from({ length: 3 }, (_, i) => frame("root", i)));
+    await sleep(80);
+    stream.drop();
+
+    await waitFor("a fresh attach from the beginning", () =>
+      attachCalls.some((call, i) => i > 1 && call.resume === "")
+    );
+    assert.equal(attachCalls[1].resume, "3@c", "the first retry resumes where it was");
+    stream.push(...Array.from({ length: 2 }, (_, i) => frame("root", 10 + i)));
+    await waitFor("the new read to reach the view", () => controller.frames.length === 2);
+    assert.deepEqual(
+      controller.frames.map((f) => f.data.event_offset),
+      [10, 11],
+      "the frames from before the refusal are dropped, not kept beside the new read"
+    );
+    finish("wf-stale");
+    stream.end();
+  });
+
+  // A Stream withdraws one failed attempt's records. The marker lists their
+  // offsets, and only those go. Its Superseded item shares an offset with the
+  // first record of the retry, so the marker has no offset, and that record stays.
+  it("a superseded attempt drops exactly the frames it names", async () => {
+    const stream = controllableStream();
+    const { controller, attachCalls, finish } = boot({
+      sessions: [session("wf-retry")],
+      streamFor: () => stream
+    });
+    const onStream = (agentId, offset, text) => ({
+      ...frame(agentId, 0),
+      data: { ...frame(agentId, 0).data, event_offset: offset, delta: text, timestamp: 1 }
+    });
+
+    void controller.selectSession("wf-retry");
+    await waitFor("the first attach", () => attachCalls.length === 1);
+    stream.push(
+      onStream("root", "1879862925380812801", "kept "),
+      onStream("root", "1879862925380812802", "half "),
+      onStream("root-b52e04", "1879862925380812803", "a child's "),
+      {
+        event: "attempt_superseded",
+        data: {
+          type: "attempt_superseded",
+          agent_id: "root",
+          turn_id: "t1",
+          turn_number: 1,
+          timestamp: 2,
+          resume: "4@c",
+          withdrawn_offsets: ["1879862925380812802"]
+        }
+      },
+      onStream("root", "1879862925380812804", "whole")
+    );
+    finish("wf-retry");
+    stream.end();
+    await waitFor("the frames to reach the view", () => controller.frames.length === 4);
+    assert.deepEqual(
+      controller.frames.map((f) => f.data.event_offset),
+      ["1879862925380812801", "1879862925380812803", undefined, "1879862925380812804"]
     );
   });
 
@@ -521,9 +608,9 @@ describe("frame arrival", () => {
       "the reconnect must target the session on screen"
     );
     assert.equal(
-      attachCalls[1].fromOffset,
-      controller.lastResumeOffset,
-      "reconnecting on an online event must resume from the last offset too"
+      attachCalls[1].resume,
+      controller.lastResume,
+      "reconnecting on an online event must resume from the last point too"
     );
     finish("wf-later");
     streams["wf-later"].end();

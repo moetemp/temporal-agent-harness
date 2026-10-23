@@ -39,9 +39,9 @@ export function publishAtChunkBoundary(
  * frame, so the mode latches rather than tracking the server's `replay` mark
  * frame by frame.
  *
- * Within ONE attach the mark is already ordered — the server's `replay` is
- * `resume_offset <= head`, and `resume_offset` is a single counter that only
- * advances, so the mark goes True..True,False..False and never back. But frames
+ * Within ONE attach the mark is already ordered — the server's `replay` covers
+ * what existed when the stream opened, and one attach delivers the root stream
+ * in order, so the mark goes True..True,False..False and never back. But frames
  * do not all come from one attach: a subagent gets its own concurrent attach
  * with its own head (see #attachWorkflow), and its backlog is stamped `replay`
  * while the root's frames are live. Merged into one pipeline, the two orderings
