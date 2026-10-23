@@ -505,11 +505,13 @@ async def test_attach_at_the_head_of_an_idle_agent_gives_nothing(client_and_queu
 
 
 def _nexus_handler(client: Client, task_queue: str) -> Any:
-    from temporal_agent_harness.nexus_agent_adapter.handler import AgentServiceHandler, Config
-
-    return AgentServiceHandler(
+    # The Bazel build leaves the Nexus adapter out.
+    handler = pytest.importorskip("temporal_agent_harness.nexus_agent_adapter.handler")
+    return handler.AgentServiceHandler(
         client,
-        Config(agent_task_queue=task_queue, workflow_name="BackendParent", workflow_id_prefix=""),
+        handler.Config(
+            agent_task_queue=task_queue, workflow_name="BackendParent", workflow_id_prefix=""
+        ),
     )
 
 
@@ -755,11 +757,11 @@ class _UnansweredQuery:
 
 
 async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_goes_to_workflow_streams():
+    closed = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.COMPLETED), "q")
+    running = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.RUNNING), "q")
     from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
 
     poll = PollMessagesInput(session_id="wf", cursor=0, timeout_seconds=1.0)
-    closed = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.COMPLETED), "q")
-    running = _nexus_handler(_UnansweredQuery(WorkflowExecutionStatus.RUNNING), "q")
 
     assert await closed._stream_place("wf", poll) is None
     with pytest.raises(RPCError):
