@@ -2205,7 +2205,9 @@ class StreamItem:
     """base64-encoded proto Payload containing a TurnEvent"""
 
     offset: int
-    """Absolute position of this item in the stream"""
+    """Absolute position of this item in the stream, on Workflow Streams. 0 on
+    temporalio.contrib.streams, whose cursor is next_cursor
+    """
 
 
 class _SubagentInfoTransferTypeConverter(

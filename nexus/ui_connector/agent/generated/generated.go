@@ -2132,7 +2132,8 @@ type StreamItem struct {
 	Topic string `json:"topic"`
 	// Data base64-encoded proto Payload containing a TurnEvent
 	Data string `json:"data"`
-	// Offset Absolute position of this item in the stream
+	// Offset Absolute position of this item in the stream, on Workflow Streams. 0 on
+	// temporalio.contrib.streams, whose cursor is next_cursor
 	Offset int64 `json:"offset"`
 }
 

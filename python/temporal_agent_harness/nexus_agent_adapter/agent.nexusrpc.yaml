@@ -481,7 +481,7 @@ $defs:
         description: "base64-encoded proto Payload containing a TurnEvent"
       offset:
         type: integer
-        description: "Absolute position of this item in the stream"
+        description: "Absolute position of this item in the stream, on Workflow Streams. 0 on temporalio.contrib.streams, whose cursor is next_cursor"
     required:
       - topic
       - data
