@@ -32,6 +32,7 @@ from temporalio.contrib.streams import (
     Closed,
     Record,
     StreamClient,
+    StreamConfigError,
     StreamNotFoundError,
     StreamOffsetError,
     StreamPlugin,
@@ -63,6 +64,12 @@ _WAIT_FOR_CREATE = timedelta(minutes=1)
 _LIVENESS_CHECK = timedelta(seconds=5)
 # Every client of this process shares one memory plugin, so they all see the same Streams.
 _memory: StreamPlugin | None = None
+# Said when a worker has no Stream plugin, which fails the Workflow Task until one has.
+_NO_PLUGIN = (
+    "ContribStream needs a Stream plugin on the worker's client, such as "
+    "Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()]) with STREAMS_STORE "
+    "set. Workflow Streams, the default stream=, needs none."
+)
 
 
 @streams.defn(name="agent_events")
@@ -181,7 +188,10 @@ class ContribSink:
     def _write(self, topic: str, event: AgentEvent) -> None:
         # ``publish_nowait`` drops the write's future, and the runner needs its offset and
         # its error. ``_append`` is the call that ``publish_nowait`` makes.
-        written = self._stream._append(topic, (event,))
+        try:
+            written = self._stream._append(topic, (event,))
+        except StreamConfigError as err:
+            raise StreamConfigError(f"{_NO_PLUGIN} ({err})") from err
         written.add_done_callback(self._written)
 
     def _written(self, written: asyncio.Future[int]) -> None:
@@ -200,9 +210,12 @@ def open_root(choice: ContribStream) -> ContribSink:
     The Stream closes when the run chain closes. It has no ``auto_close``: an idle session
     keeps its Stream, and a reader of a run that ended with no close finds that out itself.
     """
-    stream = create_stream_nowait(
-        AgentEvents, retention=choice.retention, backend=choice.backend
-    )
+    try:
+        stream = create_stream_nowait(
+            AgentEvents, retention=choice.retention, backend=choice.backend
+        )
+    except StreamConfigError as err:
+        raise StreamConfigError(f"{_NO_PLUGIN} ({err})") from err
     place = AgentStream(handle=_handle_json(stream), topic=TURN_EVENTS_TOPIC)
     return ContribSink(stream, place)
 
