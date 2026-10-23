@@ -6,7 +6,7 @@ Implements mapping of OpenAI datastructures to Pydantic friendly types.
 import enum
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, NoReturn
+from typing import Annotated, Any, NoReturn
 
 from agents import (
     AgentOutputSchemaBase,
@@ -42,6 +42,7 @@ from openai import (
 )
 from openai.types.responses import CustomToolParam
 from openai.types.responses.tool_param import Mcp
+from pydantic import Field
 from typing_extensions import Required, TypedDict
 
 from temporalio import activity
@@ -50,6 +51,7 @@ from temporal_agent_harness.ai_sdks.integration_helpers import (
     select_observer,
 )
 from temporal_agent_harness.ai_sdks.openai_agents._heartbeat_decorator import auto_heartbeater
+from temporal_agent_harness.harness.stream_context import TurnStreamToken
 from temporalio.exceptions import ApplicationError
 
 
@@ -210,11 +212,13 @@ class StreamingActivityModelInput(ActivityModelInput, total=False):
     Adds the streaming-only fields on top of :class:`ActivityModelInput`.
     """
 
-    stream_to: Required[Any]
+    stream_to: Required[Annotated[TurnStreamToken | Any, Field(union_mode="left_to_right")]]
     """Opaque per-call routing token resolved on the workflow side (see
     ``ModelActivityParameters.stream_to_provider`` / ``streaming_topic``). The
     activity hands it, unexamined, to its configured observer factory; a plain
-    ``str`` with no factory is treated as a ``WorkflowStream`` topic name."""
+    ``str`` with no factory is treated as a ``WorkflowStream`` topic name. A harness
+    turn's token decodes as a ``TurnStreamToken``, so its Stream is a handle that the
+    Stream plugin finds in the input."""
 
     streaming_batch_interval: timedelta
 

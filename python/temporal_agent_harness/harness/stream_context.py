@@ -77,3 +77,16 @@ class TurnStreamContext(BaseModel):
         default="turn_events",
         description="The Topic the agent publishes on, when ``stream`` is set.",
     )
+
+
+class TurnStreamToken(BaseModel):
+    """The routing token of a model call that streams into a harness turn: the turn's stream
+    context and the requested model id.
+
+    The OpenAI streaming activity types its token with it first. So the context's Stream comes
+    back as a handle, and the Stream plugin withdraws an earlier attempt's records when a retry
+    starts.
+    """
+
+    context: TurnStreamContext
+    model: str | None = None
