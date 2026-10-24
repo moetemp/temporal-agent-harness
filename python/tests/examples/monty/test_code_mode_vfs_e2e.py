@@ -16,7 +16,7 @@ from temporalio.client import Client, WorkflowHandle
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
-from tests._streams import stream_plugins
+from tests._streams import stream_backend_options
 from temporalio.worker import Replayer, Worker
 
 from temporal_agent_harness.harness.agent_protocol import (
@@ -104,7 +104,7 @@ async def _scheduled_activities(handle: WorkflowHandle[Any, Any]) -> list[str]:
 async def _replay(handle: WorkflowHandle[Any, Any]) -> None:
     history = await handle.fetch_history()
     await Replayer(
-        plugins=stream_plugins(),
+        **stream_backend_options(),
         workflows=[CodeModeVfsE2EParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(history)
 

@@ -42,7 +42,7 @@ _default_server_path("start_time_skipping", "test_server_existing_path", "TEMPOR
 
 
 def _streams_lane() -> None:
-    """With ``STREAMS_STORE`` set, give every test client the Stream plugin it names.
+    """With ``STREAMS_STORE`` set, give every test client the Stream backend it names.
 
     ``TEMPORAL_ADDRESS`` then gives a running server that ``start_time_skipping`` connects to,
     since the Redis lane runs on a dev server. ``tests/_streams.py`` has the rest of the lane.
@@ -51,7 +51,7 @@ def _streams_lane() -> None:
         return
     from temporalio.client import Client
 
-    from temporal_agent_harness.harness.contrib_stream import streams_from_env
+    from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
 
     # Read once, since a test of the web app's CLI sets TEMPORAL_ADDRESS for its own process.
     address = os.environ.get("TEMPORAL_ADDRESS")
@@ -63,7 +63,7 @@ def _streams_lane() -> None:
             async def start_with_streams(
                 cls: type[WorkflowEnvironment], *args: Any, **kwargs: Any
             ) -> WorkflowEnvironment:
-                kwargs["plugins"] = [*kwargs.get("plugins", ()), streams_from_env()]
+                kwargs["stream_backends"] = stream_backends_from_env()
                 if name == "start_time_skipping" and address:
                     kwargs.pop("test_server_existing_path", None)
                     client = await Client.connect(address, **kwargs)

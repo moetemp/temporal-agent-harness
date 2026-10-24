@@ -73,7 +73,7 @@ def _registered_activity_names(worker: Worker) -> set[str]:
     """The activity names a built ``Worker`` will actually serve.
 
     ``active_config=True`` is the post-plugin view; the default returns the arguments the
-    caller passed, which is exactly what the plugin is meant to shrink. The Stream plugin of a
+    caller passed, which is exactly what the plugin is meant to shrink. The Stream backend of a
     streams test lane adds its own activities, which are not the harness plugin's.
     """
     return {

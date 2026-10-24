@@ -18,7 +18,7 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
-from tests._streams import stream_plugins
+from tests._streams import stream_backend_options
 from temporalio.worker import Replayer, Worker
 
 from examples.code_mode_memory import local_disk
@@ -228,7 +228,7 @@ async def _message(client: Client, handle: WorkflowHandle[Any, Any], message: Ag
 async def _replay(handle: WorkflowHandle[Any, Any]) -> None:
     history = await handle.fetch_history()
     await Replayer(
-        plugins=stream_plugins(),
+        **stream_backend_options(),
         workflows=[CodeModeMemoryE2EParentWorkflow], data_converter=pydantic_data_converter
     ).replay_workflow(history)
 

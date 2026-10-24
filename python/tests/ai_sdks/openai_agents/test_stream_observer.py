@@ -298,10 +298,10 @@ async def test_factory_without_interval_defers_to_the_harness_default(
 
 
 def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_handle():
-    """The Stream plugin withdraws an earlier attempt's records when a retry starts, for each
+    """The Stream backend withdraws an earlier attempt's records when a retry starts, for each
     Stream handle it finds in the decoded input. A token that came back as a plain dict hid the
     turn's Stream, so a retry that failed before writing left the first attempt's half answer."""
-    streams = pytest.importorskip("temporalio.contrib.streams")
+    streams = pytest.importorskip("temporalio.common.streams")
     from pydantic import TypeAdapter
     from typing_extensions import Required, TypedDict
 

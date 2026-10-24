@@ -1,7 +1,7 @@
 """Which event-stream backend the test agents use, and a reader that works on both.
 
 With ``STREAMS_STORE=memory`` or ``redis`` the test agents pass no ``stream=``, so they use the
-default ``ContribStream`` on that store, and ``tests/conftest.py`` puts the Stream plugin on
+default ``ContribStream`` on that store, and ``tests/conftest.py`` puts the Stream backend on
 every test client. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``. The lane puts its keys
 under a prefix of its own, ``STREAMS_KEY_PREFIX`` unless it is set, so two runs on one Redis
 never meet. Without ``STREAMS_STORE`` they pass ``stream=WorkflowStream()``, which a released
@@ -32,13 +32,14 @@ if STORE:
     os.environ.setdefault("STREAMS_KEY_PREFIX", f"harness-test-{uuid.uuid4().hex[:12]}")
 
 
-def stream_plugins() -> list[Any]:
-    """The lane's Stream plugin for a client or ``Replayer`` that the conftest does not build."""
+def stream_backend_options() -> dict[str, Any]:
+    """The lane's ``stream_backends=`` for a client or ``Replayer`` that the conftest does not
+    build. Without a lane it is no option, since a released SDK has no ``stream_backends=``."""
     if STORE is None:
-        return []
-    from temporal_agent_harness.harness.contrib_stream import streams_from_env
+        return {}
+    from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
 
-    return [streams_from_env()]
+    return {"stream_backends": stream_backends_from_env()}
 
 
 def agent_stream() -> WorkflowStream | None:

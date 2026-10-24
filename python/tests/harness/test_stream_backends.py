@@ -58,7 +58,7 @@ from temporal_agent_harness.harness.stream_context import TurnStreamContext
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from tests._streams import STORE, agent_stream
 
-needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.contrib.streams")
+needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.common.streams")
 
 # How many times each text went through ``flaky_tool``, so its first attempt can fail.
 _TOOL_ATTEMPTS: dict[str, int] = {}
@@ -726,7 +726,7 @@ async def test_a_workflow_streams_session_from_upstream_replays():
 
 
 def test_the_default_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
-    monkeypatch.setitem(sys.modules, "temporalio.contrib.streams", None)
+    monkeypatch.setitem(sys.modules, "temporalio.common.streams", None)
     monkeypatch.delitem(sys.modules, "temporal_agent_harness.harness.contrib_stream", raising=False)
 
     with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
@@ -779,7 +779,7 @@ async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_ba
     assert await closed._stream_place("wf", poll(None)) is None
     with pytest.raises(RPCError):
         await running._stream_place("wf", poll(None))
-    pytest.importorskip("temporalio.contrib.streams")
+    pytest.importorskip("temporalio.common.streams")
     from temporal_agent_harness.harness.contrib_stream import root_place
 
     assert await closed._stream_place("wf", poll("5")) == root_place("wf", "run1")
@@ -802,7 +802,7 @@ async def test_the_place_found_without_a_query_is_the_one_the_agent_reports(clie
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():
-    pytest.importorskip("temporalio.contrib.streams")
+    pytest.importorskip("temporalio.common.streams")
     from temporal_agent_harness.harness.contrib_stream import _ended
 
     flaky = _FailingDescribe(RPCStatusCode.UNAVAILABLE)
