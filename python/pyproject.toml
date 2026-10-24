@@ -26,7 +26,7 @@ classifiers = [
 # pydantic. AI-SDK and external-storage needs are opt-in extras below, so installing the
 # harness doesn't drag in Gemini or boto3.
 dependencies = [
-    # ContribStream, the default event stream, needs a build with temporalio.contrib.streams,
+    # ContribStream, the default event stream, needs a build with temporalio.common.streams,
     # which no release has yet. stream=WorkflowStream() runs on this release range.
     "temporalio>=1.31.0",
     "pydantic>=2.0",

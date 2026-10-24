@@ -526,7 +526,7 @@ on the client is enough — Temporal applies a client's plugins to workers built
 
 An agent publishes its turn events on one of two backends, and `stream=` on
 `AgentWorkflowRunner` picks it. The default, `ContribStream`, puts the agent's events on a Stream
-of `temporalio.contrib.streams`, in a store such as Redis. `stream=WorkflowStream()` keeps them
+of `temporalio.common.streams`, in a store such as Redis. `stream=WorkflowStream()` keeps them
 in the workflow's own history with `temporalio.contrib.workflow_streams`:
 
 ```python
@@ -534,22 +534,29 @@ self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # Contr
 self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_policy_default=...)
 ```
 
-A `ContribStream` deployment has the same Stream plugin on every client and worker:
+A `ContribStream` deployment has the same Stream backend on every client. Workers take their
+client's backend:
 
 ```python
-from temporal_agent_harness.harness.contrib_stream import streams_from_env
+from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
 
-client = await Client.connect(..., plugins=[AgentHarnessPlugin(), streams_from_env()])
+client = await Client.connect(
+    ..., plugins=[AgentHarnessPlugin()], stream_backends=stream_backends_from_env()
+)
 ```
 
-`streams_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL` and
-`STREAMS_KEY_PREFIX`. The web app and the Nexus adapter add the same plugin when `STREAMS_STORE`
-is set.
+`stream_backends_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL`
+and `STREAMS_KEY_PREFIX`, and gives a `RedisStreamBackend` (`temporalio.contrib.stream`) or a
+`MemoryStreamBackend` (`temporalio.contrib.stream.testing`) with `default=True`. The web app and
+the Nexus adapter add the same backend when `STREAMS_STORE` is set.
 
-`ContribStream` needs an SDK build with `temporalio.contrib.streams`, which no release has yet.
+The end of an agent's run closes nothing on Redis, and the harness does not close the Stream
+either. A reader of an agent that ended stops once it finds that the agent no longer runs.
+
+`ContribStream` needs an SDK build with `temporalio.common.streams`, which no release has yet.
 `just install-streams-sdk` installs the one the harness is tested with. Without it, an agent that
 passes no `stream=` fails its Workflow Task with an error that says so. The harness imports
-`temporalio.contrib.streams` only for a `ContribStream` agent, so an agent on
+`temporalio.common.streams` only for a `ContribStream` agent, so an agent on
 `stream=WorkflowStream()` runs on a released SDK. The examples pass `stream=WorkflowStream()`.
 
 The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
@@ -564,7 +571,7 @@ Streams each agent has its own log. An agent that continues as new passes its St
 
 | | `ContribStream` (default) | Workflow Streams |
 | --- | --- | --- |
-| What it needs | A Stream store, a Stream plugin on every process, an SDK build with `temporalio.contrib.streams` | Temporal only |
+| What it needs | A Stream store, a Stream backend on every process, an SDK build with `temporalio.common.streams` | Temporal only |
 | Where events go | Into the store, for the Stream's retention | Into each workflow's own log, in its history |
 | Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store | Each activity flush is a Signal and each client read an Update, one Action each |
 | History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |
