@@ -1,13 +1,13 @@
-# ABOUTME: The temporalio.contrib.streams backend of the agent event stream, the default of
+# ABOUTME: The temporalio.common.streams backend of the agent event stream, the default of
 # ``AgentWorkflowRunner``. An agent picks Workflow Streams with ``stream=WorkflowStream()``.
 #
 # An agent tree shares ONE Stream, which the root agent creates (``AgentEvents``). Each agent
 # publishes on its own Topic (``turn_events`` for the root, ``subagent_topic(agent_id)`` below
 # it), so one read of the Stream gives every agent's events in one order, and a Topic filter
 # gives one agent's. Workflow code writes the Stream with Local Activities, an activity writes it
-# through a ``BufferedPublisher``, and a client reads it through ``StreamClient``.
+# through a ``BufferedPublisher``, and a client reads it through ``Client.stream``.
 #
-# Only this module imports ``temporalio.contrib.streams``, which no SDK release has yet. The rest
+# Only this module imports ``temporalio.common.streams``, which no SDK release has yet. The rest
 # of the harness imports it lazily, so an agent on ``WorkflowStream()`` runs on a released SDK.
 
 from __future__ import annotations
@@ -27,30 +27,29 @@ from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.common import RawValue
 from temporalio.service import RPCError, RPCStatusCode
 
+# A release has ``temporalio.common`` as a plain module, whose missing ``streams`` is an
+# ``ImportError`` and not a ``ModuleNotFoundError``.
 try:
-    from temporalio.api.streamservice.v1 import ProducerKind
-    from temporalio.contrib import streams
-    from temporalio.contrib.streams import (
+    from temporalio.common import streams
+    from temporalio.common.streams import (
         ActivityStream,
         BufferedPublisher,
         ClientStream,
         Closed,
         Record,
-        StreamClient,
         StreamConfigError,
         StreamNotFoundError,
         StreamOffsetError,
-        StreamPlugin,
         Subscription,
         Superseded,
         WorkflowStream,
     )
-    from temporalio.contrib.streams._ids import scoped_stream_id
-    from temporalio.contrib.streams.workflow import create_stream_nowait
-except ModuleNotFoundError as exc:
+    from temporalio.common.streams._ids import scoped_stream_id
+    from temporalio.contrib.stream.workflow import create_stream_nowait
+except ImportError as exc:
     raise RuntimeError(
         "The default stream= of AgentWorkflowRunner, ContribStream, needs a temporalio build "
-        "with temporalio.contrib.streams, which no release has yet. Run "
+        "with temporalio.common.streams, which no release has yet. Run "
         "`just install-streams-sdk`, or pass stream=WorkflowStream() to run on a release."
     ) from exc
 
@@ -72,16 +71,17 @@ DEFAULT_REDIS_URL = "redis://127.0.0.1:6379"
 # How long a read waits for a Stream that does not exist yet. A client learns the place from the
 # agent's status or reply, which can come before the create's Local Activity is done.
 _WAIT_FOR_CREATE = timedelta(minutes=1)
-# How long a read waits with no item before it asks whether the agent still runs. A terminated
-# or timed-out run closes nothing on Redis or memory, so the read has to find out.
+# How long a read waits with no item before it asks whether the agent still runs. The end of a
+# run closes nothing on Redis or memory, so the read has to find out.
 _LIVENESS_CHECK = timedelta(seconds=5)
-# Every client of this process shares one memory plugin, so they all see the same Streams.
-_memory: StreamPlugin | None = None
-# Said when a worker has no Stream plugin, which fails the Workflow Task until one has.
-_NO_PLUGIN = (
-    "The default stream= of AgentWorkflowRunner, ContribStream, needs a Stream plugin on the "
-    "worker's client, such as Client.connect(..., plugins=[AgentHarnessPlugin(), "
-    "streams_from_env()]) with STREAMS_STORE set. stream=WorkflowStream() needs none."
+# Every client of this process shares one memory backend, so they all see the same Streams.
+_memory: streams.StreamBackend | None = None
+# Said when a worker has no Stream backend, which fails the Workflow Task until one has.
+_NO_BACKEND = (
+    "The default stream= of AgentWorkflowRunner, ContribStream, needs a Stream backend on the "
+    "worker's client, such as Client.connect(..., plugins=[AgentHarnessPlugin()], "
+    "stream_backends=stream_backends_from_env()) with STREAMS_STORE set. "
+    "stream=WorkflowStream() needs none."
 )
 
 
@@ -104,8 +104,8 @@ class TurnCursorError(ValueError):
     """A turn cursor that is not a position on the agent's Stream."""
 
 
-def streams_from_env() -> StreamPlugin | None:
-    """The Stream plugin for the store in ``STREAMS_STORE``, or ``None`` when it is unset.
+def stream_backends_from_env() -> list[streams.StreamBackend]:
+    """The Stream backend that ``STREAMS_STORE`` names, in a list, or none when it is unset.
 
     ``redis`` is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
     workers are separate processes, and they must all reach one Redis. ``STREAMS_KEY_PREFIX``
@@ -113,40 +113,45 @@ def streams_from_env() -> StreamPlugin | None:
     on one Redis apart. ``memory`` keeps the Streams in this process, for tests and a single
     process only. Unset means the process serves agents on ``WorkflowStream()`` only.
 
-    Register the result once, as ``Client.connect(..., plugins=[streams])``. Workers built from
-    that client take it. One plugin serves one client connection, so a second connection needs
-    a plugin of its own, except the memory plugin, which all of them share.
+    Register the result as ``Client.connect(..., stream_backends=backends)``. Workers built from
+    that client take it. The backend has ``default=True``, since a place found without asking
+    the agent (``root_place``) names no backend, and a client reads it on its default one. Every
+    call gives the one memory backend, so all clients of the process see the same Streams.
     """
     global _memory
     store = os.environ.get(STORE_ENV)
     if not store:
-        return None
+        return []
     if store == "memory":
-        from temporalio.contrib.streams.testing import MemoryStreamPlugin
+        from temporalio.contrib.stream.testing import MemoryStreamBackend
 
         if _memory is None:
-            _memory = MemoryStreamPlugin()
-        return _memory
+            _memory = MemoryStreamBackend(default=True)
+        return [_memory]
     if store != "redis":
         raise ValueError(f"{STORE_ENV}={store!r} is not a Stream store")
-    from temporalio.contrib.streams.redis import RedisStreamPlugin
+    from temporalio.contrib.stream import RedisStreamBackend
 
-    return RedisStreamPlugin(
-        os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL),
-        key_prefix=os.environ.get(KEY_PREFIX_ENV) or None,
-    )
+    return [
+        RedisStreamBackend(
+            os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL),
+            key_prefix=os.environ.get(KEY_PREFIX_ENV) or None,
+            default=True,
+        )
+    ]
 
 
 class ContribStream(StreamBackend):
-    """Selects ``temporalio.contrib.streams`` for an agent tree's turn events.
+    """Selects ``temporalio.common.streams`` for an agent tree's turn events.
 
     ``AgentWorkflowRunner`` uses ``ContribStream()`` when an agent passes no ``stream=``. Pass
     one of your own for another backend or retention. The root agent creates the tree's
     Stream, and its subagents publish there too, whatever their own ``stream=`` says. The
-    worker's client needs a Stream plugin, such as the one ``streams_from_env`` gives.
+    worker's client needs a Redis or memory Stream backend, such as the one
+    ``stream_backends_from_env`` gives.
 
     Args:
-        backend: The name of the Stream plugin's backend. ``None`` is the worker's.
+        backend: The name of the Stream backend. ``None`` is the worker's.
         retention: How long the records stay after the Stream closes. ``None`` is the
             backend's default.
     """
@@ -165,7 +170,7 @@ class ContribStream(StreamBackend):
 
 
 class ContribSink:
-    """What the runner publishes through on ``temporalio.contrib.streams``.
+    """What the runner publishes through on ``temporalio.common.streams``.
 
     Each write is a Local Activity. Its future gives the record's offset, which tells the
     runner where its own records reached, and its error, which the runner logs. A store that
@@ -207,7 +212,7 @@ class ContribSink:
         try:
             written = self._stream._append(topic, (event,))
         except StreamConfigError as err:
-            raise StreamConfigError(f"{_NO_PLUGIN} ({err})") from err
+            raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
         written.add_done_callback(self._written)
 
     def _written(self, written: asyncio.Future[int]) -> None:
@@ -223,15 +228,16 @@ class ContribSink:
 def open_root(choice: ContribStream) -> ContribSink:
     """Create the tree's Stream in a root agent's ``@agent.init``.
 
-    The Stream closes when the run chain closes. It has no ``auto_close``, so an idle session
-    keeps its Stream. A reader of a run that ended with no close finds that out itself.
+    Nothing closes the Stream. On Redis and memory the end of the run chain closes nothing, and
+    the harness never closes it, so an idle session keeps its Stream. An open Stream goes after
+    the backend's ``safety_ttl`` with no write. A reader of a run that ended finds that out.
     """
     try:
         stream = create_stream_nowait(
             AgentEvents, retention=choice.retention, backend=choice.backend
         )
     except StreamConfigError as err:
-        raise StreamConfigError(f"{_NO_PLUGIN} ({err})") from err
+        raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
     place = AgentStream(handle=_handle_json(stream), topic=TURN_EVENTS_TOPIC)
     return ContribSink(stream, place)
 
@@ -355,9 +361,7 @@ def _position(cursor: str) -> _Position:
 
 def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEvents]:
     handle = place.handle
-    return StreamClient(client).get_handle(
-        AgentEvents, id=handle["id"], backend=handle.get("backend") or None
-    )
+    return client.stream(AgentEvents, id=handle["id"], backend=handle.get("backend") or None)
 
 
 async def next_offset(client: Client, place: AgentStream) -> int:
@@ -379,7 +383,7 @@ async def check_turn_cursor(client: Client, place: AgentStream, after: str) -> N
         return
     stream = _client_stream(client, place)
     items = stream.subscribe(
-        stream.topic(place.topic, type=AgentEvent), from_offset=offset, wait_new_records=False
+        stream.topic(place.topic, type=AgentEvent), offset=offset, wait_new_records=False
     )
     try:
         await anext(items, None)
@@ -406,7 +410,7 @@ async def read_turn_events(
     A ``Superseded`` item that withdraws records this read gave, or that an earlier read gave
     in the same turn, comes out as an ``AttemptSuperseded`` event with their offsets. The read
     ends at the Stream's close, and when ``workflow_id`` or the Stream's owner no longer runs,
-    since a terminated run closes nothing on Redis or memory. A malformed cursor raises
+    since the end of a run closes nothing on Redis or memory. A malformed cursor raises
     ``TurnCursorError``.
     """
     reading = _Read(client, place, after=after, subtree=subtree)
@@ -477,7 +481,7 @@ class _Read:
 
     def subscribe(self, start: int | None, **options: Any) -> Subscription[AgentEvent]:
         return self._stream.subscribe(
-            self._topic, prefixes=self._prefixes, from_offset=start, **options
+            self._topic, topic_prefixes=self._prefixes, offset=start, **options
         )
 
     async def take(self, item: Any, next_offset: int | None) -> TurnItem | None:

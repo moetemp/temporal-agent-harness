@@ -13,16 +13,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-# An SDK release has no ``temporalio.contrib.streams``, and Workflow Streams needs none of it.
-# A real handle type is what makes the Stream plugin withdraw an earlier attempt's records when
+# An SDK release has no ``temporalio.common.streams``, and Workflow Streams needs none of it.
+# A real handle type is what makes the Stream backend withdraw an earlier attempt's records when
 # a retry starts, so the field takes it when the SDK has it.
 if TYPE_CHECKING:
-    from temporalio.contrib.streams import ActivityStream
+    from temporalio.common.streams import ActivityStream
 
     _ActivityHandle = ActivityStream[Any]
 else:
     try:
-        from temporalio.contrib.streams import ActivityStream
+        from temporalio.common.streams import ActivityStream
 
         _ActivityHandle = ActivityStream[Any]
     except ImportError:
@@ -70,7 +70,7 @@ class TurnStreamContext(BaseModel):
     )
     stream: _ActivityHandle | None = Field(
         default=None,
-        description="The ``temporalio.contrib.streams`` Stream the agent publishes on, or "
+        description="The ``temporalio.common.streams`` Stream the agent publishes on, or "
         "``None`` on Workflow Streams. An activity gets a Stream only in its input.",
     )
     topic: str = Field(
@@ -84,7 +84,7 @@ class TurnStreamToken(BaseModel):
     stream context and the requested model id.
 
     The OpenAI streaming activity types its token with it first. So the context's Stream comes
-    back as a handle, and the Stream plugin withdraws an earlier attempt's records when a retry
+    back as a handle, and the Stream backend withdraws an earlier attempt's records when a retry
     starts.
     """
 
