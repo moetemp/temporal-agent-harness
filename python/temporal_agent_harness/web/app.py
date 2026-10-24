@@ -70,7 +70,7 @@ from temporal_agent_harness.web.session_manager import (
     Session,
     SessionManagerWorkflow,
 )
-from temporal_agent_harness.web.client import stream_plugins
+from temporal_agent_harness.web.client import stream_backend_options
 from temporal_agent_harness.web.task_queue_status import describe_task_queue_workers
 
 logger = logging.getLogger(__name__)
@@ -165,14 +165,12 @@ def create_agent_harness_app(
         # worker and the session-manager worker get by adding the same plugin. An offloaded
         # payload is only readable by a process using the matching converter, so this app must
         # not spell one out of its own. The plugin's activity registration is a WORKER concern
-        # and this app hosts no worker, so it simply doesn't apply here. The Stream plugin, if
+        # and this app hosts no worker, so it simply doesn't apply here. The Stream backend, if
         # any, is the one the workers' clients have, because this process reads agent Streams.
         app.state.temporal = await Client.connect(
             **connect_config,
-            plugins=[
-                AgentHarnessPlugin(large_payload_offload=large_payload_offload),
-                *stream_plugins(),
-            ],
+            plugins=[AgentHarnessPlugin(large_payload_offload=large_payload_offload)],
+            **stream_backend_options(),
         )
 
         resolved_registry = _resolve_registry(registry, registry_path)

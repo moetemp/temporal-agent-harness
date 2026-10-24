@@ -6,7 +6,7 @@
 #
 # Env vars: TEMPORAL_ADDRESS, AGENT_NAMESPACE, AGENT_WORKFLOW_NAME (required),
 # AGENT_WORKFLOW_ID_PREFIX, AGENT_TASK_QUEUE, NEXUS_AGENT_TASK_QUEUE — see defaults below.
-# STREAMS_STORE and the variables beside it give the Stream plugin of ContribStream agents,
+# STREAMS_STORE and the variables beside it give the Stream backend of ContribStream agents,
 # the default.
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
-from temporal_agent_harness.web.client import stream_plugins
+from temporal_agent_harness.web.client import stream_backend_options
 
 from .handler import AgentServiceHandler, Config
 
@@ -46,7 +46,7 @@ async def main() -> None:
         address,
         namespace=agent_namespace,
         data_converter=pydantic_data_converter,
-        plugins=stream_plugins(),
+        **stream_backend_options(),
     )
 
     config = Config(

@@ -1382,7 +1382,7 @@ class _WorkflowStreamsSink:
 
 
 def _contrib_stream() -> Any:
-    """The ``contrib_stream`` module, which only an agent on ``temporalio.contrib.streams``
+    """The ``contrib_stream`` module, which only an agent on ``temporalio.common.streams``
     imports, so an agent on ``WorkflowStream()`` runs on a released SDK."""
     # The harness is deterministic library code, so the sandbox can share it.
     with workflow.unsafe.imports_passed_through():
@@ -2050,8 +2050,8 @@ class AgentWorkflowRunner:
 
         ``stream`` picks where the agent publishes its turn events. The default, a
         ``ContribStream``, puts the whole agent tree on one Stream of
-        ``temporalio.contrib.streams``. It needs a temporalio build that has that module
-        (``just install-streams-sdk``) and a Stream plugin on the worker. A ``WorkflowStream``
+        ``temporalio.common.streams``. It needs a temporalio build that has that module
+        (``just install-streams-sdk``) and a Stream backend on the worker. A ``WorkflowStream``
         of ``temporalio.contrib.workflow_streams`` keeps them in the workflow's own history
         and runs on a released SDK. A subagent publishes where its parent does, whatever it
         passes here. The README compares the two.
@@ -2403,7 +2403,7 @@ class AgentWorkflowRunner:
     ) -> None:
         """Publish the parent's ``subagent_message_sent`` on the parent's Topic.
 
-        On ``temporalio.contrib.streams`` the child publishes it, in the Workflow Task that
+        On ``temporalio.common.streams`` the child publishes it, in the Workflow Task that
         admits the message. Both agents write one Stream, so every reader gets the marker before
         the child's events. A send that Temporal deduplicates publishes it once.
         """
@@ -3211,7 +3211,7 @@ class AgentWorkflowRunner:
 
     @property
     def stream(self) -> AgentStream | None:
-        """Where this agent publishes on ``temporalio.contrib.streams``, or ``None``."""
+        """Where this agent publishes on ``temporalio.common.streams``, or ``None``."""
         place = self._sink.place
         if place is None:
             return None
@@ -3703,7 +3703,7 @@ class AgentWorkflowRunner:
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
         call) to its parent workflow's :class:`WorkflowStream`, or to the
-        ``temporalio.contrib.streams`` Stream in ``context.stream``.
+        ``temporalio.common.streams`` Stream in ``context.stream``.
 
         Encapsulates the :class:`WorkflowStreamClient` or ``BufferedPublisher``
         lifecycle (entered for batched flushing, exited so the tail drains before

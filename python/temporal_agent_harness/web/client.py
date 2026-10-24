@@ -48,17 +48,19 @@ def ensure_temporal_address(explicit_address: str | None) -> None:
         os.environ["TEMPORAL_ADDRESS"] = DEFAULT_TEMPORAL_ADDRESS
 
 
-def stream_plugins() -> list[Any]:
-    """The Stream plugin that ``STREAMS_STORE`` names, in a list, or none when it is unset.
+def stream_backend_options() -> dict[str, Any]:
+    """``stream_backends=`` with the Stream backend that ``STREAMS_STORE`` names, or no option
+    when it is unset.
 
     A process that reads or runs ``ContribStream`` agents, the default, needs it. Unset serves
-    agents on ``WorkflowStream()`` only, which a released SDK has.
+    agents on ``WorkflowStream()`` only, which a released SDK has. A release has no
+    ``stream_backends=``, so unset passes no option at all.
     """
     if not os.environ.get("STREAMS_STORE"):
-        return []
-    from temporal_agent_harness.harness.contrib_stream import streams_from_env
+        return {}
+    from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
 
-    return [streams_from_env()]
+    return {"stream_backends": stream_backends_from_env()}
 
 
 async def connect_client() -> "Client":
@@ -68,7 +70,7 @@ async def connect_client() -> "Client":
     web server, and every agent worker can read each other's payloads only because they all add
     it. Its default large-payload storage matches ``create_agent_harness_app``'s, keeping the
     packaged entrypoints mutually readable out of the box. With ``STREAMS_STORE`` set it also
-    has the Stream plugin (see :func:`stream_plugins`).
+    has the Stream backend (see :func:`stream_backend_options`).
     """
     from temporalio.client import Client
     from temporalio.envconfig import ClientConfig
@@ -78,7 +80,7 @@ async def connect_client() -> "Client":
     connect_config = ClientConfig.load_client_connect_config()
     try:
         return await Client.connect(
-            **connect_config, plugins=[AgentHarnessPlugin(), *stream_plugins()]
+            **connect_config, plugins=[AgentHarnessPlugin()], **stream_backend_options()
         )
     except RuntimeError as exc:
         # "no server running" is the commonest way a first run fails, and the SDK reports it as a
