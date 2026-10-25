@@ -152,7 +152,9 @@ class ContribStream(StreamBackend):
 
     Args:
         backend: The name of the Stream backend. ``None`` is the worker's.
-        retention: How long the records stay after the Stream closes. ``None`` is the
+        retention: The age after which a record is dropped. Each write drops the records
+            older than it, also while the Stream is open, so a long session loses its first
+            events. A closed Stream stays one retention after its close. ``None`` is the
             backend's default.
     """
 
