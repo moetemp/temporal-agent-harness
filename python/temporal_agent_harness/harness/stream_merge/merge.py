@@ -46,8 +46,8 @@ SelectPolicy = Callable[[list[Cursor]], Cursor]
 ShouldStop = Callable[[Cursor, AgentEvent], Awaitable[bool]]
 
 # What the merge yields per step: the event plus the **resume offset** — a ROOT-stream resume CURSOR
-# (NOT a per-event coordinate) that a consumer records and hands back to ``attach(from_offset=...)``
-# to resume without re-replaying already-seen root events. It advances past EVERY root event emitted
+# (NOT a per-event coordinate) that a consumer records and hands back to ``attach(resume=...)``
+# in a ``ResumePoint``, to resume without re-replaying already-seen root events. It advances past EVERY root event emitted
 # (to ``ev_offset + 1``) and does NOT move on a subagent's own events — so every event within one
 # subagent turn's bracket carries the SAME value: the cursor as of that turn's
 # ``subagent_message_sent`` (the root offset, not the child's own offset). Any root offset is a safe
