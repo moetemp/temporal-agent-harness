@@ -59,7 +59,7 @@ buildifier:
 # yet: moetemp/sdk-python moe/brook/v5/p35-reviewed-api at this commit, with the bridge's
 # `streams` feature. The lock keeps the released temporalio, which Workflow Streams and the Bazel
 # build use.
-streams_sdk := "git+https://github.com/moetemp/sdk-python@e033b82266c30c4e8623959703edf163a7ef686b"
+streams_sdk := "git+https://github.com/moetemp/sdk-python@da1da37b981e73f829eb502b7d65eebe0d12a880"
 
 # Install that build into python/.venv (`uv sync` makes it), for ContribStream agents and the
 # STREAMS_STORE test lanes. It compiles the Rust bridge, so it needs cargo and protoc.
