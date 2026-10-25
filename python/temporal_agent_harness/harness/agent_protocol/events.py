@@ -36,7 +36,7 @@ TURN_EVENTS_TOPIC = "turn_events"
 
 
 def subagent_topic(agent_id: str) -> str:
-    """The Topic of the subagent ``agent_id`` on its root's Stream (``temporalio.common.streams``).
+    """The Topic of the subagent ``agent_id`` on its root's ``temporalio.common`` Stream.
 
     A subagent's id is its parent's id plus one segment. So the Topics of an agent's subtree are
     its own Topic and the Topics that start with ``subtree_prefix`` of it.
@@ -338,7 +338,7 @@ class AgentEventType(StrEnum):
     ATTEMPT_SUPERSEDED = "attempt_superseded"
     """A failed attempt's records are withdrawn, so a consumer drops the ones it rendered.
 
-    Never published by a workflow. The ``temporalio.common.streams`` reader synthesizes it for a
+    Never published by a workflow. The ``temporalio.common`` Streams reader synthesizes it for a
     ``Superseded`` item that withdraws records the read gave. Workflow Streams never gives one.
     See :class:`AttemptSuperseded`."""
 

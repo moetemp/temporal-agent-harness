@@ -12,7 +12,7 @@ export type ResumePoint = string;
  * root-stream point, the same for every event of a subagent's turn).
  *
  * A number in the log of the agent that published it, or a decimal string on a
- * Stream of temporalio.common.streams, where offsets pass what a number keeps exact.
+ * Stream of temporalio.common, where offsets pass what a number keeps exact.
  * `SYNTHESIZED` when the server made the event up rather than reading it off a
  * log, so it has no durable coordinate to report. Absent entirely from mock
  * fixtures and from any server predating the field, which is why it is optional

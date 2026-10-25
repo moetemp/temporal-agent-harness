@@ -221,10 +221,10 @@ print(json.dumps(failures))
     # it); the module says how to install it. Any other failure there still fails this test.
     nexus_mcp = failures.pop("temporal_agent_harness.ai_sdks.openai_agents._nexus_mcp", "")
     assert "No module named 'nexus_mcp'" in nexus_mcp, nexus_mcp
-    # Needs a temporalio build with temporalio.common.streams, which no release has; the
-    # module says so. With such a build it imports.
+    # Needs a temporalio build with the Streams API in temporalio.common, which no release has.
+    # The module says so. With such a build it imports.
     contrib = failures.pop("temporal_agent_harness.harness.contrib_stream", "")
-    assert not contrib or "temporalio.common.streams" in contrib, contrib
+    assert not contrib or "Streams API in temporalio.common" in contrib, contrib
     assert failures == {}, "\n\n".join(f"{name}:\n{error}" for name, error in failures.items())
     assert len(modules) > 50
 

@@ -7,7 +7,7 @@
 #
 # The agent says where it publishes (``AgentStatus.stream``, ``AgentMessageReply.stream``).
 # ``None`` is Workflow Streams, which this client reads through ``stream_merge``. Otherwise it is
-# a Stream of ``temporalio.common.streams``, which ``contrib_stream`` reads.
+# a ``temporalio.common`` Stream, which ``contrib_stream`` reads.
 
 from __future__ import annotations
 
@@ -151,12 +151,12 @@ class ResumePoint:
 
     ``cursor`` is the stream position to resume from, empty for the beginning. On Workflow
     Streams it is the merge's ROOT-stream offset, which advances only on root events (see
-    ``stream_merge.merge.MergedItem``). On ``temporalio.common.streams`` it is a position on
+    ``stream_merge.merge.MergedItem``). On ``temporalio.common`` Streams it is a position on
     the tree's one Stream, which advances on every event. ``seq`` is the agent's own count of
     workflow-published events as of that point (``AgentEvent.seq``). It tells a consumer that it
     has caught up (``AgentStatus.last_event_seq``), which a stream position can't.
 
-    ``offset`` is the stream position of the event itself, on ``temporalio.common.streams``
+    ``offset`` is the stream position of the event itself, on ``temporalio.common`` Streams
     only. An ``AttemptSuperseded`` event lists the events to drop by it, and has none of its
     own. It is not part of the encoded point.
     """
@@ -656,7 +656,7 @@ class AgentClient:
           ``subagent_message_sent`` and never re-mounts it). The parent's reply and everything
           after it still flow. A consumer that needs every subagent event across a mid-turn
           reconnect re-attaches from the beginning.
-        * **temporalio.common.streams.** Every agent of the tree publishes on one Stream, so
+        * **temporalio.common Streams.** Every agent of the tree publishes on one Stream, so
           the point advances on every event and a resume loses nothing.
 
         Returns immediately (yields nothing) if there's nothing new to stream.
@@ -870,7 +870,7 @@ class AgentClient:
     async def _shared(
         self, *, place: AgentStream, resume: ResumePoint, skip_until_turn_id: str | None
     ) -> AsyncGenerator[tuple[AgentEvent, ResumePoint, bool], None]:
-        """The ``temporalio.common.streams`` read: the tree's one Stream, in its own order."""
+        """The ``temporalio.common`` Streams read: the tree's one Stream, in its own order."""
         from temporal_agent_harness.harness import contrib_stream
 
         items = contrib_stream.read_turn_events(

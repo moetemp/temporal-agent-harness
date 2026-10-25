@@ -372,7 +372,7 @@ func TestPoll_ClosedBatchKeepsItsEvents(t *testing.T) {
 	assert.Equal(t, "last words", result.Events[0].Chunk.Text)
 }
 
-// An agent on temporalio.common.streams has a string cursor, which the handle passes back.
+// An agent on temporalio.common Streams has a string cursor, which the handle passes back.
 func TestPoll_StreamCursorGoesToTheNextPoll(t *testing.T) {
 	const sent, next = "1879862925380812801", "1879862925380812802"
 	var got *string

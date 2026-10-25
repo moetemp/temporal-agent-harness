@@ -1461,7 +1461,7 @@ class PollMessagesInput:
     """How long the WorkflowStream poll update waits for new events before returning empty"""
 
     stream_cursor: str | None = None
-    """Opaque cursor of an agent that uses temporalio.common.streams, from streamCursor or
+    """Opaque cursor of an agent that uses temporalio.common Streams, from streamCursor or
     next_cursor. Unset on Workflow Streams, which uses cursor.
     """
 
@@ -1595,7 +1595,7 @@ class PollMessagesOutput:
     """True when the agent workflow has completed and the batch has no items"""
 
     next_cursor: str | None = None
-    """Opaque cursor for the next pollMessages call on temporalio.common.streams. Unset on
+    """Opaque cursor for the next pollMessages call on temporalio.common Streams. Unset on
     Workflow Streams, which uses next_offset.
     """
 
@@ -2123,7 +2123,7 @@ class SendMessageOutput:
 
     stream_cursor: str | None = None
     """Opaque cursor to start the first pollMessages call from, on an agent that uses
-    temporalio.common.streams. Unset on Workflow Streams, which uses streamHeadOffset.
+    temporalio.common Streams. Unset on Workflow Streams, which uses streamHeadOffset.
     """
 
 
@@ -2203,7 +2203,7 @@ class StreamItem:
 
     offset: int
     """Absolute position of this item in the stream, on Workflow Streams. 0 on
-    temporalio.common.streams, whose cursor is next_cursor. So a caller can't apply an
+    temporalio.common Streams, whose cursor is next_cursor. So a caller can't apply an
     attempt_superseded event there, since its withdrawn_offsets name items by offsets
     that this field doesn't give
     """

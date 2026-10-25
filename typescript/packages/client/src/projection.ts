@@ -684,7 +684,7 @@ export class SessionProjection {
  * dumped, so its shape is the provider's: Gemini `{content: {text}}`, OpenAI `{delta}`,
  * Pydantic AI `{content}` or `{content_delta}`.
  */
-/** The frame's own offset on a Stream of temporalio.common.streams, which a withdrawal
+/** The frame's own offset on a Stream of temporalio.common, which a withdrawal
  *  names. */
 function offsetOf(frame: AgentEventFrame): string | undefined {
   const offset = frame.data.event_offset;

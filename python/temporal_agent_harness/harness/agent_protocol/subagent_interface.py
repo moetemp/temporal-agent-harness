@@ -113,7 +113,7 @@ class SubagentTurnResult(BaseModel):
 class SubagentDispatch(BaseModel):
     """The parent turn of a ``send_subagent_message``.
 
-    On ``temporalio.common.streams`` the child publishes the parent's ``subagent_message_sent``
+    On ``temporalio.common`` Streams the child publishes the parent's ``subagent_message_sent``
     in the Workflow Task that admits the message. Both agents write one Stream, so the marker
     comes before every event of the child's turn for every reader.
     """

@@ -526,7 +526,7 @@ on the client is enough — Temporal applies a client's plugins to workers built
 
 An agent publishes its turn events on one of two backends, and `stream=` on
 `AgentWorkflowRunner` picks it. The default, `ContribStream`, puts the agent's events on a Stream
-of `temporalio.common.streams`, in a store such as Redis. `stream=WorkflowStream()` keeps them
+of `temporalio.common`, in a store such as Redis. `stream=WorkflowStream()` keeps them
 in the workflow's own history with `temporalio.contrib.workflow_streams`:
 
 ```python
@@ -553,11 +553,11 @@ the Nexus adapter add the same backend when `STREAMS_STORE` is set.
 The end of an agent's run closes nothing on Redis, and the harness does not close the Stream
 either. A reader of an agent that ended stops once it finds that the agent no longer runs.
 
-`ContribStream` needs an SDK build with `temporalio.common.streams`, which no release has yet.
-`just install-streams-sdk` installs the one the harness is tested with. Without it, an agent that
-passes no `stream=` fails its Workflow Task with an error that says so. The harness imports
-`temporalio.common.streams` only for a `ContribStream` agent, so an agent on
-`stream=WorkflowStream()` runs on a released SDK. The examples pass `stream=WorkflowStream()`.
+`ContribStream` needs an SDK build with the Streams API in `temporalio.common`, which no release
+has yet. `just install-streams-sdk` installs the one the harness is tested with. Without it, an
+agent that passes no `stream=` fails its Workflow Task with an error that says so. The harness
+imports the Streams API only for a `ContribStream` agent, so an agent on `stream=WorkflowStream()`
+runs on a released SDK. The examples pass `stream=WorkflowStream()`.
 
 The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
 web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
@@ -571,7 +571,7 @@ Streams each agent has its own log. An agent that continues as new passes its St
 
 | | `ContribStream` (default) | Workflow Streams |
 | --- | --- | --- |
-| What it needs | A Stream store, a Stream backend on every process, an SDK build with `temporalio.common.streams` | Temporal only |
+| What it needs | A Stream store, a Stream backend on every process, an SDK build with the Streams API in `temporalio.common` | Temporal only |
 | Where events go | Into the store, for the Stream's retention | Into each workflow's own log, in its history |
 | Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store | Each activity flush is a Signal and each client read an Update, one Action each |
 | History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |

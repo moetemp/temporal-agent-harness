@@ -67,7 +67,7 @@ from .generated import AgentService as AgentServiceDefinition
 # pollMessages must attach to it for any agent without importing that agent's workflow code.
 _WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
 
-# A poll of a temporalio.common.streams agent is answered in the operation's start, so one call
+# A poll of a temporalio.common Streams agent is answered in the operation's start, so one call
 # has to answer well inside the operation's own deadline. A caller wanting to wait longer polls
 # again.
 _MAX_STREAM_POLL_SECONDS = 8.0
@@ -351,7 +351,7 @@ class AgentServiceHandler:
         and returns closed=True synchronously if the target workflow has already completed.
         Note that this bypasses the WorkflowStream abstraction and directly calls the update
         handler for the stream, since we haven't implemented Nexus + WorkflowStream
-        higher-level APIs. On ``temporalio.common.streams`` it reads one batch from the Stream
+        higher-level APIs. On ``temporalio.common`` Streams it reads one batch from the Stream
         and answers synchronously, with an opaque ``next_cursor``.
 
         TODO(long-nt-tran): implement + use higher level utils when available
@@ -383,7 +383,7 @@ class AgentServiceHandler:
     async def _stream_place(
         self, workflow_id: str, input: PollMessagesInput
     ) -> AgentStream | None:
-        """Where the agent publishes on ``temporalio.common.streams``, or ``None``.
+        """Where the agent publishes on ``temporalio.common`` Streams, or ``None``.
 
         A Workflow Streams caller past its first poll has an offset and no stream cursor, so
         it costs no query.

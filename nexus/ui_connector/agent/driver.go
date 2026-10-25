@@ -244,7 +244,7 @@ type turnHandle struct {
 	// turn shows only its own events.
 	MessageID string `json:"messageId,omitempty"`
 	Cursor    int64  `json:"cursor"`
-	// StreamCursor is the cursor of an agent on temporalio.common.streams, whose offsets
+	// StreamCursor is the cursor of an agent on temporalio.common Streams, whose offsets
 	// do not fit the integer cursor. Empty on Workflow Streams.
 	StreamCursor string `json:"streamCursor,omitempty"`
 }

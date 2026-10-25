@@ -1,4 +1,4 @@
-# ABOUTME: The temporalio.common.streams backend of the agent event stream, the default of
+# ABOUTME: The temporalio.common Streams backend of the agent event stream, the default of
 # ``AgentWorkflowRunner``. An agent picks Workflow Streams with ``stream=WorkflowStream()``.
 #
 # An agent tree shares ONE Stream, which the root agent creates (``AgentEvents``). Each agent
@@ -7,8 +7,8 @@
 # gives one agent's. Workflow code writes the Stream with Local Activities, an activity writes it
 # through a ``BufferedPublisher``, and a client reads it through ``Client.stream``.
 #
-# Only this module imports ``temporalio.common.streams``, which no SDK release has yet. The rest
-# of the harness imports it lazily, so an agent on ``WorkflowStream()`` runs on a released SDK.
+# Only this module imports the Streams API of ``temporalio.common``, which no SDK release has yet.
+# The rest of the harness imports it lazily, so an agent on ``WorkflowStream()`` runs on a release.
 
 from __future__ import annotations
 
@@ -22,16 +22,14 @@ from datetime import timedelta
 from typing import Any
 
 from pydantic import TypeAdapter
-from temporalio import workflow
+from temporalio import common, workflow
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.common import RawValue
 from temporalio.service import RPCError, RPCStatusCode
 
-# A release has ``temporalio.common`` as a plain module, whose missing ``streams`` is an
-# ``ImportError`` and not a ``ModuleNotFoundError``.
+# A release's ``temporalio.common`` has no Stream names, so their import raises ``ImportError``.
 try:
-    from temporalio.common import streams
-    from temporalio.common.streams import (
+    from temporalio.common import (
         ActivityStream,
         BufferedPublisher,
         ClientStream,
@@ -48,7 +46,7 @@ try:
 except ImportError as exc:
     raise RuntimeError(
         "The default stream= of AgentWorkflowRunner, ContribStream, needs a temporalio build "
-        "with temporalio.common.streams, which no release has yet. Run "
+        "with the Streams API in temporalio.common, which no release has yet. Run "
         "`just install-streams-sdk`, or pass stream=WorkflowStream() to run on a release."
     ) from exc
 
@@ -83,7 +81,7 @@ _TRANSIENT = frozenset(
     }
 )
 # Every client of this process shares one memory backend, so they all see the same Streams.
-_memory: streams.StreamBackend | None = None
+_memory: common.StreamBackend | None = None
 # Said when a worker has no Stream backend, which fails the Workflow Task until one has.
 _NO_BACKEND = (
     "The default stream= of AgentWorkflowRunner, ContribStream, needs a Stream backend on the "
@@ -96,7 +94,7 @@ _NO_BACKEND = (
 _STREAM_NAME = "agent_events"
 
 
-@streams.defn(name=_STREAM_NAME)
+@common.defn(name=_STREAM_NAME)
 class AgentEvents:
     """The Stream an agent tree publishes on. The root agent creates it, and its subagents
     write it too.
@@ -105,14 +103,14 @@ class AgentEvents:
     at run time, so a handle opens it with ``type=AgentEvent``.
     """
 
-    turn_events = streams.topic(AgentEvent, name=TURN_EVENTS_TOPIC)
+    turn_events = common.topic(AgentEvent, name=TURN_EVENTS_TOPIC)
 
 
 class TurnCursorError(ValueError):
     """A turn cursor that is not a position on the agent's Stream."""
 
 
-def stream_backends_from_env() -> list[streams.StreamBackend]:
+def stream_backends_from_env() -> list[common.StreamBackend]:
     """The Stream backend that ``STREAMS_STORE`` names, in a list, or none when it is unset.
 
     ``redis`` is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
@@ -150,7 +148,7 @@ def stream_backends_from_env() -> list[streams.StreamBackend]:
 
 
 class ContribStream(StreamBackend):
-    """Selects ``temporalio.common.streams`` for an agent tree's turn events.
+    """Selects the Streams API of ``temporalio.common`` for an agent tree's turn events.
 
     ``AgentWorkflowRunner`` uses ``ContribStream()`` when an agent passes no ``stream=``. Pass
     one of your own for another backend or retention. The root agent creates the tree's
@@ -180,7 +178,7 @@ class ContribStream(StreamBackend):
 
 
 class ContribSink:
-    """What the runner publishes through on ``temporalio.common.streams``.
+    """What the runner publishes through on a ``temporalio.common`` Stream.
 
     Each write is a Local Activity. Its future gives the record's offset, which tells the
     runner where its own records reached, and its error, which the runner logs. A store that

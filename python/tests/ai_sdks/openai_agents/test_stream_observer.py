@@ -301,8 +301,11 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_hand
     """The Stream backend withdraws an earlier attempt's records when a retry starts, for each
     Stream handle it finds in the decoded input. A token that came back as a plain dict hid the
     turn's Stream, so a retry that failed before writing left the first attempt's half answer."""
-    streams = pytest.importorskip("temporalio.common.streams")
     from pydantic import TypeAdapter
+    from temporalio import common
+
+    if not hasattr(common, "ActivityStream"):
+        pytest.skip("needs the Streams API in temporalio.common")
     from typing_extensions import Required, TypedDict
 
     from temporal_agent_harness.ai_sdks.openai_agents._invoke_model_activity import (
@@ -315,11 +318,11 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_hand
         stream_to: Required[typing.get_args(hint)[0]]
 
     wire = TypeAdapter(_StreamTo)
-    handle = streams.ActivityStream(id="wf:run:agent_events", workflow_id="wf", backend="memory")
+    handle = common.ActivityStream(id="wf:run:agent_events", workflow_id="wf", backend="memory")
     context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=handle)
     token = h._HarnessStreamToken(context=context, model="m")
 
     received = wire.validate_json(wire.dump_json({"stream_to": token}))["stream_to"]
 
-    assert isinstance(received.context.stream, streams.ActivityStream)
+    assert isinstance(received.context.stream, common.ActivityStream)
     assert wire.validate_json(b'{"stream_to": "events"}')["stream_to"] == "events"

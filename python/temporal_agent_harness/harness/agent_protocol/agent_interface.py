@@ -627,7 +627,7 @@ class ToolApprovalPolicy(BaseModel):
 
 
 class AgentStream(BaseModel):
-    """Where an agent publishes its turn events on ``temporalio.common.streams``.
+    """Where an agent publishes its turn events on ``temporalio.common`` Streams.
 
     Every agent of a tree writes the Stream that its root creates, each on a Topic of its own.
     So one read of the Stream gives the whole tree in one order. An agent on Workflow Streams
@@ -937,7 +937,7 @@ class AgentMessageReply:
     skip-to-``turn_started`` preamble normalizes that.
 
     ``accepted_cursor`` is the same read-start hint as an opaque cursor, on both stream
-    backends. On ``temporalio.common.streams`` a workflow can't read the head. It gives the
+    backends. On ``temporalio.common`` Streams a workflow can't read the head. It gives the
     position past the newest record that this run knows its own writes reached.
 
     ``stream`` is where the agent publishes, or ``None`` on Workflow Streams.

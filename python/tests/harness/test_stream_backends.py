@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import temporalio.common
 from temporalio import workflow
 from temporalio.client import (
     Client,
@@ -58,7 +59,7 @@ from temporal_agent_harness.harness.stream_context import TurnStreamContext
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from tests._streams import STORE, agent_stream
 
-needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.common.streams")
+needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.common Streams")
 
 # How many times each text went through ``flaky_tool``, so its first attempt can fail.
 _TOOL_ATTEMPTS: dict[str, int] = {}
@@ -726,7 +727,11 @@ async def test_a_workflow_streams_session_from_upstream_replays():
 
 
 def test_the_default_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
-    monkeypatch.setitem(sys.modules, "temporalio.common.streams", None)
+    # A Streams build loads the Stream names of ``temporalio.common`` from ``_streams`` on first
+    # use. A release has neither.
+    monkeypatch.setitem(sys.modules, "temporalio.common._streams", None)
+    monkeypatch.delattr(temporalio.common, "__getattr__", raising=False)
+    assert not hasattr(temporalio.common, "ActivityStream")
     monkeypatch.delitem(sys.modules, "temporal_agent_harness.harness.contrib_stream", raising=False)
 
     with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
@@ -786,7 +791,8 @@ async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_ba
     assert await closed._stream_place("wf", poll(None)) is None
     with pytest.raises(RPCError):
         await running._stream_place("wf", poll(None))
-    pytest.importorskip("temporalio.common.streams")
+    if not hasattr(temporalio.common, "ActivityStream"):
+        pytest.skip("needs the Streams API in temporalio.common")
     from temporal_agent_harness.harness.contrib_stream import root_place
 
     place = await closed._stream_place("wf", poll("5"))
@@ -809,7 +815,8 @@ async def test_the_place_found_without_a_query_is_the_one_the_agent_reports(clie
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():
-    pytest.importorskip("temporalio.common.streams")
+    if not hasattr(temporalio.common, "ActivityStream"):
+        pytest.skip("needs the Streams API in temporalio.common")
     from temporal_agent_harness.harness.contrib_stream import _ended
 
     flaky = _FailingDescribe(RPCStatusCode.UNAVAILABLE)

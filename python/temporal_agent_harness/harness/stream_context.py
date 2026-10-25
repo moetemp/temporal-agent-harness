@@ -13,16 +13,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-# An SDK release has no ``temporalio.common.streams``, and Workflow Streams needs none of it.
+# An SDK release has no Streams API in ``temporalio.common``, and Workflow Streams needs none of it.
 # A real handle type is what makes the Stream backend withdraw an earlier attempt's records when
 # a retry starts, so the field takes it when the SDK has it.
 if TYPE_CHECKING:
-    from temporalio.common.streams import ActivityStream
+    from temporalio.common import ActivityStream
 
     _ActivityHandle = ActivityStream[Any]
 else:
     try:
-        from temporalio.common.streams import ActivityStream
+        from temporalio.common import ActivityStream
 
         _ActivityHandle = ActivityStream[Any]
     except ImportError:
@@ -70,7 +70,7 @@ class TurnStreamContext(BaseModel):
     )
     stream: _ActivityHandle | None = Field(
         default=None,
-        description="The ``temporalio.common.streams`` Stream the agent publishes on, or "
+        description="The ``temporalio.common`` Stream the agent publishes on, or "
         "``None`` on Workflow Streams. An activity gets a Stream only in its input.",
     )
     topic: str = Field(
