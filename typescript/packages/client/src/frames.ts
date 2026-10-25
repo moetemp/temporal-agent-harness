@@ -21,7 +21,7 @@ export interface AgentEventMetadata extends Omit<Protocol.AgentEvent, "event"> {
    *  it is a position, not an identity. Absent from a frame that has no point to give. */
   resume?: string;
   /** The event's own offset, when the server reports one: a number in its agent's log, or a
-   *  decimal string on a Stream of temporalio.contrib.streams, past what a number keeps exact. */
+   *  decimal string on a Stream of temporalio.common.streams, past what a number keeps exact. */
   event_offset?: number | string;
   /** Present, and true, when the event was already durable as the stream opened. */
   replay?: true;
