@@ -72,8 +72,8 @@ _WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
 # again.
 _MAX_STREAM_POLL_SECONDS = 8.0
 _STREAM_POLL_BATCH_LIMIT = 100
-# Once one event has arrived, gather the events after it within this window and answer, rather
-# than keeping the batch open for the whole timeout.
+# Once one event has arrived, the poll gathers the events after it within this window and then
+# answers, so the caller doesn't wait for the whole timeout.
 _STREAM_POLL_BATCH_GRACE_SECONDS = 0.05
 
 
@@ -429,7 +429,7 @@ class AgentServiceHandler:
         """One batch of the agent's own turn events after ``input.stream_cursor``.
 
         ``closed`` is set only on a batch with no items, so a caller that stops at ``closed``
-        never drops the last events of an agent that finished. A read that waits in vain asks
+        never drops the last events of an agent that finished. A read that gets no item asks
         whether the agent still runs, since the end of a run closes nothing on Redis or
         memory.
         """

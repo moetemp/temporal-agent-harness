@@ -16,9 +16,9 @@
 #
 # DESIGN. The reply comes from the child's ``await_message`` update, NOT from its events. The
 # event stream is a live view, on either backend, and a parent's model must get its subagent's
-# answer even when a view misses an event. The activity mirrors none of the child's events onto
-# the parent's. On Workflow Streams it publishes ONE marker of its own onto the PARENT's stream
-# (the SubagentMessageSent dispatch event, when it actually sends the message; see
+# answer even when a view misses an event. The activity copies none of the child's events to
+# the parent's stream. On Workflow Streams it publishes ONE marker of its own onto the PARENT's
+# stream (the SubagentMessageSent dispatch event, when it actually sends the message; see
 # _publish_dispatch). On ``temporalio.common`` Streams the child publishes that marker, so it
 # comes before the child's events on the one Stream they share.
 #
@@ -174,8 +174,8 @@ class SubagentActivities:
         except WorkflowUpdateFailedError as e:
             reason = str(e.cause) if e.cause else "the subagent gave no result"
         except RPCError as e:
-            # A child that is gone will never answer. Any other RPC error may pass, so the
-            # attempt fails and Temporal retries it.
+            # A child that is gone will never answer. Any other RPC error may be transient, so
+            # the attempt fails and Temporal retries it.
             if e.status != RPCStatusCode.NOT_FOUND:
                 raise
             reason = str(e)

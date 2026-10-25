@@ -179,7 +179,7 @@ export class HarnessClient {
     }
   }
 
-  /** Attach to the session's event stream after `resume`, an opaque point a frame handed back
+  /** Attach to the session's event stream after `resume`, an opaque point that a frame gave
    *  (empty for the beginning). */
   async *attach(
     sessionId: string,

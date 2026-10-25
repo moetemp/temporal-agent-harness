@@ -515,7 +515,7 @@ describe("frame arrival", () => {
   });
 
   // A Stream withdraws one failed attempt's records. The marker lists their
-  // offsets, and only those go. Its Superseded item shares an offset with the
+  // offsets, and only those are dropped. Its Superseded item shares an offset with the
   // first record of the retry, so the marker has no offset, and that record stays.
   it("a superseded attempt drops exactly the frames it names", async () => {
     const stream = controllableStream();

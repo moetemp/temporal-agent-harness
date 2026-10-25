@@ -355,7 +355,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
     const key = frameKey(frame);
     if (this.#frameKeys.has(key)) return;
     this.#frameKeys.add(key);
-    // The point is opaque, so the newest one wins; the stream already hands them out in order.
+    // The point is opaque, so the newest one wins. The stream already gives them in order.
     if (typeof frame.data.resume === "string") this.#resume = frame.data.resume;
     this.#buffer.push(frame);
     this.#projection.apply(frame);

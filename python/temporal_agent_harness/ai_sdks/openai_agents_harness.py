@@ -302,7 +302,7 @@ def _to_token_usage(usage: Any) -> TokenUsage | None:
     )
 
 
-# The token a harness turn hands the streaming activity. It gives the model id, so the observer
+# The token a harness turn passes to the streaming activity. It gives the model id, so the observer
 # opens the model-interaction bracket at dispatch (``__aenter__``), before any event arrives.
 _HarnessStreamToken = TurnStreamToken
 

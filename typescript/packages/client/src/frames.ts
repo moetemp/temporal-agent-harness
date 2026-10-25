@@ -16,12 +16,12 @@ export type MessageDisposition = Protocol.MessageDisposition;
 export type AutoApprovalVerdict = Protocol.AutoApprovalVerdict;
 
 export interface AgentEventMetadata extends Omit<Protocol.AgentEvent, "event"> {
-  /** The encoded point to resume from: pass it back as `resume`. It is opaque, minted by the
-   *  server's stream backend, and on Workflow Streams several subagent frames share one, so
-   *  it is a position, not an identity. Absent from a frame that has no point to give. */
+  /** The encoded point to resume from. Pass it back as `resume`. The server's stream backend
+   *  makes it, and it's opaque. On Workflow Streams several subagent frames share one, so it
+   *  is a position, not an identity. Absent from a frame that has no point to give. */
   resume?: string;
-  /** The event's own offset, when the server reports one: a number in its agent's log, or a
-   *  decimal string on a Stream of temporalio.common, past what a number keeps exact. */
+  /** The event's own offset, when the server reports one. It's a number in its agent's log,
+   *  or a decimal string on a Stream of temporalio.common, too large for a number to keep exact. */
   event_offset?: number | string;
   /** Present, and true, when the event was already durable as the stream opened. */
   replay?: true;

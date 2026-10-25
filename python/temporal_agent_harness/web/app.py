@@ -757,8 +757,8 @@ def _update_id(req: ChatRequestBody) -> str | None:
 
 
 def _reply_json(reply: AgentMessageReply) -> dict[str, Any]:
-    # The place and the raw cursor are for a reader in this process, and a Stream offset is past
-    # what a JavaScript number keeps exact. A caller attaches from ``resume`` to catch this
+    # The place and the raw cursor are for a reader in this process, and a Stream offset is too
+    # large for a JavaScript number to keep exact. A caller attaches from ``resume`` to catch this
     # dispatch.
     content = {k: v for k, v in asdict(reply).items() if k not in ("stream", "accepted_cursor")}
     offset = getattr(reply, "accepted_offset", 0)
@@ -770,7 +770,7 @@ def _reply_json(reply: AgentMessageReply) -> dict[str, Any]:
 def _sse(event: str, data: dict, resume: ResumePoint | None = None) -> bytes:
     payload = {**data}
     if resume is not None:
-        # The encoded point a browser hands back to ``/api/attach?resume=`` after a disconnect.
+        # The encoded point a browser sends back to ``/api/attach?resume=`` after a disconnect.
         # A point with nothing in it would send a browser back to the beginning, so it is left
         # out and the browser keeps the one it has.
         encoded = resume.encode()

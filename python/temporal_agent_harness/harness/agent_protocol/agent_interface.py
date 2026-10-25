@@ -937,8 +937,8 @@ class AgentMessageReply:
     skip-to-``turn_started`` preamble normalizes that.
 
     ``accepted_cursor`` is the same read-start hint as an opaque cursor, on both stream
-    backends. On ``temporalio.common`` Streams a workflow can't read the head. It gives the
-    position past the newest record that this run knows its own writes reached.
+    backends. A workflow can't read the head of a ``temporalio.common`` Stream, so there it's
+    the position past the newest record that this run knows it wrote.
 
     ``stream`` is where the agent publishes, or ``None`` on Workflow Streams.
     """

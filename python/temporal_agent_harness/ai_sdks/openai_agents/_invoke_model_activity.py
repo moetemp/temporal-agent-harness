@@ -217,8 +217,8 @@ class StreamingActivityModelInput(ActivityModelInput, total=False):
     ``ModelActivityParameters.stream_to_provider`` / ``streaming_topic``). The
     activity hands it, unexamined, to its configured observer factory; a plain
     ``str`` with no factory is treated as a ``WorkflowStream`` topic name. A harness
-    turn's token decodes as a ``TurnStreamToken``, so its Stream is a handle that the
-    Stream backend finds in the input."""
+    turn's token decodes as a ``TurnStreamToken``, so the Stream backend finds the turn's
+    Stream handle in the activity input."""
 
     streaming_batch_interval: timedelta
 

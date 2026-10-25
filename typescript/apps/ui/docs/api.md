@@ -307,7 +307,7 @@ Replays or tails an existing session stream, subagents included.
 Response media type: `text/event-stream`.
 
 With an empty `resume`, the server replays the session's event history. To resume, pass the
-last `resume` a frame carried; only later events are streamed. The stream returns when the
+last `resume` that a frame gave. Only later events are streamed. The stream returns when the
 workflow is idle and caught up. A resume point is opaque, so a client stores the newest one
 and never compares two. On Workflow Streams several subagent frames may have the same one.
 
@@ -365,7 +365,7 @@ For normal agent events, `data` is a flat object containing:
   `GET /api/status`'s `last_event_seq` while the agent is idle has caught up.
 - `resume`, the opaque point the client passes back as `resume`. A frame with no point to give
   leaves it out.
-- `event_offset`, on a `ContribStream` agent only: the event's own offset as a decimal string.
+- `event_offset`, the event's own offset as a decimal string, on a `ContribStream` agent only.
   An `attempt_superseded` event lists the offsets of the events to drop, and has none of its own.
 
 Example:
@@ -548,7 +548,7 @@ subagent_stream_unavailable: {
   reason: string
 }
 
-// ContribStream only: a failed attempt's events were withdrawn. Drop the frames of the
+// Only on ContribStream. A failed attempt's events were withdrawn. Drop the frames of the
 // envelope's agent whose `event_offset` is in the list.
 attempt_superseded: {
   withdrawn_offsets: string[]

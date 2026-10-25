@@ -21,8 +21,8 @@ const CHILD = `${ROOT}-093b70`;
 let clock = 0;
 
 /* Offsets are supplied rather than counted, because they are the whole subject: a fixture that
-   numbered its own frames could not express the one shape under test. `resume` rides along as an
-   opaque point minted from `event_offset + 1`, the way a root event has one. */
+   numbered its own frames could not express the one shape under test. Each frame also has a
+   `resume`, an opaque point made from `event_offset + 1`, the way a root event has one. */
 function frame(event, offset, data = {}, agentId = ROOT, turnNumber = 1) {
   return {
     event,

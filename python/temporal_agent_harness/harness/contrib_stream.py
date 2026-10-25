@@ -7,7 +7,7 @@
 # gives one agent's. Workflow code writes the Stream with Local Activities, an activity writes it
 # through a ``BufferedPublisher``, and a client reads it through ``Client.stream``.
 #
-# Only this module imports the Streams API of ``temporalio.common``, which no SDK release has yet.
+# Only this module imports the Streams API of ``temporalio.common``, which no SDK release has.
 # The rest of the harness imports it lazily, so an agent on ``WorkflowStream()`` runs on a release.
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ _WAIT_FOR_CREATE = timedelta(minutes=1)
 # How long a read waits with no item before it asks whether the agent still runs. The end of a
 # run closes nothing on Redis or memory, so the read has to find out.
 _LIVENESS_CHECK = timedelta(seconds=5)
-# The errors of that check that can go away on their own.
+# The errors of that check that are transient.
 _TRANSIENT = frozenset(
     {
         RPCStatusCode.UNAVAILABLE,
@@ -82,7 +82,7 @@ _TRANSIENT = frozenset(
 )
 # Every client of this process shares one memory backend, so they all see the same Streams.
 _memory: common.StreamBackend | None = None
-# Said when a worker has no Stream backend, which fails the Workflow Task until one has.
+# The error when a worker has no Stream backend. It fails the Workflow Task until there is one.
 _NO_BACKEND = (
     "The default stream= of AgentWorkflowRunner, ContribStream, needs a Stream backend on the "
     "worker's client, such as Client.connect(..., plugins=[AgentHarnessPlugin()], "
@@ -181,8 +181,8 @@ class ContribSink:
     """What the runner publishes through on a ``temporalio.common`` Stream.
 
     Each write is a Local Activity. Its future gives the record's offset, which tells the
-    runner where its own records reached, and its error, which the runner logs. A store that
-    refuses a write costs the live view that event, and the agent goes on.
+    runner where its own records reached, and its error, which the runner logs. If the store
+    refuses a write, the live view loses that event, and the agent continues.
     """
 
     def __init__(self, stream: WorkflowStream[Any], place: AgentStream) -> None:
@@ -215,7 +215,7 @@ class ContribSink:
         return ActivityStream.from_handle(self._stream)
 
     def _write(self, topic: str, event: AgentEvent) -> None:
-        # The runner needs each write's offset and goes on past a refused write. No public call
+        # The runner needs each write's offset and continues past a refused write. No public call
         # gives the write's future, and ``publish_nowait`` fails the Workflow Task on an error.
         try:
             written = self._stream._append(topic, (event,))
@@ -237,8 +237,8 @@ def open_root(choice: ContribStream) -> ContribSink:
     """Create the tree's Stream in a root agent's ``@agent.init``.
 
     Nothing closes the Stream. On Redis and memory the end of the run chain closes nothing, and
-    the harness never closes it, so an idle session keeps its Stream. An open Stream goes after
-    the backend's ``safety_ttl`` with no write. A reader of a run that ended finds that out.
+    the harness never closes it, so an idle session keeps its Stream. The backend deletes an open
+    Stream after its ``safety_ttl`` with no write. A reader checks whether the run has ended.
     """
     try:
         stream = create_stream_nowait(
@@ -367,7 +367,7 @@ def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEven
 
 
 async def next_offset(client: Client, place: AgentStream) -> int:
-    """The offset where the agent's Stream takes its next record, or 0 before its create."""
+    """The offset of the agent's next record on its Stream, or 0 before its create."""
     try:
         return await _client_stream(client, place).get_offset()
     except StreamNotFoundError:
@@ -428,8 +428,8 @@ async def read_turn_events(
                 continue
             ready, pending = pending, None
             if not ready.done():
-                # The records that the run wrote just before it ended can still be on their
-                # way, so the read goes on to the newest record and no further.
+                # The records that the run wrote just before it ended can still arrive, so the
+                # read continues to the newest record and stops there.
                 ready.cancel()
                 await asyncio.gather(ready, return_exceptions=True)
                 await items.aclose()
@@ -632,7 +632,7 @@ async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str 
             description = await client.get_workflow_handle(wid).describe()
         except RPCError as err:
             # A workflow that is gone writes nothing more. A transient error tells nothing about
-            # it, so the read goes on and asks again after its next quiet stretch.
+            # it, so the read continues and asks again after its next idle wait.
             if err.status == RPCStatusCode.NOT_FOUND:
                 return True
             if err.status in _TRANSIENT:

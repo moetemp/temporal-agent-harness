@@ -4,8 +4,8 @@ With ``STREAMS_STORE=memory`` or ``redis`` the test agents pass no ``stream=``, 
 default ``ContribStream`` on that store, and ``tests/conftest.py`` puts the Stream backend on
 every test client. ``redis`` needs a Redis at ``STREAMS_REDIS_URL``. The lane puts its keys
 under a prefix of its own, ``STREAMS_KEY_PREFIX`` unless it is set, so two runs on one Redis
-never meet. Without ``STREAMS_STORE`` they pass ``stream=WorkflowStream()``, which a released
-SDK has. The Bazel build runs them so.
+never share keys. Without ``STREAMS_STORE`` they pass ``stream=WorkflowStream()``, which a
+released SDK has. The Bazel build runs them that way.
 """
 
 from __future__ import annotations

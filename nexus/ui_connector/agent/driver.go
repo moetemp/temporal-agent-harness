@@ -481,7 +481,7 @@ func (d *Driver) Poll(ctx workflow.Context, handle router.Handle) (router.Poll, 
 		}
 	}
 
-	// The items go out before the close, since a batch may have the last events of an agent
+	// The items are sent before the close, since a batch may have the last events of an agent
 	// that just finished.
 	if derefOrZero(pollOut.Closed) {
 		return router.Poll{Events: events, Done: true}, nil

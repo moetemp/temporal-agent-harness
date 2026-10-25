@@ -193,7 +193,7 @@ export class MockAgentApi implements AgentApi {
     resume = "",
     signal?: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
-    // The point is opaque, so resuming means finding the frame that minted it
+    // The point is opaque, so resuming means finding the frame that has it
     // and starting after that one. An unknown point replays from the beginning,
     // which is what the server does with an empty one.
     const frames = realisticQaScenario.frames;

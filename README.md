@@ -527,7 +527,7 @@ on the client is enough — Temporal applies a client's plugins to workers built
 An agent publishes its turn events on one of two backends, and `stream=` on
 `AgentWorkflowRunner` picks it. The default, `ContribStream`, puts the agent's events on a Stream
 of `temporalio.common`, in a store such as Redis. `stream=WorkflowStream()` keeps them
-in the workflow's own history with `temporalio.contrib.workflow_streams`:
+in the workflow's own history with `temporalio.contrib.workflow_streams`.
 
 ```python
 self._runner = AgentWorkflowRunner(config, approval_policy_default=...)  # ContribStream
@@ -535,7 +535,7 @@ self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_pol
 ```
 
 A `ContribStream` deployment has the same Stream backend on every client. Workers take their
-client's backend:
+client's backend.
 
 ```python
 from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
@@ -554,7 +554,7 @@ The end of an agent's run closes nothing on Redis, and the harness does not clos
 either. A reader of an agent that ended stops once it finds that the agent no longer runs.
 
 `ContribStream` needs an SDK build with the Streams API in `temporalio.common`, which no release
-has yet. `just install-streams-sdk` installs the one the harness is tested with. Without it, an
+has. `just install-streams-sdk` installs the one the harness is tested with. Without it, an
 agent that passes no `stream=` fails its Workflow Task with an error that says so. The harness
 imports the Streams API only for a `ContribStream` agent, so an agent on `stream=WorkflowStream()`
 runs on a released SDK. The examples pass `stream=WorkflowStream()`.
@@ -566,7 +566,7 @@ lost event can't lose a subagent's result. Resume points are opaque strings on b
 
 A subagent publishes where its parent does, whatever its own `stream=` says. On `ContribStream`
 the whole agent tree shares the root's Stream, each agent on a Topic of its own. On Workflow
-Streams each agent has its own log. An agent that continues as new passes its Stream on:
+Streams each agent has its own log. An agent that continues as new passes its Stream on with
 `workflow.continue_as_new(self._runner.continue_as_new_config(config))`.
 
 | | `ContribStream` (default) | Workflow Streams |

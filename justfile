@@ -56,8 +56,8 @@ buildifier:
     bazel run //:buildifier
 
 # The temporalio build that ContribStream needs, since no release has the Streams API in
-# temporalio.common yet: moetemp/sdk-python moe/brook/v5/p35-reviewed-api at this commit, with the
-# bridge's `streams` feature. The lock keeps the released temporalio, which Workflow Streams and
+# temporalio.common. It's moetemp/sdk-python moe/brook/v5/p35-reviewed-api at this commit, with
+# the bridge's `streams` feature. The lock keeps the released temporalio, which Workflow Streams and
 # the Bazel build use.
 streams_sdk := "git+https://github.com/moetemp/sdk-python@2ff42e1f9eb25cf26321476d5923bb88d2f71e81"
 

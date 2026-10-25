@@ -157,8 +157,8 @@ class ResumePoint:
     has caught up (``AgentStatus.last_event_seq``), which a stream position can't.
 
     ``offset`` is the stream position of the event itself, on ``temporalio.common`` Streams
-    only. An ``AttemptSuperseded`` event lists the events to drop by it, and has none of its
-    own. It is not part of the encoded point.
+    only. An ``AttemptSuperseded`` event names the events to drop by their offsets, and has no
+    offset of its own. It is not part of the encoded point.
     """
 
     cursor: str = ""
@@ -166,11 +166,11 @@ class ResumePoint:
     offset: str = ""
 
     def advance(self, *, cursor: str, seq: int | None, offset: str = "") -> ResumePoint:
-        """The point just past an event. An event without a seq of this agent keeps the last."""
+        """The point just past an event. An event with no seq of this agent keeps the last seq."""
         return ResumePoint(cursor=cursor, seq=self.seq if seq is None else seq, offset=offset)
 
     def encode(self) -> str:
-        """One string for a consumer to store and hand back as ``attach(resume=...)``."""
+        """One string for a consumer to store and pass back as ``attach(resume=...)``."""
         if not (self.cursor or self.seq):
             return ""
         return f"{self.seq}@{self.cursor}"
@@ -191,7 +191,7 @@ class ResumePoint:
 
 # The callback signature: (item, resume) -> T
 # ``resume`` is the resume point as of this item. The consumer records ``resume.encode()``
-# and hands it back as ``attach(resume=...)`` to resume.
+# and passes it back as ``attach(resume=...)`` to resume.
 OnItemCallback = Callable[[AgentStreamOutput, ResumePoint], T]
 
 # Decides, after each event, whether a read ends. It gets whether the event is the read
@@ -379,8 +379,9 @@ class AgentClient:
         after a lost reply gets the original acceptance back rather than dispatching a second
         message. Left ``None``, Temporal mints one.
 
-        ``dispatch`` is for the subagent-turn activity: the message goes as the internal
-        ``send_subagent_message`` update, which keeps its result for ``await_message``.
+        ``dispatch`` is for the subagent-turn activity. With it, the message is sent as the
+        internal ``send_subagent_message`` update, and the child keeps its result for
+        ``await_message``.
 
         Raises:
             MidTurnRejectedError: The handler refuses mid-turn arrival and a turn is open.
@@ -677,7 +678,7 @@ class AgentClient:
         """
         point = ResumePoint.decode(resume)
         status = await self.get_status()
-        # Checked here, before the response starts, rather than at the read's first step.
+        # Checked here, so that a bad cursor fails before the response starts.
         await self._check_cursor(status.stream, point.cursor)
         # Already caught up (the point is at or past the agent's last word) and the agent is
         # idle, so there is nothing to stream. A point with no seq, such as a ``from_offset`` or
@@ -765,7 +766,7 @@ class AgentClient:
             await events.aclose()
 
     async def _at_head(self, place: AgentStream | None, cursor: str) -> bool:
-        """Whether ``cursor`` is where the agent's stream takes its next record."""
+        """Whether ``cursor`` is the position of the agent's next record."""
         if not cursor:
             return False
         if place is None:
@@ -832,8 +833,8 @@ class AgentClient:
     ) -> AsyncGenerator[tuple[AgentEvent, ResumePoint, bool], None]:
         """The Workflow Streams read: the client-side merge of each agent's own stream."""
         policy = select_live if live else select_replay
-        # The merge picks the cursor of each event it emits just before it yields it, and asks
-        # ``should_stop`` only after the consumer took the event. So the pick says whose it is.
+        # The merge calls ``select`` just before it yields each event, so ``picked`` holds that
+        # event's cursor and tells whether the event is the root agent's own.
         picked: list[Cursor] = []
 
         def select(candidates: list[Cursor]) -> Cursor:

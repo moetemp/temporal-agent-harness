@@ -27,7 +27,7 @@ classifiers = [
 # harness doesn't drag in Gemini or boto3.
 dependencies = [
     # ContribStream, the default event stream, needs a build with the Streams API in
-    # temporalio.common, which no release has yet. stream=WorkflowStream() runs on this release
+    # temporalio.common, which no release has. stream=WorkflowStream() runs on this release
     # range.
     "temporalio>=1.31.0",
     "pydantic>=2.0",

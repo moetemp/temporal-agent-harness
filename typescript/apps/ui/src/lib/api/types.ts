@@ -1,8 +1,8 @@
 import type * as Protocol from "../../../../../packages/client/src/protocol";
 
 export type UnixEpochSeconds = number;
-// The encoded point the merged stream hands back on every frame, opaque to the
-// browser: the provider that minted the cursor inside it is the only reader.
+// The encoded point that the merged stream gives on every frame. It's opaque to
+// the browser, since only the provider that made the cursor inside it reads it.
 export type ResumePoint = string;
 
 /**
@@ -12,7 +12,8 @@ export type ResumePoint = string;
  * root-stream point, the same for every event of a subagent's turn).
  *
  * A number in the log of the agent that published it, or a decimal string on a
- * Stream of temporalio.common, where offsets pass what a number keeps exact.
+ * Stream of temporalio.common, where an offset is too large for a number to keep
+ * exact.
  * `SYNTHESIZED` when the server made the event up rather than reading it off a
  * log, so it has no durable coordinate to report. Absent entirely from mock
  * fixtures and from any server predating the field, which is why it is optional

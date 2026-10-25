@@ -1300,10 +1300,9 @@ export class AgentRunController {
         if (!(await this.#streamDroppedMidRun(session.workflow_id))) break;
         await this.#sleepUnlessWoken(reattachBackoffMs[attempt], signal);
         attempt += 1;
-        /* Resume only from a point the server already proved it holds, by
-           having sent it. The point is opaque, so the newest one the stream
-           handed back is the only one to use; nothing here may invent or
-           compare them. */
+        /* Resume only from a point that the server already sent. The point is
+           opaque, so the newest one the stream gave is the only one to use.
+           Nothing here may invent or compare points. */
         point = this.lastResume || point;
       }
     } catch (error) {
