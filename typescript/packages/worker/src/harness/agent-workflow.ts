@@ -45,6 +45,8 @@ export function publisherFromActivity(
         turn_number: context.turn_number,
         message_id: context.message_id,
         timestamp: Date.now() / 1000,
+        // Only the workflow numbers its events, so an activity's envelope has no `seq`.
+        seq: null,
         event,
       });
     },

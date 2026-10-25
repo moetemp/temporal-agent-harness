@@ -366,6 +366,8 @@ export class RawEventTranslator {
       turn_number: raw.turnNumber,
       message_id: raw.messageId,
       timestamp,
+      // A model activity's events, which the workflow does not number, as in Python.
+      seq: null,
       event,
     }));
   }

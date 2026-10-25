@@ -13,12 +13,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from temporal_agent_harness.harness.agent_protocol.agent_interface import AgentMessage
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
 
 # The registered name of the subagent-turn activity. Used by the activity's ``@activity.defn``
 # (in ``subagent_activities.py``) and by the in-workflow ``send_<function>`` subagent tool's
 # ``execute_activity`` call (in ``agent_workflow.py``).
 RUN_SUBAGENT_TURN_ACTIVITY = "run_subagent_turn"
+
+# The update the subagent-turn activity sends a message with. It is the ``send_agent_message``
+# admission, and the child also keeps the message's result for ``await_message``. Not in
+# ``agent_interface``, since only the harness sends it.
+SEND_SUBAGENT_MESSAGE_UPDATE = "send_subagent_message"
+# The update that waits for a message from ``send_subagent_message`` to finish and returns its
+# result. The parent gets the reply from the child itself, so a lost event can't lose it.
+AWAIT_MESSAGE_UPDATE = "await_message"
 
 # Steady heartbeat cadence for the activity. The activity heartbeats every interval; the
 # wrapper sets ``heartbeat_timeout`` to twice it, leaving one full interval of grace before
@@ -55,12 +64,10 @@ class RunSubagentTurnInput(BaseModel):
     )
     from_offset: int = Field(
         default=0,
-        description="Where to begin consuming the child's stream — the caller's last-known "
-        "offset (the previous turn's returned consumed_offset). A PERFORMANCE HINT ONLY, never "
-        "correctness-critical: the streamer filters to this turn's turn_id, so a stale (smaller) "
-        "offset merely replays a few already-seen events, and it can never be too large (the next "
-        "turn's events always follow the prior turn's turn_end, where the prior consumed_offset "
-        "points). So the caller need not — and must not — fetch the live stream head.",
+        description="On Workflow Streams, the child's stream head after its previous turn (the "
+        "previous turn's consumed_offset). The activity puts it on the SubagentMessageSent event, "
+        "so a client that merges the parent's and the child's streams mounts the child there. "
+        "0 for a first turn and on a Stream of temporalio.common.",
     )
     # The following identify the dispatch for the SubagentMessageSent event the activity
     # publishes onto the PARENT's stream when it actually sends the message (see the activity).
@@ -84,18 +91,37 @@ class SubagentTurnResult(BaseModel):
 
     output: dict[str, Any] = Field(
         default_factory=dict,
-        description="The child handler's reply, as the raw JSON dict carried on the child's "
-        "``message_handler_end`` for THIS message (selected by ``message_id``, not by turn — a "
-        "child turn can carry several participants). The calling send_<function> tool "
-        "re-validates it against the handler's statically known output model (boundary "
-        "validation).",
+        description="The child handler's reply for THIS message, as the raw JSON dict that the "
+        "child's ``await_message`` update returns. The calling send_<function> tool re-validates "
+        "it against the handler's statically known output model (boundary validation).",
     )
     turn_id: str = Field(description="The id of the turn the child actually ran.")
     turn_number: int = Field(
         description="The number of the turn the child actually ran."
     )
     consumed_offset: int = Field(
-        description="The child stream position just past this turn's turn_end. The caller "
-        "stores it and threads it back as the next turn's from_offset, so each turn streams "
-        "from where the last one ended (cheap resume, no full-history replay)."
+        description="On Workflow Streams, the child's stream head just past this turn's "
+        "turn_end (``MessageResult.stream_offset``). The caller passes it as the next turn's "
+        "from_offset. 0 on a Stream of temporalio.common."
     )
+
+
+class SubagentDispatch(BaseModel):
+    """The parent turn of a ``send_subagent_message``.
+
+    On ``temporalio.common`` Streams the child publishes the parent's ``subagent_message_sent``
+    in the Workflow Task that admits the message. Both agents write one Stream, so the marker
+    comes before every event of the child's turn for every reader.
+    """
+
+    agent_key: str = Field(description="The wired agent key of the child.")
+    parent_stream_context: TurnStreamContext = Field(
+        description="The marker's parent turn, and the parent's Stream."
+    )
+
+
+class SubagentMessage(BaseModel):
+    """The payload of the ``send_subagent_message`` update, a message and its dispatch."""
+
+    message: AgentMessage
+    dispatch: SubagentDispatch

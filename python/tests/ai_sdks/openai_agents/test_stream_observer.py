@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
+import typing
 from typing import Any
 
 import pytest
@@ -270,7 +271,7 @@ async def test_factory_threads_batch_interval_to_the_publisher(
     # silently do nothing on the harness path (each flush is one Signal, so this is the
     # knob that trades UI snappiness for workflow-history volume).
     ctx = TurnStreamContext(turn_id="t-5", turn_number=1, agent_id="agent-abc")
-    token = h._HarnessStreamToken(context=ctx, model="gpt-5.1")
+    token = h.TurnStreamToken(context=ctx, model="gpt-5.1")
 
     observer = h.harness_observer_factory(
         token.model_dump(mode="json"), batch_interval=timedelta(milliseconds=750)
@@ -288,9 +289,40 @@ async def test_factory_without_interval_defers_to_the_harness_default(
     # Called by hand (no cadence): pass None through, so publisher_from_activity applies
     # DEFAULT_PUBLISH_BATCH_INTERVAL rather than the observer duplicating that value.
     ctx = TurnStreamContext(turn_id="t-6", turn_number=1, agent_id="agent-abc")
-    token = h._HarnessStreamToken(context=ctx, model="gpt-5.1")
+    token = h.TurnStreamToken(context=ctx, model="gpt-5.1")
 
     async with h.harness_observer_factory(token):
         pass
 
     assert fake_publisher.opened_with == [{"batch_interval": None}]
+
+
+def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_handle():
+    """The Stream backend withdraws an earlier attempt's records when a retry starts, for each
+    Stream handle it finds in the decoded input. A token decoded as a plain dict hides the turn's
+    Stream, and then a retry that fails before it writes leaves the first attempt's half answer."""
+    from pydantic import TypeAdapter
+    from temporalio import common
+
+    if not hasattr(common, "ActivityStream"):
+        pytest.skip("needs the Streams API in temporalio.common")
+    from typing_extensions import Required, TypedDict
+
+    from temporal_agent_harness.ai_sdks.openai_agents._invoke_model_activity import (
+        StreamingActivityModelInput,
+    )
+
+    hint = typing.get_type_hints(StreamingActivityModelInput, include_extras=True)["stream_to"]
+
+    class _StreamTo(TypedDict):
+        stream_to: Required[typing.get_args(hint)[0]]
+
+    wire = TypeAdapter(_StreamTo)
+    handle = common.ActivityStream(id="wf:run:agent_events", workflow_id="wf", backend="memory")
+    context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=handle)
+    token = h.TurnStreamToken(context=context, model="m")
+
+    received = wire.validate_json(wire.dump_json({"stream_to": token}))["stream_to"]
+
+    assert isinstance(received.context.stream, common.ActivityStream)
+    assert wire.validate_json(b'{"stream_to": "events"}')["stream_to"] == "events"

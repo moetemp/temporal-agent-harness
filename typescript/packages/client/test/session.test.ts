@@ -37,20 +37,20 @@ test("it replays the session, then idles until a send wakes it", async (t) => {
   assert.deepEqual(state.messages.map((m) => [m.id, m.status]), [["m0", "done"]]);
   assert.equal(state.frames.length, history.length);
 
-  transport.submitReply = () => ({ turn_number: 2, turn_id: "turn-2", message_id: "m1", accepted_offset: 6, disposition: "opened" });
+  transport.submitReply = () => ({ turn_number: 2, turn_id: "turn-2", message_id: "m1", disposition: "opened" });
   transport.script(f.exchange("m1", "now", 2));
   const reply = await core.sendMessage("ask", { text: "again" });
 
   assert.equal(reply?.message_id, "m1");
   await until(() => state.messages.length === 2 && state.messages[1]!.status === "done");
   // The re-attach resumed where the stream left off rather than replaying from the start.
-  assert.deepEqual(transport.attaches, [0, 6]);
+  assert.deepEqual(transport.attaches, ["", "6@c6"]);
 });
 
 test("a stream cut off mid-turn reconnects and does not repeat frames", async (t) => {
   const f = new Frames();
   const [accepted, started, handlerStart, delta, end, turnEnd] = f.exchange("m0", "hi", 1);
-  // The second attach overlaps the first: a resume replays frames that share its offset.
+  // The second attach overlaps the first: a resume replays frames that share its point.
   const transport = new ScriptedTransport([
     [accepted!, started!, handlerStart!],
     [handlerStart!, delta!, end!, turnEnd!]
@@ -60,7 +60,7 @@ test("a stream cut off mid-turn reconnects and does not repeat frames", async (t
 
   core.start();
   await until(() => state.connection === "idle");
-  assert.deepEqual(transport.attaches, [0, 3]);
+  assert.deepEqual(transport.attaches, ["", "3@c3"]);
   assert.equal(state.frames.length, 6);
   assert.deepEqual(state.messages[0]!.parts, [{ type: "reply_delta", text: "hi" }]);
 });
@@ -172,7 +172,7 @@ test("onFinish reports only this client's messages", async (t) => {
 
   core.start();
   await until(() => state.connection === "idle");
-  transport.submitReply = () => ({ turn_number: 2, turn_id: "turn-2", message_id: "mine", accepted_offset: 6, disposition: "opened" });
+  transport.submitReply = () => ({ turn_number: 2, turn_id: "turn-2", message_id: "mine", disposition: "opened" });
   transport.script(f.exchange("mine", "ours", 2));
   await core.sendMessage("ask", { text: "hi" });
   await until(() => finished.length === 1);
@@ -352,7 +352,7 @@ test("an exposed session is inspected as plain data from the global hook", async
     connection: "idle",
     error: null,
     rootAgentId: "root",
-    lastOffset: 7,
+    lastResume: "7@c7",
     frames: 7,
     pendingSends: 0,
     waitingApprovals: 1,

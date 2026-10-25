@@ -19,6 +19,7 @@ from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from temporal_agent_harness.ai_sdks.typesafe_harness import HarnessTypeSafe
 from temporal_agent_harness.plugin import AgentHarnessPlugin
+from tests._streams import stream_backend_options, turn_records
 
 
 @workflow.defn
@@ -95,8 +96,12 @@ async def test_native_round_trip_events_and_replay(mode):
                     await handle.signal(Probe.cancel_call)
                 result = await handle.result()
                 history = await handle.fetch_history()
-            await Replayer(workflows=[Probe], workflow_runner=UnsandboxedWorkflowRunner(),
-                           data_converter=client.data_converter).replay_workflow(history)
+            await Replayer(
+                **stream_backend_options(),
+                workflows=[Probe],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                data_converter=client.data_converter,
+            ).replay_workflow(history)
     assert [event["type"] for event in result["events"]] == [
         "model_interaction_started", "model_interaction_ended"]
     assert all(event["model"] == "override" for event in result["events"])
@@ -138,8 +143,6 @@ async def test_typed_example_uses_real_harness_and_sandbox():
     from examples.typesafe_hello.workflow import TypeSafeHelloAgent
     from temporal_agent_harness.harness.agent_protocol import (
         AgentConfig, AgentMessage, AgentMessageReply, SEND_AGENT_MESSAGE_UPDATE)
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
-    from temporal_agent_harness.harness.agent_protocol import AgentEvent
 
     def transport(request):
         body = response()
@@ -156,10 +159,9 @@ async def test_typed_example_uses_real_harness_and_sandbox():
                 await handle.execute_update(SEND_AGENT_MESSAGE_UPDATE,
                     AgentMessage(type="classify", payload={"text": "Fix typo"}),
                     result_type=AgentMessageReply)
-                stream = WorkflowStreamClient.create(client, queue)
                 events = []
                 async with asyncio.timeout(10):
-                    async for item in stream.subscribe(topics=["turn_events"], from_offset=0, result_type=AgentEvent):
+                    async for item in turn_records(client, queue):
                         events.append(item.data.event.type)
                         if item.data.event.type == "turn_end":
                             break

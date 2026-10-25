@@ -522,6 +522,75 @@ The worker declares only its workflows. Adding the plugin brings:
 Order it last, after any AI SDK's plugin, so that SDK's payload converter wins. Registering it
 on the client is enough — Temporal applies a client's plugins to workers built from it.
 
+## Choosing the event stream
+
+Each agent picks where it publishes its turn events, with the required `stream=` of
+`AgentWorkflowRunner`. There's no default, so one deployment can run agents on different backends.
+`stream=WorkflowStream()` keeps the events in the workflow's own history with
+`temporalio.contrib.workflow_streams`. `stream=ContribStream()` puts them on a Stream of
+`temporalio.common`, in a store such as Redis. Any other `StreamBackend` with `open_sink()` works
+too.
+
+```python
+self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_policy_default=...)
+self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_policy_default=...)
+```
+
+A `ContribStream` deployment has the same Stream backend on every client. Workers take their
+client's backend.
+
+```python
+from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
+
+client = await Client.connect(
+    ..., plugins=[AgentHarnessPlugin()], stream_backends=stream_backends_from_env()
+)
+```
+
+`stream_backends_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL`
+and `STREAMS_KEY_PREFIX`, and gives a `RedisStreamBackend` (`temporalio.contrib.stream`) or a
+`MemoryStreamBackend` (`temporalio.contrib.stream.testing`) with `default=True`. The web app and
+the Nexus adapter add the same backend when `STREAMS_STORE` is set.
+
+The end of an agent's run closes nothing on Redis, and the harness does not close the Stream
+either. A reader of an agent that ended stops once it finds that the agent no longer runs.
+
+`ContribStream` needs an SDK build with the Streams API in `temporalio.common`.
+`just install-streams-sdk` installs the one the harness is tested with. Without it, a
+`ContribStream` agent fails its Workflow Task with an error that says so. The harness
+imports the Streams API only for a `ContribStream` agent, so an agent on `stream=WorkflowStream()`
+runs on a released SDK. The examples pass `stream=WorkflowStream()`. An agent written with the
+TypeScript SDK publishes on Workflow Streams (see `typescript/docs/python-parity.md`).
+
+The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
+web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
+subagent's answer comes back from the child's `await_message` update, not from its events, so a
+lost event can't lose a subagent's result. Resume points are opaque strings on both.
+
+A subagent publishes where its parent does, whatever its own `stream=` says. On `ContribStream`
+the whole agent tree shares the root's Stream, and a reader keeps one agent's events by their
+`agent_id`. On Workflow Streams each agent has its own log. An agent that continues as new
+passes its Stream on with `workflow.continue_as_new(self._runner.continue_as_new_config(config))`.
+
+| | `ContribStream` | Workflow Streams |
+| --- | --- | --- |
+| What it needs | A Stream store, a Stream backend on every process, an SDK build with the Streams API in `temporalio.common` | Temporal only |
+| Where events go | Into the store, for the Stream's retention | Into each workflow's own log, in its history |
+| Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store | Each activity flush is a Signal and each client read an Update, one Action each |
+| History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |
+| Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
+| A retried attempt | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets | Its events show twice |
+| A store outage | Each write retries with no limit, and the end of a run waits for its writes. So events come late, and the run can't finish until the store is back | No store to fail |
+
+A Nexus caller of `pollMessages` can't apply `attempt_superseded` on `ContribStream`. Each item
+there has `offset` 0, so the caller can't tell which items the event withdraws. The Go driver in
+`nexus/ui_connector/agent` skips the event, so a retried model call shows the text of both
+attempts.
+
+Changing an agent's backend changes its workflow code, so drain or terminate its open sessions
+first, or deploy it with worker versioning. Upgrade the workers before the clients, since the
+client reads `AgentStatus.last_event_seq` and `AgentEvent.seq` from the worker.
+
 ## Code Mode
 
 Most agents call tools one at a time — a round-trip per call. **Code Mode** hands the model a

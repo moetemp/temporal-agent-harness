@@ -548,6 +548,7 @@ describe("event serialization", () => {
         turn_number: 1,
         message_id: "msg-1",
         timestamp: 1234.5,
+        seq: 7,
         event,
       };
       const restored = defaultPayloadConverter.fromPayload<AgentEvent>(

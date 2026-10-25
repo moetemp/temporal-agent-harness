@@ -1,23 +1,25 @@
 import type * as Protocol from "../../../../../packages/client/src/protocol";
 
 export type UnixEpochSeconds = number;
-export type ResumeOffset = number;
-export type StreamOffset = ResumeOffset;
+// The encoded point a frame gives, to resume after that frame. It's opaque to the
+// browser, since only the provider that made the cursor inside it reads it.
+export type ResumePoint = string;
 
 /**
- * One event's own offset in the log of the agent that published it. With the
- * tree-unique `agent_id` this IDENTIFIES the event — it is stable across
- * redeliveries and distinct between two events of the same agent, neither of
- * which is true of `resume_offset` (that one is a root-stream resume cursor and
- * stands still for the whole of a subagent's turn, so every event in that turn
- * reports the same value).
+ * One event's own offset. With the tree-unique `agent_id` this IDENTIFIES the
+ * event. It is stable across redeliveries and distinct between two events of the
+ * same agent, which is not true of `resume` (on Workflow Streams that one is a
+ * root-stream point, the same for every event of a subagent's turn).
  *
+ * A number in the log of the agent that published it, or a decimal string on a
+ * Stream of temporalio.common, where an offset is too large for a number to keep
+ * exact.
  * `SYNTHESIZED` when the server made the event up rather than reading it off a
  * log, so it has no durable coordinate to report. Absent entirely from mock
  * fixtures and from any server predating the field, which is why it is optional
  * on the envelope and every reader has to cope with it missing.
  */
-export type EventOffset = number;
+export type EventOffset = number | string;
 
 /** An event the server synthesized, which therefore has no `event_offset`. */
 export const SYNTHESIZED: EventOffset = -1;
@@ -207,7 +209,6 @@ export interface SubmitMessageResponse {
   turn_id: TurnId;
   /** Correlates this message with its own events on the stream — see {@link MessageId}. */
   message_id: MessageId;
-  accepted_offset: StreamOffset;
   disposition: MessageDisposition;
 }
 
@@ -342,6 +343,8 @@ export interface AgentStatusResponse {
   pending_turns: PendingTurn[];
   /** Messages running inside the open turn — >1 when `accept` handlers have joined it. */
   turn_participants: number;
+  /** The `seq` of the newest event the agent published from workflow code. */
+  last_event_seq: number;
   pending_approvals: PendingApproval[];
   subagents: SubagentInfo[];
   approval_policy: ToolApprovalPolicy;
@@ -371,7 +374,8 @@ export type AgentEventType = Protocol.AgentEventType;
 export type TokenUsage = Protocol.TokenUsage;
 
 export interface AgentEventMetadata extends Omit<Protocol.AgentEvent, "event"> {
-  resume_offset: ResumeOffset;
+  /** Absent from a frame that has no point to give. */
+  resume?: ResumePoint;
   event_offset?: EventOffset;
   /**
    * This event was already durable when the stream opened, so its delivery is
@@ -410,6 +414,10 @@ export type AgentEventData<TType extends AgentEventType> = (TType extends keyof 
   ? Omit<Payload<TType>, keyof Narrowed[TType]> & Narrowed[TType]
   : Payload<TType>) &
   AgentEventMetadata;
+
+/** Synthesized by the Stream reader when a failed attempt's records are withdrawn. It lists
+ *  their offsets, and the envelope gives the agent that wrote them. */
+export type AttemptSupersededEvent = AgentEventData<"attempt_superseded">;
 
 export interface TextAnnotationDelta {
   annotations?: TextAnnotation[];
@@ -464,7 +472,7 @@ export interface JsonPatchOp {
 export interface ClientSideStreamErrorEvent {
   kind: "timeout" | "agent";
   message: string;
-  resume_offset: ResumeOffset;
+  resume?: ResumePoint;
 }
 
 export type AgentSseEventMap = { [TType in AgentEventType]: AgentEventData<TType> } & {

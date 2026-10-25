@@ -2,7 +2,7 @@
  * Two readers of one session see one session, and a reader who reloads mid-reply picks up
  * where it left off.
  *
- * The server here is one append-only frame log every attach tails from its `fromOffset`,
+ * The server here is one append-only frame log every attach tails from after its `resume`,
  * which is what /api/attach is: two tabs are two controllers attached to the same log, and a
  * reload is a new controller over the same IndexedDB, which survives a reload.
  */
@@ -30,7 +30,7 @@ function turn(n) {
       message_id: `m${n}`,
       timestamp: offset,
       event_offset: offset,
-      resume_offset: offset + 1,
+      resume: `${offset + 1}@c`,
       replay: false,
       ...extra
     }
@@ -52,8 +52,8 @@ function server() {
       log.push(...frames);
       for (const wake of waiting) wake();
     },
-    async *attach(fromOffset, signal) {
-      let next = fromOffset;
+    async *attach(resume, signal) {
+      let next = log.findIndex((frame) => frame.data.resume === resume) + 1;
       while (!signal?.aborted) {
         while (next < log.length) yield log[next++];
         await new Promise((resolve) => {
@@ -83,9 +83,9 @@ function tab(source, attachCalls = []) {
     async workflowStatus(workflowId) {
       return { workflow_id: workflowId, execution_status: "RUNNING", closed: false };
     },
-    attach(_id, fromOffset, signal) {
-      attachCalls.push(fromOffset);
-      return source.attach(fromOffset, signal);
+    attach(_id, resume, signal) {
+      attachCalls.push(resume);
+      return source.attach(resume, signal);
     }
   });
   controller.sessions = [session(ID)];
@@ -123,7 +123,7 @@ describe("one session, several readers", () => {
     b.pause();
   });
 
-  it("resumes a reload mid-reply from its last offset, duplicating nothing", async () => {
+  it("resumes a reload mid-reply from its last point, duplicating nothing", async () => {
     freshStorage();
     await deleteRuns([runKeyOf(session(ID))]);
     const source = server();
@@ -148,7 +148,7 @@ describe("one session, several readers", () => {
     await waitFor("the reloaded stream", () => after.frames.length === source.log.length);
     await sleep(100);
 
-    assert.equal(attachCalls[0], cached.length, "attach resumes where the cache ends");
+    assert.equal(attachCalls[0], `${cached.length}@c`, "attach resumes where the cache ends");
     assert.deepEqual(offsets(after), [...source.log.keys()], "every frame exactly once");
     assert.deepEqual(chat(after), expectedChat(5), "every message exactly once");
     after.pause();

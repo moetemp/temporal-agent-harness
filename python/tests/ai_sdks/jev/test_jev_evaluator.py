@@ -20,14 +20,13 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import httpx2
 import pytest
 from pydantic import BaseModel
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.client import WorkflowUpdateStage
 from temporalio.testing import WorkflowEnvironment
 from temporalio.typesafe import SystemOneResult, TypeSafePlugin
@@ -47,7 +46,6 @@ from temporal_agent_harness.harness.agent_workflow import Injected
 from temporal_agent_harness.harness.agent_client import AgentClient
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -63,6 +61,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     AutoApprovalContext,
     ToolApprovalPolicy,
 )
+from tests._streams import agent_stream, turn_records
 
 
 def _criteria(**kwargs) -> AutoApprovalCriteria:
@@ -491,7 +490,7 @@ class JevApprovalProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_PROBE_CRITERIA,
             auto_mode_evaluator=jev_evaluator(),
@@ -639,14 +638,8 @@ async def _run_once(
         result_type=AgentMessageReply,
     )
     events: list[AgentEvent] = []
-    stream = WorkflowStreamClient.create(client, handle.id)
     async with asyncio.timeout(30):
-        async for item in stream.subscribe(
-            topics=[TURN_EVENTS_TOPIC],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
-        ):
+        async for item in turn_records(client, handle.id):
             events.append(item.data)
             if item.data.event.type == AgentEventType.TURN_END:
                 break
@@ -772,14 +765,8 @@ async def test_end_to_end_an_unsure_verdict_leaves_the_call_to_a_human():
         agent_client = AgentClient(client, handle.id)
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(30):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
+            async for item in turn_records(client, handle.id):
                 ev = item.data
                 events.append(ev)
                 if (
@@ -833,14 +820,8 @@ async def test_end_to_end_a_failing_jev_call_escalates_rather_than_approving():
         agent_client = AgentClient(client, handle.id)
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(30):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
+            async for item in turn_records(client, handle.id):
                 ev = item.data
                 events.append(ev)
                 # Answered only once the evaluation has failed: a human answering while
@@ -918,14 +899,8 @@ async def test_end_to_end_auto_mode_off_never_asks_the_model():
         assert status.has_auto_approval_evaluator is True
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(20):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
+            async for item in turn_records(client, handle.id):
                 events.append(item.data)
                 if item.data.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
                     break
@@ -971,14 +946,8 @@ async def test_end_to_end_no_criteria_never_reaches_the_evaluator():
         assert seen == []
 
         events: list[AgentEvent] = []
-        stream = WorkflowStreamClient.create(client, handle.id)
         async with asyncio.timeout(20):
-            async for item in stream.subscribe(
-                topics=[TURN_EVENTS_TOPIC],
-                from_offset=0,
-                result_type=AgentEvent,
-                poll_cooldown=timedelta(milliseconds=10),
-            ):
+            async for item in turn_records(client, handle.id):
                 events.append(item.data)
                 if item.data.event.type == AgentEventType.TOOL_APPROVAL_REQUESTED:
                     break

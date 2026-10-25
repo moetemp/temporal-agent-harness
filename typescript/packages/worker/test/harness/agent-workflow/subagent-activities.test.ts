@@ -28,6 +28,7 @@ describe("run_subagent_turn reads only its own reply from a shared child turn", 
     turn_number: 4,
     message_id: messageId,
     timestamp: 0,
+    seq: null,
     event,
   });
   function consume(events: AgentEvent[]): Promise<SubagentTurnResult> {
@@ -162,6 +163,7 @@ describe("run_subagent_turn sends idempotently and stops on cancellation", () =>
     turn_number: 4,
     message_id: messageId,
     timestamp: 0,
+    seq: null,
     event,
   });
 

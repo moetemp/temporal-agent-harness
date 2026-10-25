@@ -68,11 +68,21 @@ change, or adds a row here saying which SDK has it and why.
 | --- | --- | --- |
 | Activity tools with a heartbeat timeout | The activity never heartbeats, so a long tool call fails its heartbeat timeout | The activity heartbeats at half the timeout while the tool runs |
 | Stream polls parked when a run completes | Left unanswered; the run completes with the poll update still in flight | Answered with the last events, `turn_end` included (`detachPollers`), before the run completes |
-| A failed subagent turn | `subagent_message_sent` is never closed: the runner catches `ApplicationError`, but a failed activity raises `ActivityError` wrapping it | `subagent_reply_received` with `outcome: "error"` closes the bracket |
 | A tool approval sent after `close` | Accepted, so the call can still run | Rejected with `AgentClosed` |
+
+### In Python first, TypeScript to follow
+
+| Area | Python | TypeScript |
+| --- | --- | --- |
+| Where an agent publishes its turn events | The agent's required `stream=`: `ContribStream()`, a Stream of `temporalio.common` that the whole agent tree shares, or `WorkflowStream()` | Workflow Streams only |
+| Reading an agent (`agent_client`) | Either backend, from an opaque resume point (`ResumePoint`) | Workflow Streams, from a root-stream offset |
+| A subagent's reply | The child's `await_message` update returns it, after the parent sends with `send_subagent_message` | The child's `message_handler_end` on its stream |
 
 ### Not yet the same
 
+- A subagent tree across the two SDKs. A Python parent can't send to a TypeScript child, which has
+  no `send_subagent_message` update. A Python child of a TypeScript parent passes
+  `stream=WorkflowStream()`, since the parent reads the child's Workflow Streams log.
 - `tool_end.tool_output` is the result as Python's `str()` renders it in both SDKs, which is a
   Python repr for a structured result; the protocol is to carry structured results instead (stage
   5b of the polyglot monorepo plan).

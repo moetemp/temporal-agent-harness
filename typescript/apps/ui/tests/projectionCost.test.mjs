@@ -41,7 +41,7 @@ const frame = (i) => {
     data: {
       type: kind, agent_id: isChild ? "kid" : "root",
       turn_id: `t${(i / 50) | 0}`, turn_number: 1 + ((i / 50) | 0),
-      timestamp: i * 0.01, resume_offset: i, event_offset: i, delta: `token ${i}`,
+      timestamp: i * 0.01, resume: `${i}@c`, event_offset: i, delta: `token ${i}`,
       user_message: `ask ${i}`, tool_id: `tool-${(i / 5) | 0}`, tool_name: "search",
       subagent_id: "kid", subagent_turn: 1 + ((i / 25) | 0), workflow_id: "wf-kid",
       model: "gemini-3.5-flash"

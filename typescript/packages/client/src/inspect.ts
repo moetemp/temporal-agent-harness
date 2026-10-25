@@ -26,8 +26,8 @@ export interface SessionInspection {
   connection: ConnectionStatus;
   error: string | null;
   rootAgentId: string | null;
-  /** The last frame's resume offset: where a re-attach picks up. */
-  lastOffset: number;
+  /** The newest resume point a frame gave: where a re-attach picks up. Empty for none. */
+  lastResume: string;
   frames: number;
   pendingSends: number;
   waitingApprovals: number;
@@ -57,7 +57,7 @@ export function inspectSession(session: InspectableSession | InspectableCore): S
     connection: state.connection,
     error: state.error?.message ?? null,
     rootAgentId: state.rootAgentId,
-    lastOffset: state.frames.at(-1)?.data.resume_offset ?? 0,
+    lastResume: lastResume(state.frames),
     frames: state.frames.length,
     pendingSends: state.pending.length,
     waitingApprovals: approvals.length,
@@ -73,6 +73,14 @@ export function inspectSession(session: InspectableSession | InspectableCore): S
     };
   }
   return inspection;
+}
+
+function lastResume(frames: readonly AgentSseFrame[]): string {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const resume = frames[i]!.data.resume;
+    if (typeof resume === "string") return resume;
+  }
+  return "";
 }
 
 /** For development: `window.__AGENT_HARNESS__[sessionId]()` returns `inspectSession(session)`.
