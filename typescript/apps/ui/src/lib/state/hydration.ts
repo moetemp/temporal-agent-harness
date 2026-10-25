@@ -39,7 +39,7 @@ export function publishAtChunkBoundary(
  * frame, so the mode latches rather than tracking the server's `replay` mark
  * frame by frame.
  *
- * Within ONE attach the mark is already ordered — the server's `replay` covers
+ * Within ONE attach the mark is already ordered. The server's `replay` covers
  * what existed when the stream opened, and one attach delivers the root stream
  * in order, so the mark goes True..True,False..False and never back. But frames
  * do not all come from one attach: a subagent gets its own concurrent attach

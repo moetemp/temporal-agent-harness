@@ -151,7 +151,7 @@ function yieldToMain(): Promise<void> {
 
 /**
  * The identity #ingestFrame dedupes on. A frame arriving twice is normal — a reconnect replays from
- * a resume point, and the cached frames overlap the live stream — so this has to say "same event"
+ * a resume point, and the cached frames overlap the live stream, so this has to say "same event"
  * exactly when it is the same event.
  *
  * An event read off a log reports its own offset there, which with the tree-unique `agent_id` is
@@ -1376,10 +1376,11 @@ export class AgentRunController {
   }
 
   /**
-   * Ensure a stream is live, WITHOUT disturbing one that already is.
+   * Open a stream if none is live, WITHOUT disturbing one that already is.
    *
    * The second half of the client contract (README.md, "The client contract"): submit,
-   * then ensure. Re-attaching instead costs a new read and a status query for nothing.
+   * then make sure a stream is live. Re-attaching instead costs a new read and a status
+   * query for nothing.
    *
    * A stream between attempts in its backoff counts as live — it will re-open by
    * itself — but it is woken so the wait does not add to the round trip.

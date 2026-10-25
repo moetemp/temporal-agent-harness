@@ -378,7 +378,7 @@ data: {"type":"reply_delta","agent_id":"root","turn_id":"t1","turn_number":1,"ti
 
 `POST /api/chat` can also emit `stream_error` frames, which the server synthesizes for a turn
 timeout or for this turn's own `message_handler_error`. They are not agent events — nothing
-published them on the stream — so they carry `kind`, `message` and `resume` but no
+published them on the stream, so they carry `kind`, `message` and `resume` but no
 `type` or turn/message metadata.
 
 ## SSE Event Payloads

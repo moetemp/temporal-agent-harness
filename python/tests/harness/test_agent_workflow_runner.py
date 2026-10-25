@@ -883,7 +883,7 @@ def test_a_tool_call_closed_after_eviction_unwinds_quietly():
 
 def test_approval_policy_default_is_required():
     """``approval_policy_default`` is a required keyword-only constructor arg, so omitting it
-    is a call-site TypeError — no runtime ``build()`` check to forget. The author must make a
+    is a call-site TypeError, with no runtime ``build()`` check to forget. The author must make a
     deliberate safe-by-default approval choice."""
     stream = MagicMock()
     stream.topic.return_value = MagicMock()

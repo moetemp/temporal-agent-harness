@@ -165,7 +165,7 @@ def create_agent_harness_app(
         # worker and the session-manager worker get by adding the same plugin. An offloaded
         # payload is only readable by a process using the matching converter, so this app must
         # not spell one out of its own. The plugin's activity registration is a WORKER concern
-        # and this app hosts no worker, so it simply doesn't apply here. The Stream backend, if
+        # and this app hosts no worker, so it doesn't apply here. The Stream backend, if
         # any, is the one the workers' clients have, because this process reads agent Streams.
         app.state.temporal = await Client.connect(
             **connect_config,

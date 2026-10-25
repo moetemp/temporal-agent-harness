@@ -4,7 +4,7 @@
 # split), with heartbeat state used as an "already sent?" memo so the common retry (a crash
 # while waiting) resumes *waiting* instead of re-sending.
 #
-# DESIGN — no wait timeout + interval auto-heartbeat: we NEVER cap how long we wait for the
+# DESIGN. No wait timeout + interval auto-heartbeat: we NEVER cap how long we wait for the
 # subagent's reply. A subagent may legitimately take arbitrarily long, so a background task
 # heartbeats at a STEADY interval (derived as ``heartbeat_timeout / 2``, mirroring
 # temporalio.contrib.openai_agents' auto-heartbeater) carrying the latest dedup memo. The
@@ -14,7 +14,7 @@
 # requires one of the close timeouts; the toolset generator uses a generous default that devs
 # can override).
 #
-# DESIGN — the reply comes from the child's ``await_message`` update, NOT from its events. The
+# DESIGN. The reply comes from the child's ``await_message`` update, NOT from its events. The
 # event stream is a live view, on either backend, and a parent's model must get its subagent's
 # answer even when a view misses an event. The activity mirrors none of the child's events onto
 # the parent's. On Workflow Streams it publishes ONE marker of its own onto the PARENT's stream
@@ -22,12 +22,12 @@
 # _publish_dispatch). On ``temporalio.common.streams`` the child publishes that marker, so it
 # comes before the child's events on the one Stream they share.
 #
-# DESIGN — Temporal Client: the activity needs a ``Client`` to talk to the *child* (the
+# DESIGN. Temporal Client: the activity needs a ``Client`` to talk to the *child* (the
 # ``send_subagent_message`` and ``await_message`` updates). An activity's own context only
 # reaches its parent workflow. So this is a CLASS that closes over the worker's client; the bound
 # method is what gets registered as the activity. ``AgentHarnessPlugin`` does that instantiation
 # from the worker's own client (it is why the plugin overrides ``configure_worker``), so agents
-# normally never touch this class — reach for it directly only when hand-building a worker's
+# normally never touch this class. Reach for it directly only when hand-building a worker's
 # activity list (``activities=[SubagentActivities(client).run_subagent_turn]``).
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class SubagentActivities:
         """Send one message to the child agent and wait for its result.
 
         Sends the ``send_subagent_message`` envelope to ``req.child_workflow_id`` (unless a
-        heartbeat memo says a prior attempt already sent it), then waits — with NO timeout —
+        heartbeat memo says a prior attempt already sent it), then waits, with NO timeout,
         on the child's ``await_message`` update for that message. A background task heartbeats
         the dedup memo at a steady interval throughout (see :meth:`_auto_heartbeat`).
 
@@ -124,7 +124,7 @@ class SubagentActivities:
         if progress is None:
             progress = await self._submit(client, req)
             if req.parent_stream_context.stream is None:
-                # The send just happened — NOW publish the dispatch marker onto the PARENT's
+                # The send just happened, so NOW publish the dispatch marker onto the PARENT's
                 # stream (this is the accurate moment, vs. the parent's execute_activity
                 # dispatch time). Only on the fresh-send branch: a heartbeat-resume retry skips
                 # both the re-send and this publish.

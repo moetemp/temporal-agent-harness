@@ -29,7 +29,7 @@
  *  - Emptying reattachBackoffMs, or otherwise not re-attaching a RUNNING
  *    workflow: "dropped stream" times out waiting for the second attach.
  *  - Resuming a reconnect from 0 rather than the last point the server sent:
- *    the resume assertion fails. Replaying from zero is not harmless — it
+ *    the resume assertion fails. Replaying from zero is not harmless, as it
  *    re-sends the whole history on every blip.
  *  - Never registering the `online` listener: "connectivity returns" times out,
  *    which is a reader stranded by an outage that outlasted the retry budget.

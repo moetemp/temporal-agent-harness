@@ -3716,7 +3716,7 @@ class AgentWorkflowRunner:
                 :attr:`AgentWorkflowRunner.current_stream_context` and
                 forwarded opaquely through activity inputs.
             batch_interval: Background flush cadence on the underlying
-                stream client — each flush is one Signal on Workflow Streams and
+                stream client. Each flush is one Signal on Workflow Streams and
                 one store write on a Stream, so a longer interval trades UI
                 snappiness for fewer of them. ``None``
                 takes :data:`DEFAULT_PUBLISH_BATCH_INTERVAL` (50ms), which keeps
