@@ -73,6 +73,15 @@ _WAIT_FOR_CREATE = timedelta(minutes=1)
 # How long a read waits with no item before it asks whether the agent still runs. The end of a
 # run closes nothing on Redis or memory, so the read has to find out.
 _LIVENESS_CHECK = timedelta(seconds=5)
+# The errors of that check that can go away on their own.
+_TRANSIENT = frozenset(
+    {
+        RPCStatusCode.UNAVAILABLE,
+        RPCStatusCode.DEADLINE_EXCEEDED,
+        RPCStatusCode.RESOURCE_EXHAUSTED,
+        RPCStatusCode.ABORTED,
+    }
+)
 # Every client of this process shares one memory backend, so they all see the same Streams.
 _memory: streams.StreamBackend | None = None
 # Said when a worker has no Stream backend, which fails the Workflow Task until one has.
@@ -617,16 +626,19 @@ def _withdraw(item: Superseded, shown: dict[str, _Shown]) -> tuple[list[int], _S
 
 
 async def _ended(client: Client, workflow_id: str, owner: tuple[str | None, str | None]) -> bool:
-    """Whether the read's agent or the Stream's owner chain no longer runs."""
+    """Whether the read's agent or the Stream's owner chain is known to have ended."""
     for wid, first_run_id in ((workflow_id, None), owner):
         if not wid:
             continue
         try:
             description = await client.get_workflow_handle(wid).describe()
         except RPCError as err:
-            # A workflow that is gone writes nothing more. Another error tells nothing about it.
+            # A workflow that is gone writes nothing more. A transient error tells nothing about
+            # it, so the read goes on and asks again after its next quiet stretch.
             if err.status == RPCStatusCode.NOT_FOUND:
                 return True
+            if err.status in _TRANSIENT:
+                continue
             raise
         info = description.raw_description.workflow_execution_info
         if first_run_id and info.first_run_id and info.first_run_id != first_run_id:

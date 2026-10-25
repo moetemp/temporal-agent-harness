@@ -814,9 +814,12 @@ async def test_only_a_workflow_that_is_gone_ends_a_read():
 
     flaky = _FailingDescribe(RPCStatusCode.UNAVAILABLE)
     gone = _FailingDescribe(RPCStatusCode.NOT_FOUND)
+    denied = _FailingDescribe(RPCStatusCode.PERMISSION_DENIED)
 
+    # A transient error leaves the read on, to ask again later.
+    assert not await _ended(flaky, "wf", (None, None))  # type: ignore[arg-type]
     with pytest.raises(RPCError):
-        await _ended(flaky, "wf", (None, None))  # type: ignore[arg-type]
+        await _ended(denied, "wf", (None, None))  # type: ignore[arg-type]
     with pytest.raises(RPCError):
         await _nexus_handler(flaky, "q")._running("wf")
     assert await _ended(gone, "wf", (None, None))  # type: ignore[arg-type]
