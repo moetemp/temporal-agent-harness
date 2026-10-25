@@ -577,7 +577,7 @@ Streams each agent has its own log. An agent that continues as new passes its St
 | History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |
 | Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
 | A retried attempt | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets | Its events show twice |
-| A store outage | The agent goes on, and the live view misses what it wrote meanwhile | No store to fail |
+| A store outage | Each write retries with no limit, and the end of a run waits for its writes. So events come late, and the run can't finish until the store is back | No store to fail |
 
 Changing an agent's backend changes its workflow code, so drain or terminate its open sessions
 first, or deploy it with worker versioning. Upgrade the workers before the clients, since a client
