@@ -215,10 +215,8 @@ class ContribSink:
         return ActivityStream.from_handle(self._stream)
 
     def _write(self, topic: str, event: AgentEvent) -> None:
-        # The runner needs each write's offset and continues past a refused write. No public call
-        # gives the write's future, and ``publish_nowait`` fails the Workflow Task on an error.
         try:
-            written = self._stream._append(topic, (event,))
+            written = self._stream.topic(topic, type=AgentEvent).publish(event)
         except StreamConfigError as err:
             raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
         written.add_done_callback(self._written)
@@ -226,6 +224,7 @@ class ContribSink:
     def _written(self, written: asyncio.Future[int]) -> None:
         if written.cancelled():
             return
+        # Taking the error here keeps a refused write from failing the run at its end.
         error = written.exception()
         if error is not None:
             workflow.logger.warning("An agent event was not written to its Stream: %s", error)

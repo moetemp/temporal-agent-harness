@@ -218,6 +218,24 @@ class WorkflowStreamsParent:
         return TextReply(text=out["text"])
 
 
+@workflow.defn
+class RefusedWrite:
+    """Publishes through a ``ContribSink`` on a Stream that nothing created."""
+
+    @workflow.run
+    async def run(self) -> str:
+        from temporal_agent_harness.harness import contrib_stream
+        from temporal_agent_harness.harness.agent_protocol import AgentStream
+
+        handle = {"id": "missing:run1:agent_events", "workflowId": "missing"}
+        sink = contrib_stream.open_place(AgentStream(handle=handle, topic="turn_events"))
+        event = AgentEvent(
+            agent_id="a", turn_id="t", turn_number=1, timestamp=0.0, event=ReplyDelta(text="x")
+        )
+        sink.publish(event)
+        return "done"
+
+
 @pytest_asyncio.fixture
 async def client_and_queue():
     env = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)
@@ -231,6 +249,7 @@ async def client_and_queue():
             ContinuingAgent,
             WorkflowStreamsParent,
             DefaultChild,
+            RefusedWrite,
         ],
         plugins=[AgentHarnessPlugin(tools=[flaky_tool])],
         workflow_runner=UnsandboxedWorkflowRunner(),
@@ -276,6 +295,16 @@ def _reply(items: list[Any]) -> str:
         for item, _ in items
         if isinstance(item, AgentEvent) and item.event.type == AgentEventType.MESSAGE_HANDLER_END
     )
+
+
+@needs_a_stream
+async def test_a_refused_write_costs_the_event_and_not_the_run(client_and_queue):
+    client, task_queue = client_and_queue
+    async with asyncio.timeout(30):
+        result = await client.execute_workflow(
+            RefusedWrite.run, id=f"RefusedWrite-{uuid.uuid4()}", task_queue=task_queue
+        )
+    assert result == "done"
 
 
 async def test_a_repeated_update_id_streams_the_original_turn(client_and_queue):
