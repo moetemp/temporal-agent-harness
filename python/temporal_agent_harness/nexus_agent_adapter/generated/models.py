@@ -1461,10 +1461,9 @@ class PollMessagesInput:
     """How long the WorkflowStream poll update waits for new events before returning empty"""
 
     stream_cursor: str | None = None
-    """Opaque cursor of an agent that uses temporalio.contrib.streams, from streamCursor or
+    """Opaque cursor of an agent that uses temporalio.common.streams, from streamCursor or
     next_cursor. Unset on Workflow Streams, which uses cursor.
     """
-
 
 
 class _PollMessagesOutputTransferTypeConverter(
@@ -1596,10 +1595,9 @@ class PollMessagesOutput:
     """True when the agent workflow has completed and the batch has no items"""
 
     next_cursor: str | None = None
-    """Opaque cursor for the next pollMessages call on temporalio.contrib.streams.
-    Unset on Workflow Streams, which uses next_offset.
+    """Opaque cursor for the next pollMessages call on temporalio.common.streams. Unset on
+    Workflow Streams, which uses next_offset.
     """
-
 
 
 class _ProvideCallbackResultInputTransferTypeConverter(
@@ -2125,9 +2123,8 @@ class SendMessageOutput:
 
     stream_cursor: str | None = None
     """Opaque cursor to start the first pollMessages call from, on an agent that uses
-    temporalio.contrib.streams. Unset on Workflow Streams, which uses streamHeadOffset.
+    temporalio.common.streams. Unset on Workflow Streams, which uses streamHeadOffset.
     """
-
 
 
 class _StreamItemTransferTypeConverter(
@@ -2206,7 +2203,7 @@ class StreamItem:
 
     offset: int
     """Absolute position of this item in the stream, on Workflow Streams. 0 on
-    temporalio.contrib.streams, whose cursor is next_cursor
+    temporalio.common.streams, whose cursor is next_cursor
     """
 
 

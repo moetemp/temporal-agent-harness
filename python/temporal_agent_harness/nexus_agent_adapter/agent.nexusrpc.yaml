@@ -77,7 +77,7 @@ $defs:
         description: "Message ID used to filter pollMessages events for this reply"
       streamCursor:
         type: string
-        description: "Opaque cursor to start the first pollMessages call from, on an agent that uses temporalio.contrib.streams. Unset on Workflow Streams, which uses streamHeadOffset."
+        description: "Opaque cursor to start the first pollMessages call from, on an agent that uses temporalio.common.streams. Unset on Workflow Streams, which uses streamHeadOffset."
     required:
       - turnNumber
       - turnId
@@ -436,7 +436,7 @@ $defs:
         description: "How long the WorkflowStream poll update waits for new events before returning empty"
       streamCursor:
         type: string
-        description: "Opaque cursor of an agent that uses temporalio.contrib.streams, from streamCursor or next_cursor. Unset on Workflow Streams, which uses cursor."
+        description: "Opaque cursor of an agent that uses temporalio.common.streams, from streamCursor or next_cursor. Unset on Workflow Streams, which uses cursor."
     required:
       - sessionId
       - cursor
@@ -462,7 +462,7 @@ $defs:
         description: "True when the agent workflow has completed and the batch has no items"
       next_cursor:
         type: string
-        description: "Opaque cursor for the next pollMessages call on temporalio.contrib.streams. Unset on Workflow Streams, which uses next_offset."
+        description: "Opaque cursor for the next pollMessages call on temporalio.common.streams. Unset on Workflow Streams, which uses next_offset."
     required:
       - items
       - next_offset
@@ -481,7 +481,7 @@ $defs:
         description: "base64-encoded proto Payload containing a TurnEvent"
       offset:
         type: integer
-        description: "Absolute position of this item in the stream, on Workflow Streams. 0 on temporalio.contrib.streams, whose cursor is next_cursor"
+        description: "Absolute position of this item in the stream, on Workflow Streams. 0 on temporalio.common.streams, whose cursor is next_cursor"
     required:
       - topic
       - data

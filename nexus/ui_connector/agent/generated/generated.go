@@ -1375,7 +1375,7 @@ type PollMessagesInput struct {
 	// TimeoutSeconds How long the WorkflowStream poll update waits for new events before
 	// returning empty
 	TimeoutSeconds *float64 `json:"timeoutSeconds,omitempty"`
-	// StreamCursor Opaque cursor of an agent that uses temporalio.contrib.streams, from
+	// StreamCursor Opaque cursor of an agent that uses temporalio.common.streams, from
 	// streamCursor or next_cursor. Unset on Workflow Streams, which uses cursor.
 	StreamCursor *string `json:"streamCursor,omitempty"`
 }
@@ -1470,8 +1470,8 @@ type PollMessagesOutput struct {
 	MoreReady bool `json:"more_ready"`
 	// Closed True when the agent workflow has completed and the batch has no items
 	Closed *bool `json:"closed,omitempty"`
-	// NextCursor Opaque cursor for the next pollMessages call on temporalio.contrib.streams.
-	// Unset on Workflow Streams, which uses next_offset.
+	// NextCursor Opaque cursor for the next pollMessages call on
+	// temporalio.common.streams. Unset on Workflow Streams, which uses next_offset.
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
@@ -2031,8 +2031,9 @@ type SendMessageOutput struct {
 	Pending *bool `json:"pending,omitempty"`
 	// MessageId Message ID used to filter pollMessages events for this reply
 	MessageId *string `json:"messageId,omitempty"`
-	// StreamCursor Opaque cursor to start the first pollMessages call from, on an agent that
-	// uses temporalio.contrib.streams. Unset on Workflow Streams, which uses streamHeadOffset.
+	// StreamCursor Opaque cursor to start the first pollMessages call from, on an agent
+	// that uses temporalio.common.streams. Unset on Workflow Streams, which uses
+	// streamHeadOffset.
 	StreamCursor *string `json:"streamCursor,omitempty"`
 }
 
@@ -2133,7 +2134,7 @@ type StreamItem struct {
 	// Data base64-encoded proto Payload containing a TurnEvent
 	Data string `json:"data"`
 	// Offset Absolute position of this item in the stream, on Workflow Streams. 0 on
-	// temporalio.contrib.streams, whose cursor is next_cursor
+	// temporalio.common.streams, whose cursor is next_cursor
 	Offset int64 `json:"offset"`
 }
 
