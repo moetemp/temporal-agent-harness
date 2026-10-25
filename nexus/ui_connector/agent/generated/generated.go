@@ -2134,7 +2134,9 @@ type StreamItem struct {
 	// Data base64-encoded proto Payload containing a TurnEvent
 	Data string `json:"data"`
 	// Offset Absolute position of this item in the stream, on Workflow Streams. 0 on
-	// temporalio.common.streams, whose cursor is next_cursor
+	// temporalio.common.streams, whose cursor is next_cursor. So a caller can't apply an
+	// attempt_superseded event there, since its withdrawn_offsets name items by offsets
+	// that this field doesn't give
 	Offset int64 `json:"offset"`
 }
 

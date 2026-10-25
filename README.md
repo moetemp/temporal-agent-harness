@@ -579,6 +579,11 @@ Streams each agent has its own log. An agent that continues as new passes its St
 | A retried attempt | The store withdraws its records, and a reader gets `attempt_superseded` with their offsets | Its events show twice |
 | A store outage | Each write retries with no limit, and the end of a run waits for its writes. So events come late, and the run can't finish until the store is back | No store to fail |
 
+A Nexus caller of `pollMessages` can't apply `attempt_superseded` on `ContribStream`. Each item
+there has `offset` 0, so the caller can't tell which items the event withdraws. The Go driver in
+`nexus/ui_connector/agent` skips the event, so a retried model call shows the text of both
+attempts.
+
 Changing an agent's backend changes its workflow code, so drain or terminate its open sessions
 first, or deploy it with worker versioning. Upgrade the workers before the clients, since a client
 of this version reads `AgentStatus.last_event_seq` and `AgentEvent.seq`, which an older worker
