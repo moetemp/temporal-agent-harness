@@ -753,8 +753,15 @@ class _UnansweredQuery:
     def __init__(self, status: WorkflowExecutionStatus) -> None:
         self._status = status
 
-    def get_workflow_handle(self, workflow_id: str) -> Any:
-        return self
+    def get_workflow_handle(self, workflow_id: str, **options: Any) -> Any:
+        if not options:
+            return self
+        # A Stream handle needs a backend and makes no call, so this client has no server.
+        from temporalio.contrib.stream.testing import MemoryStreamBackend
+
+        backends = [MemoryStreamBackend(default=True)]
+        streams = Client(object(), stream_backends=backends)  # type: ignore[arg-type]
+        return streams.get_workflow_handle(workflow_id, **options)
 
     async def query(self, *args: Any, **kwargs: Any) -> Any:
         raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
@@ -782,7 +789,9 @@ async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_ba
     pytest.importorskip("temporalio.common.streams")
     from temporal_agent_harness.harness.contrib_stream import root_place
 
-    assert await closed._stream_place("wf", poll("5")) == root_place("wf", "run1")
+    place = await closed._stream_place("wf", poll("5"))
+    assert place == root_place(closed._client, "wf", "run1")
+    assert place.handle["firstExecutionRunId"] == "run1"
 
 
 @needs_a_stream
@@ -795,10 +804,8 @@ async def test_the_place_found_without_a_query_is_the_one_the_agent_reports(clie
     description = await client.get_workflow_handle(agent_client.workflow_id).describe()
 
     first_run_id = description.raw_description.workflow_execution_info.first_run_id
-    place = root_place(agent_client.workflow_id, first_run_id)
-    assert status.stream is not None and place.topic == status.stream.topic
-    # Without the backend's name, the reader takes its client's default one.
-    assert place.handle == {k: v for k, v in status.stream.handle.items() if k != "backend"}
+    place = root_place(client, agent_client.workflow_id, first_run_id)
+    assert place == status.stream
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():

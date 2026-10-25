@@ -44,7 +44,6 @@ try:
         Superseded,
         WorkflowStream,
     )
-    from temporalio.common.streams._ids import scoped_stream_id
     from temporalio.contrib.stream.workflow import create_stream_nowait
 except ImportError as exc:
     raise RuntimeError(
@@ -115,8 +114,8 @@ def stream_backends_from_env() -> list[streams.StreamBackend]:
 
     Register the result as ``Client.connect(..., stream_backends=backends)``. Workers built from
     that client take it. The backend has ``default=True``, since a place found without asking
-    the agent (``root_place``) names no backend, and a client reads it on its default one. Every
-    call gives the one memory backend, so all clients of the process see the same Streams.
+    the agent (``root_place``) is on the client's default backend. Every call gives the one
+    memory backend, so all clients of the process see the same Streams.
     """
     global _memory
     store = os.environ.get(STORE_ENV)
@@ -209,8 +208,8 @@ class ContribSink:
         return ActivityStream.from_handle(self._stream)
 
     def _write(self, topic: str, event: AgentEvent) -> None:
-        # ``publish_nowait`` drops the write's future, and the runner needs its offset and
-        # its error. ``_append`` is the call that ``publish_nowait`` makes.
+        # The runner needs each write's offset and goes on past a refused write. No public call
+        # gives the write's future, and ``publish_nowait`` fails the Workflow Task on an error.
         try:
             written = self._stream._append(topic, (event,))
         except StreamConfigError as err:
@@ -250,21 +249,15 @@ def open_place(place: AgentStream) -> ContribSink:
     return ContribSink(stream, place)
 
 
-def root_place(workflow_id: str, first_run_id: str) -> AgentStream:
+def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStream:
     """The place of the root agent ``workflow_id``, found without asking the agent.
 
-    A root's Stream id comes from its workflow id and its first run, as the SDK makes the id
-    of a Stream that a run chain owns. Only the agent's status gives its backend, so this is
-    the client's default one.
+    The id of a Stream that a run chain creates comes from its workflow id and its first run,
+    so the handle needs no call. Only the agent's status gives its backend, so this is the
+    client's default one.
     """
-    stream = WorkflowStream(
-        id=scoped_stream_id(workflow_id, first_run_id, _STREAM_NAME),
-        workflow_id=workflow_id,
-        first_execution_run_id=first_run_id,
-        backend=None,
-        definition=AgentEvents,
-    )
-    return AgentStream(handle=_handle_json(stream), topic=TURN_EVENTS_TOPIC)
+    handle = client.get_workflow_handle(workflow_id, first_execution_run_id=first_run_id)
+    return AgentStream(handle=_handle_json(handle.stream(AgentEvents)), topic=TURN_EVENTS_TOPIC)
 
 
 def _handle_json(stream: Any) -> dict[str, str]:

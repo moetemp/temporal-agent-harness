@@ -421,7 +421,7 @@ class AgentServiceHandler:
         from temporal_agent_harness.harness import contrib_stream
 
         info = description.raw_description.workflow_execution_info
-        return contrib_stream.root_place(workflow_id, info.first_run_id)
+        return contrib_stream.root_place(self._client, workflow_id, info.first_run_id)
 
     async def _poll_stream(
         self, workflow_id: str, place: AgentStream, input: PollMessagesInput
