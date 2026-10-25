@@ -6,13 +6,15 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from nexusrpc import HandlerError, HandlerErrorType
 from nexusrpc.handler import StartOperationContext, service_handler, sync_operation
 from temporalio import nexus
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowUpdateStage
 from temporalio.contrib.workflow_streams import PollInput
 from temporalio.service import RPCError
 
@@ -62,6 +64,15 @@ from .generated import AgentService as AgentServiceDefinition
 # WorkflowStream's private poll-update name (not part of its public API), hardcoded since
 # pollMessages must attach to it for any agent without importing that agent's workflow code.
 _WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
+
+# temporalio 1.34.0 rejects ``wait_for_stage`` on the Nexus client's ``start_workflow_update``, and
+# later builds require it. ACCEPTED is the one stage a Nexus Workflow Update supports.
+_POLL_UPDATE_OPTIONS: dict[str, Any] = (
+    {"wait_for_stage": WorkflowUpdateStage.ACCEPTED}
+    if "wait_for_stage"
+    in inspect.signature(nexus.TemporalNexusClient.start_workflow_update).parameters
+    else {}
+)
 
 
 def _is_workflow_already_completed(exc: Exception) -> bool:
@@ -344,6 +355,7 @@ class AgentServiceHandler:
                 _WORKFLOW_STREAM_POLL_UPDATE,
                 PollInput(from_offset=input.cursor, topics=[TURN_EVENTS_TOPIC]),
                 result_type=PollMessagesOutput,
+                **_POLL_UPDATE_OPTIONS,
             )
         except RPCError as e:
             if not _is_workflow_already_completed(e):
