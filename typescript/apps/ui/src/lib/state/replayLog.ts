@@ -3,6 +3,7 @@ import {
   type AgentEventType,
   type AgentInterfaceFunction,
   type AgentSseFrame,
+  type EventOffset,
   type FileCitationAnnotation,
   type JsonPatchOp,
   type JsonRecord,
@@ -63,7 +64,7 @@ export interface ReplayLogRow {
   evaluationId?: string;
   /** What judged an automatic approval: `jev_evaluator`, or the evaluator callable's name. */
   evaluator?: string;
-  eventOffset?: number;
+  eventOffset?: EventOffset;
   timestamp: number;
   // An agent event's own type, or "stream_error" for the client-side frame /api/chat
   // synthesizes — which no agent published, so it is not an AgentEventType.

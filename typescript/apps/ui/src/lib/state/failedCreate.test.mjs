@@ -20,7 +20,7 @@ const frame = (offset) => ({
     turn_number: 1,
     message_id: "m1",
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     delta: `#${offset} `
   }
@@ -43,7 +43,7 @@ describe("a failed session create", () => {
       createSession: async () => {
         throw new Error("500 Internal Server Error");
       },
-      async *attach(_sessionId, _fromOffset, attachSignal) {
+      async *attach(_sessionId, _resume, attachSignal) {
         signal = attachSignal;
         yield frame(0);
         await later;

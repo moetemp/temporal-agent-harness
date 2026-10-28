@@ -16,11 +16,13 @@ export type MessageDisposition = Protocol.MessageDisposition;
 export type AutoApprovalVerdict = Protocol.AutoApprovalVerdict;
 
 export interface AgentEventMetadata extends Omit<Protocol.AgentEvent, "event"> {
-  /** The root-stream position to resume from: pass it back as `from_offset`. Several
-   *  subagent frames can share one, so it is a cursor, not an identity. */
-  resume_offset: number;
-  /** The event's own offset in its agent's log, when the server reports one. */
-  event_offset?: number;
+  /** The encoded point to resume from. Pass it back as `resume`. The server's stream backend
+   *  makes it, and it's opaque. On Workflow Streams several subagent frames share one, so it
+   *  is a position, not an identity. Absent from a frame that has no point to give. */
+  resume?: string;
+  /** The event's own offset, when the server reports one. It's a number in its agent's log,
+   *  or a decimal string on a Stream of temporalio.common, too large for a number to keep exact. */
+  event_offset?: number | string;
   /** Present, and true, when the event was already durable as the stream opened. */
   replay?: true;
 }
@@ -89,7 +91,7 @@ export interface JsonPatchOp {
 export interface ClientSideStreamErrorEvent {
   kind: "timeout" | "agent";
   message: string;
-  resume_offset: number;
+  resume?: string;
 }
 
 export type AgentSseEventMap = { [TType in AgentEventType]: AgentEventData<TType> } & {

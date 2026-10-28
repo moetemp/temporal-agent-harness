@@ -15,7 +15,7 @@ const frame = (offset) => ({
     turn_number: 1,
     message_id: "m1",
     timestamp: offset,
-    resume_offset: offset + 1,
+    resume: `${offset + 1}@c`,
     event_offset: offset,
     delta: `#${offset} `,
     replay: true
@@ -34,8 +34,8 @@ describe("restoring a stored run", () => {
       {
         runKey: runKeyOf(stored),
         workflowId: stored.workflow_id,
-        lastResumeOffset: frames.length,
-        offsets: {},
+        lastResume: `${frames.length}@c`,
+        resumes: {},
         count: frames.length,
         lastAccess: Date.now()
       },
@@ -50,8 +50,8 @@ describe("restoring a stored run", () => {
       async agentInterface() {
         return [];
       },
-      async *attach(_id, from, signal) {
-        attachedFrom.push(from);
+      async *attach(_id, resume, signal) {
+        attachedFrom.push(resume);
         await new Promise((resolve) => signal?.addEventListener("abort", resolve));
       }
     });
@@ -59,7 +59,11 @@ describe("restoring a stored run", () => {
     void controller.selectSession("wf-hidden");
     await waitFor("the stored frames", () => controller.frames.length === frames.length, 3_000);
     await waitFor("the stream", () => attachedFrom.length === 1);
-    assert.equal(attachedFrom[0], frames.length, "the stream resumes past what was restored");
+    assert.equal(
+      attachedFrom[0],
+      `${frames.length}@c`,
+      "the stream resumes past what was restored"
+    );
     controller.pause();
   });
 });

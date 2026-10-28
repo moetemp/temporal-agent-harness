@@ -26,7 +26,7 @@
 import type { AgentSseFrame, Session } from "$lib/api/types";
 
 /** The shape of every record below. Bump it when that shape changes. */
-export const schemaVersion = 1;
+export const schemaVersion = 2;
 
 /** At most this much, and at most a fifth of what the browser will give the origin. */
 const maxStoredBytes = 500e6;
@@ -39,8 +39,9 @@ const writerTouchMs = 60_000;
 export type RunRecord = {
   runKey: string;
   workflowId: string;
-  lastResumeOffset: number;
-  offsets: Record<string, number>;
+  lastResume: string;
+  /** The newest resume point of each workflow the view attached to on its own. */
+  resumes: Record<string, string>;
   count: number;
   lastAccess: number;
   version?: number;

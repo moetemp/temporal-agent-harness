@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import timedelta
 from typing import Any, cast
 
 import pytest
@@ -28,7 +27,6 @@ from mcp import types
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -38,7 +36,6 @@ from temporal_agent_harness.harness.agent import ToolApprovalPolicy
 from temporal_agent_harness.harness.agent_client import AgentClient
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -47,6 +44,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TextMessage,
     TextReply,
 )
+from tests._streams import agent_stream, turn_records
 
 CALL_ID = "call_mcp_1"
 TOOL_NAME = "probe_mcp_tool"
@@ -114,7 +112,7 @@ class GatedMCPProbeAgent(_BaseMCPProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
         self._server_calls: list[Any] = []
@@ -133,7 +131,7 @@ class UngatedMCPProbeAgent(_BaseMCPProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._server_calls: list[Any] = []
@@ -179,13 +177,7 @@ async def _send(handle, text: str) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_records(client, workflow_id)
 
 
 def _types_for(events: list[AgentEvent], tool_id: str) -> list[str]:

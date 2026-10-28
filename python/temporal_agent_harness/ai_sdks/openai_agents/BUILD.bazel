@@ -30,6 +30,7 @@ py_library(
         "//python/temporal_agent_harness/ai_sdks/integration_helpers:__init__",
         "//python/temporal_agent_harness/ai_sdks/openai_agents/sandbox",
         "//python/temporal_agent_harness/harness:agent_workflow",
+        "//python/temporal_agent_harness/harness:stream_context",
         "@pypi//mcp",
         "@pypi//mcp_types",
         "@pypi//nexus_rpc",

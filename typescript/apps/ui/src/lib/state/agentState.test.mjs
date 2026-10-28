@@ -17,7 +17,7 @@ const meta = (turn, offset) => ({
   turn_id: `turn-${turn}`,
   turn_number: turn,
   timestamp: 1_700_000_000 + offset,
-  resume_offset: offset
+  resume: `${offset}@c`
 });
 
 const snapshot = (stateId, value, agentId = "7f3c1a") => ({
@@ -256,7 +256,7 @@ describe("folding agent state out of the stream", () => {
 
   it("ignores a stream error, which carries no state and no type", () => {
     const docs = buildAgentStateDocs([
-      { event: "error", data: { kind: "timeout", message: "gone", resume_offset: 3 } },
+      { event: "error", data: { kind: "timeout", message: "gone", resume: "3@c"} },
       snapshot("plan", { goal: "ok" })
     ]);
     assert.equal(docs.length, 1);

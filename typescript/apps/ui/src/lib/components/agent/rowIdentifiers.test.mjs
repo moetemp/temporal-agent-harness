@@ -17,7 +17,7 @@ const meta = (type, extra = {}) => ({
   turn_number: 1,
   message_id: null,
   timestamp: 1,
-  resume_offset: 0,
+  resume: "0@c",
   ...extra
 });
 const frame = (type, extra) => ({ event: type, data: meta(type, extra) });

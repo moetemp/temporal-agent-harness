@@ -29,7 +29,7 @@ const ev = (over = {}) => ({
     turn_id: "t1",
     turn_number: 1,
     timestamp: 1.0,
-    resume_offset: 5,
+    resume: "5@c",
     event_offset: 4,
     delta: "hi",
     ...over,
@@ -42,7 +42,7 @@ describe("frameKey", () => {
     // point: a reconnect replays events the client already has.
     assert.equal(
       frameKey(ev()),
-      frameKey(ev({ resume_offset: 99 })),
+      frameKey(ev({ resume: "99@c"})),
       "the same event must key identically regardless of the resume cursor"
     );
 
@@ -83,7 +83,7 @@ describe("frameKey", () => {
         turn_id: "",
         turn_number: 0,
         timestamp: 0.0,
-        resume_offset: 7,
+        resume: "7@c",
         event_offset: SYNTHESIZED,
         subagent_id: subagentId,
         workflow_id: `wf-${subagentId}`,
@@ -110,12 +110,12 @@ describe("frameKey", () => {
     // A client-side stream error carries no envelope at all and must still key.
     const streamError = {
       event: "stream_error",
-      data: { kind: "timeout", message: "nope", resume_offset: 3 },
+      data: { kind: "timeout", message: "nope", resume: "3@c"},
     };
     assert.equal(typeof frameKey(streamError), "string");
     assert.equal(
       frameKey(streamError),
-      frameKey({ ...streamError, data: { ...streamError.data, resume_offset: 8 } }),
+      frameKey({ ...streamError, data: { ...streamError.data, resume: "8@c"} }),
       "an envelope-less error must key on its content, not the resume cursor"
     );
   });
@@ -125,7 +125,7 @@ describe("frameKey", () => {
     const real = ev({ delta: "x".repeat(180) });
     const oldKey = `${real.event}|${JSON.stringify({
       ...real.data,
-      resume_offset: undefined,
+      resume: undefined,
     })}`;
     assert.ok(
       frameKey(real).length < oldKey.length,

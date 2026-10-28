@@ -81,6 +81,9 @@ export class AgentProjection {
   readonly #subagentTurns = new Map<string, PartLocation>();
   readonly #touchedMessages = new Set<string>();
   readonly #touchedStates = new Set<string>();
+  /** The deltas behind each text part, by message and part index, so a withdrawal removes only
+   *  its own deltas. An offset is there only for a frame read off a Stream. */
+  readonly #textDeltas = new Map<string, Map<number, { offset?: string; length: number }[]>>();
   #statusTouched = false;
   #infoTouched = true;
 
@@ -236,9 +239,14 @@ export class AgentProjection {
         );
       }
       case "reply_delta":
-        return this.#appendText(id, "reply_delta", frame.data.text);
+        return this.#appendText(id, "reply_delta", frame.data.text, offsetOf(frame));
       case "thought_summary":
-        return this.#appendText(id, "thought_summary", thoughtDeltaText(frame.data.delta));
+        return this.#appendText(
+          id,
+          "thought_summary",
+          thoughtDeltaText(frame.data.delta),
+          offsetOf(frame)
+        );
       case "text_annotation":
         for (const annotation of frame.data.delta.annotations ?? []) {
           this.#append(id, { type: "text_annotation", annotation });
@@ -346,6 +354,8 @@ export class AgentProjection {
       case "subagent_stopped":
       case "subagent_stream_unavailable":
         return;
+      case "attempt_superseded":
+        return this.#withdraw(new Set(frame.data.withdrawn_offsets));
       case "state_snapshot": {
         const d = frame.data;
         this.states.set(d.state_id, { value: clone(d.value as JsonValue), version: d.version, error: null });
@@ -413,13 +423,50 @@ export class AgentProjection {
     this.#touchedMessages.add(message.id);
   }
 
-  #appendText(id: string | null, type: "reply_delta" | "thought_summary", text: string): void {
+  #appendText(
+    id: string | null,
+    type: "reply_delta" | "thought_summary",
+    text: string,
+    offset?: string
+  ): void {
     if (text === "") return;
     const message = this.#message(id);
     if (!message) return;
     const last = message.parts.at(-1);
     if (last?.type === type) this.#setPart(message.id, message.parts.length - 1, { type, text: last.text + text });
     else this.#append(message.id, { type, text });
+    let parts = this.#textDeltas.get(message.id);
+    if (!parts) this.#textDeltas.set(message.id, (parts = new Map()));
+    const index = message.parts.length - 1;
+    const deltas = parts.get(index) ?? [];
+    deltas.push({ offset, length: text.length });
+    parts.set(index, deltas);
+  }
+
+  /** A failed attempt's records are withdrawn: cut each of its deltas out of the text it went
+   *  into. Tool and subagent parts stay, since a retry reissues none of them. */
+  #withdraw(offsets: ReadonlySet<string>): void {
+    for (const [messageId, parts] of this.#textDeltas) {
+      const message = this.#message(messageId);
+      if (!message) continue;
+      for (const [index, deltas] of parts) {
+        if (!deltas.some((d) => d.offset !== undefined && offsets.has(d.offset))) continue;
+        const part = message.parts[index];
+        if (part?.type !== "reply_delta" && part?.type !== "thought_summary") continue;
+        let text = "";
+        let at = 0;
+        const kept = [];
+        for (const delta of deltas) {
+          const piece = part.text.slice(at, at + delta.length);
+          at += delta.length;
+          if (delta.offset !== undefined && offsets.has(delta.offset)) continue;
+          text += piece;
+          kept.push(delta);
+        }
+        parts.set(index, kept);
+        this.#setPart(messageId, index, { ...part, text });
+      }
+    }
   }
 
   #replaceLast<T extends MessagePart["type"]>(
@@ -652,6 +699,13 @@ export class SessionProjection {
  * dumped, so its shape is the provider's: Gemini `{content: {text}}`, OpenAI `{delta}`,
  * Pydantic AI `{content}` or `{content_delta}`.
  */
+/** The frame's own offset on a Stream of temporalio.common, which a withdrawal
+ *  names. */
+function offsetOf(frame: AgentEventFrame): string | undefined {
+  const offset = frame.data.event_offset;
+  return typeof offset === "string" ? offset : undefined;
+}
+
 export function thoughtDeltaText(delta: JsonRecord): string {
   const asText = (value: unknown): string => (typeof value === "string" ? value : "");
   const content = delta.content;
