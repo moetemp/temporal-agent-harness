@@ -32,6 +32,8 @@ try:
     from temporalio.client import BufferedPublisher, Stream
     from temporalio.common import (
         Closed,
+        Execution,
+        ExecutionType,
         Record,
         StreamConfigError,
         StreamDefinition,
@@ -257,18 +259,11 @@ def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStre
     client's default backend and has no agent id.
     """
     stream_id = ":".join(quote(part, safe="") for part in (workflow_id, first_run_id, _STREAM_NAME))
-    handle = _HANDLE.validate_python(
-        {
-            "id": stream_id,
-            # The proto JSON is the one public way to name a Workflow as the owner.
-            "owner": {
-                "type": "EXECUTION_TYPE_WORKFLOW",
-                "businessId": workflow_id,
-                "runId": first_run_id,
-            },
-            "backend": client.get_stream(AgentEvents, id=stream_id).handle.backend,
-        }
+    owner = Execution(
+        type=ExecutionType.ExecutionTypeWorkflow, business_id=workflow_id, run_id=first_run_id
     )
+    backend = client.get_stream(AgentEvents, id=stream_id).handle.backend
+    handle: StreamHandle[AgentEvent] = StreamHandle(stream_id, owner, backend)
     return AgentStream(handle=_handle_json(handle))
 
 
