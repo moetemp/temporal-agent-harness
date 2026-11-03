@@ -5,7 +5,7 @@
 # publishes its turn events there, so one read of the Stream gives every agent's events in one
 # order. A reader keeps one agent's events, or its subtree's, by ``AgentEvent.agent_id``.
 # Workflow code writes the Stream with Local Activities, an activity writes it through a
-# ``BufferedPublisher``, and a client reads it through ``Client.stream``.
+# ``BufferedPublisher``, and a client reads it through ``Client.to_stream``.
 #
 # Only this module imports the Streams API of ``temporalio.common``. The rest of the harness
 # imports it lazily, so an agent on ``WorkflowStream()`` runs on an SDK without that API.
@@ -23,29 +23,27 @@ from typing import Any
 from urllib.parse import quote
 
 from pydantic import TypeAdapter
-from temporalio import common, workflow
+from temporalio import activity, common, workflow
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError, RPCStatusCode
 
 # A release's ``temporalio.common`` has no Stream names, so their import raises ``ImportError``.
 try:
+    from temporalio.client import BufferedPublisher, Stream
     from temporalio.common import (
-        ActivityStream,
-        BufferedPublisher,
-        ClientStream,
         Closed,
         Record,
         StreamConfigError,
         StreamDefinition,
         StreamExpiredError,
+        StreamHandle,
         StreamNotFoundError,
         StreamOffsetError,
         StreamOptions,
         Subscription,
         Superseded,
-        WorkflowStream,
     )
-    from temporalio.workflow import create_stream_nowait
+    from temporalio.workflow import WorkflowStream, create_stream_nowait, to_stream
 except ImportError as exc:
     raise RuntimeError(
         "stream=ContribStream() on AgentWorkflowRunner needs a temporalio build with the "
@@ -92,6 +90,9 @@ _NO_BACKEND = (
 
 
 _STREAM_NAME = "agent_events"
+# A place keeps its Stream's handle as the proto JSON of ``StreamHandle``, so this reads and
+# writes that form.
+_HANDLE = TypeAdapter(StreamHandle[AgentEvent])
 
 
 @common.defn(name=_STREAM_NAME)
@@ -213,8 +214,8 @@ class ContribSink:
     def child_place(self, agent_id: str) -> AgentStream:
         return AgentStream(handle=self.place.handle, agent_id=agent_id)
 
-    def activity_stream(self) -> ActivityStream[AgentEvent]:
-        return ActivityStream.from_handle(self._stream)
+    def activity_handle(self) -> StreamHandle[AgentEvent]:
+        return self._stream.handle
 
     def _written(self, written: asyncio.Future[int]) -> None:
         if written.cancelled():
@@ -239,13 +240,12 @@ def open_root(choice: ContribStream) -> ContribSink:
         stream = create_stream_nowait(AgentEvents, backend=choice.backend, **options)
     except StreamConfigError as err:
         raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
-    return ContribSink(stream, AgentStream(handle=_handle_json(stream)))
+    return ContribSink(stream, AgentStream(handle=_handle_json(stream.handle)))
 
 
 def open_place(place: AgentStream) -> ContribSink:
     """Write the Stream at ``place``, for a subagent or for a run after continue-as-new."""
-    stream = TypeAdapter(WorkflowStream[AgentEvent]).validate_python(place.handle)
-    return ContribSink(stream, place)
+    return ContribSink(to_stream(_HANDLE.validate_python(place.handle)), place)
 
 
 def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStream:
@@ -257,17 +257,23 @@ def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStre
     client's default backend and has no agent id.
     """
     stream_id = ":".join(quote(part, safe="") for part in (workflow_id, first_run_id, _STREAM_NAME))
-    stream: WorkflowStream[AgentEvent] = WorkflowStream(
-        id=stream_id,
-        workflow_id=workflow_id,
-        first_execution_run_id=first_run_id,
-        backend=client.stream(AgentEvents, id=stream_id).backend,
+    handle = _HANDLE.validate_python(
+        {
+            "id": stream_id,
+            # The proto JSON is the one public way to name a Workflow as the owner.
+            "owner": {
+                "type": "EXECUTION_TYPE_WORKFLOW",
+                "businessId": workflow_id,
+                "runId": first_run_id,
+            },
+            "backend": client.get_stream(AgentEvents, id=stream_id).handle.backend,
+        }
     )
-    return AgentStream(handle=_handle_json(stream))
+    return AgentStream(handle=_handle_json(handle))
 
 
-def _handle_json(stream: WorkflowStream[AgentEvent]) -> dict[str, Any]:
-    return TypeAdapter(WorkflowStream[AgentEvent]).dump_python(stream, mode="json")
+def _handle_json(handle: StreamHandle[AgentEvent]) -> dict[str, Any]:
+    return _HANDLE.dump_python(handle, mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +291,10 @@ async def activity_publisher(
     the attempt produced up to the failure.
     """
     assert context.stream is not None
-    async with BufferedPublisher(context.stream, max_delay=max_delay) as events:
+    # The Worker's client gives a Stream that writes as this attempt, so a retry withdraws the
+    # records of the failed attempt.
+    stream = activity.client().to_stream(context.stream)
+    async with BufferedPublisher(stream, max_delay=max_delay) as events:
         yield events
 
 
@@ -359,9 +368,8 @@ def _position(cursor: str) -> _Position:
     return _Position(offset or None, parsed[2] is not None, turn_start)
 
 
-def _client_stream(client: Client, place: AgentStream) -> ClientStream[AgentEvent]:
-    handle = place.handle
-    return client.stream(AgentEvents, id=handle["id"], backend=handle.get("backend") or None)
+def _client_stream(client: Client, place: AgentStream) -> Stream[AgentEvent]:
+    return client.to_stream(_HANDLE.validate_python(place.handle), payload_type=AgentEvent)
 
 
 async def next_offset(client: Client, place: AgentStream) -> int:

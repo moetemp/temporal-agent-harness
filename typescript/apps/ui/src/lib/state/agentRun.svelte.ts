@@ -370,7 +370,7 @@ export class AgentRunController {
   #frameCacheTimer: number | null = null;
   /** Frames staged but not yet committed. Plain array: writing it must not react. */
   #frameBuffer: AgentSseFrame[] = [];
-  /** A supersession shrank the buffer since the last commit; see #dropSupersededFrames. */
+  /** A Superseded item shrank the buffer since the last commit; see #dropSupersededFrames. */
   #supersededSincePublish = false;
   #flushQueued = false;
   /** Bumped on session change, to strand a flush queued against the old session. */

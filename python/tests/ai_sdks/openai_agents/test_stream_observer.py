@@ -304,7 +304,7 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_hand
     from pydantic import TypeAdapter
     from temporalio import common
 
-    if not hasattr(common, "ActivityStream"):
+    if not hasattr(common, "StreamHandle"):
         pytest.skip("needs the Streams API in temporalio.common")
     from typing_extensions import Required, TypedDict
 
@@ -318,11 +318,13 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_hand
         stream_to: Required[typing.get_args(hint)[0]]
 
     wire = TypeAdapter(_StreamTo)
-    handle = common.ActivityStream(id="wf:run:agent_events", workflow_id="wf", backend="memory")
+    handle: common.StreamHandle[Any] = common.StreamHandle(
+        id="wf:run:agent_events", backend="memory"
+    )
     context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=handle)
     token = h.TurnStreamToken(context=context, model="m")
 
     received = wire.validate_json(wire.dump_json({"stream_to": token}))["stream_to"]
 
-    assert isinstance(received.context.stream, common.ActivityStream)
+    assert isinstance(received.context.stream, common.StreamHandle)
     assert wire.validate_json(b'{"stream_to": "events"}')["stream_to"] == "events"

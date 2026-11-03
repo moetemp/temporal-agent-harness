@@ -14,19 +14,20 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 # Workflow Streams needs none of the Streams API in ``temporalio.common``, so an SDK may lack it.
-# A real handle type is what makes the Stream backend withdraw an earlier attempt's records when
-# a retry starts, so the field takes it when the SDK has it.
+# The field takes the SDK's handle type when it has one, so the context's proto JSON decodes to a
+# real handle. The Stream backend finds that handle in the activity input, and withdraws an
+# earlier attempt's records when a retry starts.
 if TYPE_CHECKING:
-    from temporalio.common import ActivityStream
+    from temporalio.common import StreamHandle
 
-    _ActivityHandle = ActivityStream[Any]
+    _StreamHandle = StreamHandle[Any]
 else:
     try:
-        from temporalio.common import ActivityStream
+        from temporalio.common import StreamHandle
 
-        _ActivityHandle = ActivityStream[Any]
+        _StreamHandle = StreamHandle[Any]
     except ImportError:
-        _ActivityHandle = Any
+        _StreamHandle = Any
 
 
 class StreamBackend:
@@ -68,10 +69,10 @@ class TurnStreamContext(BaseModel):
         "derive it from ``activity.info()`` (which only knows the workflow_id), and the agent's id "
         "is no longer its workflow_id but a short, parent-assignable handle."
     )
-    stream: _ActivityHandle | None = Field(
+    stream: _StreamHandle | None = Field(
         default=None,
-        description="The ``temporalio.common`` Stream the agent publishes on, or "
-        "``None`` on Workflow Streams. An activity gets a Stream only in its input.",
+        description="The handle of the ``temporalio.common`` Stream the agent publishes on, or "
+        "``None`` on Workflow Streams. An activity gets the handle only in its input.",
     )
 
 
@@ -81,8 +82,9 @@ class TurnStreamToken(BaseModel):
     model-interaction bracket at dispatch (``__aenter__``), before any event arrives.
 
     The OpenAI streaming activity types its token with it first. So the context's Stream comes
-    back as a handle, and the Stream backend withdraws an earlier attempt's records when a retry
-    starts.
+    back as a ``StreamHandle``, and the Stream backend finds it in the activity input. It then
+    withdraws an earlier attempt's records when a retry starts. The activity gives the handle to
+    ``activity.client().to_stream``, so its writes use the attempt's Producer.
     """
 
     context: TurnStreamContext

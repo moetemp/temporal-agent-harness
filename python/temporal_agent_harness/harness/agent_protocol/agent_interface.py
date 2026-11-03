@@ -637,7 +637,7 @@ class AgentStream(BaseModel):
     """
 
     handle: dict[str, Any] = Field(
-        description="The root agent's Stream, in the proto JSON form of a ``StreamRef``. Empty "
+        description="The root agent's Stream, in the proto JSON form of a ``StreamHandle``. Empty "
         "means Workflow Streams."
     )
     agent_id: str | None = Field(

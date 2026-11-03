@@ -1375,7 +1375,7 @@ class _WorkflowStreamsSink:
         # ``stream=`` says, since a client merges a Workflow Streams tree from each agent's log.
         return AgentStream(handle={})
 
-    def activity_stream(self) -> None:
+    def activity_handle(self) -> None:
         return None
 
 
@@ -3205,11 +3205,11 @@ class AgentWorkflowRunner:
         if ctx is None:
             return None
         update: dict[str, Any] = {"message_id": _CURRENT_MESSAGE_ID.get()}
-        stream = self._sink.activity_stream()
-        if stream is not None:
-            # An activity gets a Stream only in its input. A subagent's activities publish on
+        handle = self._sink.activity_handle()
+        if handle is not None:
+            # An activity gets the handle only in its input. A subagent's activities publish on
             # the root's Stream.
-            update["stream"] = stream
+            update["stream"] = handle
         return ctx.model_copy(update=update)
 
     @property

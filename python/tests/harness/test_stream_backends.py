@@ -623,7 +623,9 @@ async def test_a_nexus_poll_gives_a_cursor_past_other_agents_records(client_and_
     stream = await client.create_stream(AgentEvents, id=f"tree-{uuid.uuid4()}")
     root = await stream.publish(_tree_event("root"))
     head = await stream.publish(*[_tree_event("root-child") for _ in range(20)]) + 1
-    place = AgentStream(handle={"id": stream.id, "backend": stream.backend}, agent_id="root")
+    place = AgentStream(
+        handle={"id": stream.handle.id, "backend": stream.handle.backend}, agent_id="root"
+    )
     out = await _nexus_handler(client, task_queue)._poll_stream(
         "gone",
         place,
@@ -647,7 +649,9 @@ async def test_a_cursor_that_the_retention_passed_is_a_cursor_error(client_and_q
     for _ in range(6):
         await asyncio.sleep(0.3)
         await stream.publish(_tree_event("root"))
-    place = AgentStream(handle={"id": stream.id, "backend": stream.backend}, agent_id="root")
+    place = AgentStream(
+        handle={"id": stream.handle.id, "backend": stream.handle.backend}, agent_id="root"
+    )
     with pytest.raises(contrib_stream.TurnCursorError):
         await contrib_stream.check_turn_cursor(client, place, str(first))
     with pytest.raises(contrib_stream.TurnCursorError):
@@ -960,7 +964,7 @@ def test_contrib_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
     # use. An SDK without the Streams API has neither.
     monkeypatch.setitem(sys.modules, "temporalio.common._streams", None)
     monkeypatch.delattr(temporalio.common, "__getattr__", raising=False)
-    assert not hasattr(temporalio.common, "ActivityStream")
+    assert not hasattr(temporalio.common, "StreamHandle")
     monkeypatch.delitem(sys.modules, "temporal_agent_harness.harness.contrib_stream", raising=False)
 
     with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
@@ -990,13 +994,13 @@ class _UnansweredQuery:
     def get_workflow_handle(self, workflow_id: str, **options: Any) -> Any:
         return self
 
-    def stream(self, *args: Any, **kwargs: Any) -> Any:
+    def get_stream(self, *args: Any, **kwargs: Any) -> Any:
         # A Stream handle needs a backend and makes no call, so this client has no server.
         from temporalio.contrib.stream.testing import MemoryStreamBackend
 
         backends = [MemoryStreamBackend(default=True)]
         streams = Client(object(), stream_backends=backends)  # type: ignore[arg-type]
-        return streams.stream(*args, **kwargs)
+        return streams.get_stream(*args, **kwargs)
 
     async def query(self, *args: Any, **kwargs: Any) -> Any:
         raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
@@ -1021,7 +1025,7 @@ async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_ba
     assert await closed._stream_place("wf", poll(None)) is None
     with pytest.raises(RPCError):
         await running._stream_place("wf", poll(None))
-    if not hasattr(temporalio.common, "ActivityStream"):
+    if not hasattr(temporalio.common, "StreamHandle"):
         pytest.skip("needs the Streams API in temporalio.common")
 
     place = await closed._stream_place("wf", poll("5"))
@@ -1063,7 +1067,7 @@ async def test_the_place_found_without_a_query_gives_the_agent_s_own_events(clie
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():
-    if not hasattr(temporalio.common, "ActivityStream"):
+    if not hasattr(temporalio.common, "StreamHandle"):
         pytest.skip("needs the Streams API in temporalio.common")
     from temporal_agent_harness.harness.contrib_stream import _ended
 
