@@ -74,7 +74,7 @@ change, or adds a row here saying which SDK has it and why.
 
 | Area | Python | TypeScript |
 | --- | --- | --- |
-| Where an agent publishes its turn events | The agent's required `stream=`: `ContribStream()`, a Stream of `temporalio.common` that the whole agent tree shares, or `WorkflowStream()` | Workflow Streams only |
+| Where an agent publishes its turn events | The agent's required `stream=`: `ContribStream()`, a Stream of `temporalio.streams` that the whole agent tree shares, or `WorkflowStream()` | Workflow Streams only |
 | Reading an agent (`agent_client`) | Either backend, from an opaque resume point (`ResumePoint`) | Workflow Streams, from a root-stream offset |
 | A subagent's reply | The child's `await_message` update returns it, after the parent sends with `send_subagent_message` | The child's `message_handler_end` on its stream |
 

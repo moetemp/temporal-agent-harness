@@ -1,13 +1,13 @@
-# ABOUTME: The temporalio.common Streams backend of the agent event stream, which an agent picks
+# ABOUTME: The temporalio.streams backend of the agent event stream, which an agent picks
 # with ``stream=ContribStream()``. An agent picks Workflow Streams with ``stream=WorkflowStream()``.
 #
-# An agent tree shares ONE Stream, which the root agent creates (``AgentEvents``). Every agent
-# publishes its turn events there, so one read of the Stream gives every agent's events in one
-# order. A reader keeps one agent's events, or its subtree's, by ``AgentEvent.agent_id``.
-# Workflow code writes the Stream with Local Activities, an activity writes it through a
-# ``BufferedPublisher``, and a client reads it through ``Client.to_stream``.
+# An agent tree shares ONE Stream, which the root agent creates. Every agent publishes its turn
+# events there, so one read of the Stream gives every agent's events in one order. A reader keeps
+# one agent's events, or its subtree's, by ``AgentEvent.agent_id``. Workflow code writes the
+# Stream with Local Activities, an activity writes it through a ``BufferedPublisher``, and a
+# client reads it through ``Client.to_stream``.
 #
-# Only this module imports the Streams API of ``temporalio.common``. The rest of the harness
+# Only this module imports the Streams API of ``temporalio.streams``. The rest of the harness
 # imports it lazily, so an agent on ``WorkflowStream()`` runs on an SDK without that API.
 
 from __future__ import annotations
@@ -23,25 +23,23 @@ from typing import Any
 from urllib.parse import quote
 
 from pydantic import TypeAdapter
-from temporalio import activity, common, workflow
+from temporalio import activity, workflow
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError, RPCStatusCode
 
-# A release's ``temporalio.common`` has no Stream names, so their import raises ``ImportError``.
+# A release has no ``temporalio.streams``, so this import raises ``ImportError``.
 try:
+    from temporalio import streams
     from temporalio.client import BufferedPublisher, Stream
-    from temporalio.common import (
-        Closed,
-        Execution,
-        ExecutionType,
+    from temporalio.streams import (
+        ItemKind,
         Record,
         StreamConfigError,
-        StreamDefinition,
         StreamExpiredError,
-        StreamHandle,
         StreamNotFoundError,
-        StreamOffsetError,
+        StreamOffsetTooHighError,
         StreamOptions,
+        StreamRef,
         Subscription,
         Superseded,
     )
@@ -49,7 +47,7 @@ try:
 except ImportError as exc:
     raise RuntimeError(
         "stream=ContribStream() on AgentWorkflowRunner needs a temporalio build with the "
-        "Streams API in temporalio.common. Run `just install-streams-sdk`, or pass "
+        "Streams API in temporalio.streams. Run `just install-streams-sdk`, or pass "
         "stream=WorkflowStream() to run on an SDK without it."
     ) from exc
 
@@ -81,7 +79,7 @@ _TRANSIENT = frozenset(
     }
 )
 # Every client of this process shares one memory backend, so they all see the same Streams.
-_memory: common.StreamBackend | None = None
+_memory: streams.StreamBackend | None = None
 # The error when a worker has no Stream backend. It fails the Workflow Task until there is one.
 _NO_BACKEND = (
     "stream=ContribStream() on AgentWorkflowRunner needs a Stream backend on the "
@@ -92,22 +90,16 @@ _NO_BACKEND = (
 
 
 _STREAM_NAME = "agent_events"
-# A place keeps its Stream's handle as the proto JSON of ``StreamHandle``, so this reads and
-# writes that form.
-_HANDLE = TypeAdapter(StreamHandle[AgentEvent])
-
-
-@common.defn(name=_STREAM_NAME)
-class AgentEvents(StreamDefinition[AgentEvent]):
-    """The Stream an agent tree publishes its turn events on. The root agent creates it, and
-    its subagents write it too."""
+# A place keeps its Stream's ref as the proto JSON of ``StreamRef``, so this reads and writes
+# that form.
+_REF = TypeAdapter(StreamRef[AgentEvent])
 
 
 class TurnCursorError(ValueError):
     """A turn cursor that is not a position on the agent's Stream."""
 
 
-def stream_backends_from_env() -> list[common.StreamBackend]:
+def stream_backends_from_env() -> list[streams.StreamBackend]:
     """The Stream backend that ``STREAMS_STORE`` names, in a list, or none when it is unset.
 
     ``redis`` is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
@@ -145,7 +137,7 @@ def stream_backends_from_env() -> list[common.StreamBackend]:
 
 
 class ContribStream(StreamBackend):
-    """Selects the Streams API of ``temporalio.common`` for an agent tree's turn events.
+    """Selects the Streams API of ``temporalio.streams`` for an agent tree's turn events.
 
     Pass ``stream=ContribStream()`` to ``AgentWorkflowRunner``, with a backend or retention of
     your own if you need them. The root agent creates the tree's
@@ -175,7 +167,7 @@ class ContribStream(StreamBackend):
 
 
 class ContribSink:
-    """What the runner publishes through on a ``temporalio.common`` Stream.
+    """What the runner publishes through on a ``temporalio.streams`` Stream.
 
     Each write is a Local Activity. Its future gives the record's offset, which tells the
     runner where its own records reached, and its error, which the runner logs. If the store
@@ -216,8 +208,8 @@ class ContribSink:
     def child_place(self, agent_id: str) -> AgentStream:
         return AgentStream(handle=self.place.handle, agent_id=agent_id)
 
-    def activity_handle(self) -> StreamHandle[AgentEvent]:
-        return self._stream.handle
+    def activity_ref(self) -> StreamRef[AgentEvent]:
+        return self._stream.ref
 
     def _written(self, written: asyncio.Future[int]) -> None:
         if written.cancelled():
@@ -233,42 +225,52 @@ class ContribSink:
 def open_root(choice: ContribStream) -> ContribSink:
     """Create the tree's Stream in a root agent's ``@agent.init``.
 
+    The create is strict, and every run of a run chain sends the same one. So a retry run, or a
+    run after a plain ``workflow.continue_as_new``, gets the Stream of the first run.
+
     Nothing closes the Stream. On Redis and memory the end of the run chain closes nothing, and
     the harness never closes it, so an idle session keeps its Stream. The backend deletes an open
     Stream after its ``safety_ttl`` with no write. A reader checks whether the run has ended.
     """
     options: StreamOptions = {} if choice.retention is None else {"retention": choice.retention}
+    info = workflow.info()
     try:
-        stream = create_stream_nowait(AgentEvents, backend=choice.backend, **options)
+        stream = create_stream_nowait[AgentEvent](
+            _stream_id(info.workflow_id, info.first_execution_run_id),
+            backend=choice.backend,
+            **options,
+        )
     except StreamConfigError as err:
         raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
-    return ContribSink(stream, AgentStream(handle=_handle_json(stream.handle)))
+    return ContribSink(stream, AgentStream(handle=_ref_json(stream.ref)))
 
 
 def open_place(place: AgentStream) -> ContribSink:
     """Write the Stream at ``place``, for a subagent or for a run after continue-as-new."""
-    return ContribSink(to_stream(_HANDLE.validate_python(place.handle)), place)
+    return ContribSink(to_stream(_REF.validate_python(place.handle)), place)
 
 
 def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStream:
     """The place of the root agent ``workflow_id``, found without asking the agent.
 
-    ``workflow.create_stream`` documents a run chain's Stream id as
-    ``<workflow id>:<first run id>:<name>``, each part percent-encoded, so the handle needs no
-    call. Only the agent's status gives its backend and its agent id, so this is on the
+    The root agent picks its Stream id from its workflow id and first run id, so the ref needs
+    no call. Only the agent's status gives its backend and its agent id, so this is on the
     client's default backend and has no agent id.
     """
-    stream_id = ":".join(quote(part, safe="") for part in (workflow_id, first_run_id, _STREAM_NAME))
-    owner = Execution(
-        type=ExecutionType.ExecutionTypeWorkflow, business_id=workflow_id, run_id=first_run_id
-    )
-    backend = client.get_stream(AgentEvents, id=stream_id).handle.backend
-    handle: StreamHandle[AgentEvent] = StreamHandle(stream_id, owner, backend)
-    return AgentStream(handle=_handle_json(handle))
+    stream_id = _stream_id(workflow_id, first_run_id)
+    backend = client.get_stream[AgentEvent](stream_id).ref.backend
+    ref: StreamRef[AgentEvent] = StreamRef(stream_id, backend=backend)
+    return AgentStream(handle=_ref_json(ref))
 
 
-def _handle_json(handle: StreamHandle[AgentEvent]) -> dict[str, Any]:
-    return _HANDLE.dump_python(handle, mode="json")
+def _stream_id(workflow_id: str, first_run_id: str) -> str:
+    # ``AgentStream.owner`` reads the two ids back. The first run id keeps a reused workflow id
+    # from sharing a Stream with the chain before it.
+    return ":".join(quote(part, safe="") for part in (workflow_id, first_run_id, _STREAM_NAME))
+
+
+def _ref_json(ref: StreamRef[AgentEvent]) -> dict[str, Any]:
+    return _REF.dump_python(ref, mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +366,7 @@ def _position(cursor: str) -> _Position:
 
 
 def _client_stream(client: Client, place: AgentStream) -> Stream[AgentEvent]:
-    return client.to_stream(_HANDLE.validate_python(place.handle), payload_type=AgentEvent)
+    return client.to_stream(_REF.validate_python(place.handle), payload_type=AgentEvent)
 
 
 async def next_offset(client: Client, place: AgentStream) -> int:
@@ -387,7 +389,7 @@ async def check_turn_cursor(client: Client, place: AgentStream, after: str) -> N
     items = _client_stream(client, place).subscribe(offset=offset, wait_new_records=False)
     try:
         await anext(items, None)
-    except (StreamOffsetError, StreamExpiredError, StreamNotFoundError) as err:
+    except (StreamOffsetTooHighError, StreamExpiredError, StreamNotFoundError) as err:
         # A Stream that does not exist has no position past its beginning, and the Retention
         # deleted the records at an expired position.
         raise TurnCursorError(str(err)) from err
@@ -433,8 +435,6 @@ async def read_turn_events(
     try:
         try:
             async for record in items:
-                if isinstance(record, Closed):
-                    return
                 item = await reading.take(record, items.next_offset)
                 moved(record, item, items.next_offset)
                 if item is not None:
@@ -463,13 +463,11 @@ async def read_turn_events(
                 record = ready.result()
             except StopAsyncIteration:
                 return
-            if isinstance(record, Closed):
-                return
             item = await reading.take(record, items.next_offset)
             moved(record, item, items.next_offset)
             if item is not None:
                 yield item
-    except (StreamOffsetError, StreamExpiredError) as err:
+    except (StreamOffsetTooHighError, StreamExpiredError) as err:
         raise TurnCursorError(str(err)) from err
     except StreamNotFoundError:
         # An agent that ended before its create has nothing to give.
@@ -509,7 +507,7 @@ class _Read:
 
     def cursor(self, item: Any, next_offset: int | None) -> str:
         """The cursor past an item that the read skipped."""
-        superseded = isinstance(item, Superseded)
+        superseded = item.kind is ItemKind.SUPERSEDED
         return _Position(next_offset or None, superseded, self._turn_start).encode()
 
     def _own(self, event: AgentEvent) -> bool | None:
@@ -529,7 +527,7 @@ class _Read:
 
     async def take(self, item: Any, next_offset: int | None) -> TurnItem | None:
         """The ``TurnItem`` for one item of the read, or ``None`` for an item to skip."""
-        if isinstance(item, Record):
+        if item.kind is ItemKind.RECORD:
             event: AgentEvent = item.data
             own = self._own(event)
             if own is None:
@@ -538,7 +536,7 @@ class _Read:
             self._track_turns(item, event, own)
             cursor = _Position(next_offset or None, False, self._turn_start).encode()
             return TurnItem(event=event, offset=str(item.offset), cursor=cursor, own=own)
-        if isinstance(item, Superseded):
+        if item.kind is ItemKind.SUPERSEDED:
             if item.offset == self._given:
                 if item.offset == self.start and self._before is None:
                     self._skipped.append(item)
@@ -607,11 +605,11 @@ class _Read:
             async for old in earlier:
                 if old.offset >= start:
                     break
-                if isinstance(old, Record):
+                if old.kind is ItemKind.RECORD:
                     own = self._own(old.data)
                     if own is not None:
                         _note(shown, old, own)
-                elif isinstance(old, Superseded):
+                else:
                     _withdraw(old, shown)
         finally:
             await earlier.aclose()

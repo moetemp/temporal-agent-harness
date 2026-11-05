@@ -1375,12 +1375,12 @@ class _WorkflowStreamsSink:
         # ``stream=`` says, since a client merges a Workflow Streams tree from each agent's log.
         return AgentStream(handle={})
 
-    def activity_handle(self) -> None:
+    def activity_ref(self) -> None:
         return None
 
 
 def _contrib_stream() -> Any:
-    """The ``contrib_stream`` module, which only an agent on ``temporalio.common`` Streams
+    """The ``contrib_stream`` module, which only an agent on ``temporalio.streams`` Streams
     imports, so an agent on ``WorkflowStream()`` runs on a released SDK."""
     # The harness is deterministic library code, so the sandbox can share it.
     with workflow.unsafe.imports_passed_through():
@@ -2050,7 +2050,7 @@ class AgentWorkflowRunner:
         ``stream`` picks where the agent publishes its turn events, and each agent picks its
         own. A ``WorkflowStream`` of ``temporalio.contrib.workflow_streams`` keeps them in the
         workflow's own history and runs on a released SDK. A ``ContribStream`` puts the whole
-        agent tree on one Stream of ``temporalio.common``. It needs a temporalio build that has
+        agent tree on one Stream of ``temporalio.streams``. It needs a temporalio build that has
         the Streams API there (``just install-streams-sdk``) and a Stream backend on the
         worker. Any other ``StreamBackend`` with ``open_sink()`` works too. A subagent
         publishes where its parent does, whatever it passes here. The README compares the
@@ -2407,7 +2407,7 @@ class AgentWorkflowRunner:
     ) -> None:
         """Publish the parent's ``subagent_message_sent``, stamped with the parent's agent id.
 
-        On ``temporalio.common`` Streams the child publishes it, in the Workflow Task that
+        On ``temporalio.streams`` Streams the child publishes it, in the Workflow Task that
         admits the message. Both agents write one Stream, so every reader gets the marker before
         the child's events. A send that Temporal deduplicates publishes it once.
         """
@@ -3205,16 +3205,16 @@ class AgentWorkflowRunner:
         if ctx is None:
             return None
         update: dict[str, Any] = {"message_id": _CURRENT_MESSAGE_ID.get()}
-        handle = self._sink.activity_handle()
-        if handle is not None:
-            # An activity gets the handle only in its input. A subagent's activities publish on
+        ref = self._sink.activity_ref()
+        if ref is not None:
+            # An activity gets the ref only in its input. A subagent's activities publish on
             # the root's Stream.
-            update["stream"] = handle
+            update["stream"] = ref
         return ctx.model_copy(update=update)
 
     @property
     def stream(self) -> AgentStream | None:
-        """Where this agent publishes on ``temporalio.common`` Streams, or ``None``."""
+        """Where this agent publishes on ``temporalio.streams`` Streams, or ``None``."""
         place = self._sink.place
         if place is None:
             return None
@@ -3230,7 +3230,7 @@ class AgentWorkflowRunner:
         """``config`` for the next run, so it writes the same Stream and keeps counting events.
 
         Pass the result to ``workflow.continue_as_new``. On Workflow Streams it keeps
-        ``config.stream``, so a subagent stays on them. On ``temporalio.common`` Streams, a
+        ``config.stream``, so a subagent stays on them. On ``temporalio.streams`` Streams, a
         run after ``workflow.continue_as_new(config)`` without it counts events from zero, and
         its first send gives a cursor from the start of the Stream.
         """
@@ -3714,7 +3714,7 @@ class AgentWorkflowRunner:
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
         call) to its parent workflow's :class:`WorkflowStream`, or to the
-        ``temporalio.common`` Stream in ``context.stream``.
+        ``temporalio.streams`` Stream in ``context.stream``.
 
         Encapsulates the :class:`WorkflowStreamClient` or ``BufferedPublisher``
         lifecycle (entered for batched flushing, exited so the tail drains before

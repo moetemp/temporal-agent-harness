@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -627,7 +628,7 @@ class ToolApprovalPolicy(BaseModel):
 
 
 class AgentStream(BaseModel):
-    """Where an agent publishes its turn events on ``temporalio.common`` Streams.
+    """Where an agent publishes its turn events on ``temporalio.streams`` Streams.
 
     Every agent of a tree writes the Stream that its root creates. So one read of the Stream
     gives the whole tree in one order, and a reader keeps one agent's events by their
@@ -637,7 +638,7 @@ class AgentStream(BaseModel):
     """
 
     handle: dict[str, Any] = Field(
-        description="The root agent's Stream, in the proto JSON form of a ``StreamHandle``. Empty "
+        description="The root agent's Stream, in the proto JSON form of a ``StreamRef``. Empty "
         "means Workflow Streams."
     )
     agent_id: str | None = Field(
@@ -659,9 +660,16 @@ class AgentStream(BaseModel):
     )
 
     def owner(self) -> tuple[str | None, str | None]:
-        """The workflow id and first run id of the run chain that owns the Stream, if known."""
-        owner = self.handle.get("owner") or {}
-        return owner.get("businessId") or None, owner.get("runId") or None
+        """The workflow id and first run id of the root agent's run chain, if known.
+
+        A Stream that a Workflow creates has no owner. So the root agent picks its Stream id as
+        ``<workflow id>:<first run id>:<name>``, with each part percent-encoded, and this reads
+        the first two back.
+        """
+        parts = str(self.handle.get("id", "")).split(":")
+        if len(parts) != 3:
+            return None, None
+        return unquote(parts[0]) or None, unquote(parts[1]) or None
 
 
 class MessageResult(BaseModel):
@@ -954,7 +962,7 @@ class AgentMessageReply:
     skip-to-``turn_started`` preamble normalizes that.
 
     ``accepted_cursor`` is the same read-start hint as an opaque cursor, on both stream
-    backends. A workflow can't read the head of a ``temporalio.common`` Stream, so there it's
+    backends. A workflow can't read the head of a ``temporalio.streams`` Stream, so there it's
     the position past the newest record that this run knows it wrote.
 
     ``stream`` is where the agent publishes, or ``None`` on Workflow Streams.

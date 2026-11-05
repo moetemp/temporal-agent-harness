@@ -67,7 +67,7 @@ class RunSubagentTurnInput(BaseModel):
         description="On Workflow Streams, the child's stream head after its previous turn (the "
         "previous turn's consumed_offset). The activity puts it on the SubagentMessageSent event, "
         "so a client that merges the parent's and the child's streams mounts the child there. "
-        "0 for a first turn and on a Stream of temporalio.common.",
+        "0 for a first turn and on a Stream of temporalio.streams.",
     )
     # The following identify the dispatch for the SubagentMessageSent event the activity
     # publishes onto the PARENT's stream when it actually sends the message (see the activity).
@@ -102,14 +102,14 @@ class SubagentTurnResult(BaseModel):
     consumed_offset: int = Field(
         description="On Workflow Streams, the child's stream head just past this turn's "
         "turn_end (``MessageResult.stream_offset``). The caller passes it as the next turn's "
-        "from_offset. 0 on a Stream of temporalio.common."
+        "from_offset. 0 on a Stream of temporalio.streams."
     )
 
 
 class SubagentDispatch(BaseModel):
     """The parent turn of a ``send_subagent_message``.
 
-    On ``temporalio.common`` Streams the child publishes the parent's ``subagent_message_sent``
+    On ``temporalio.streams`` Streams the child publishes the parent's ``subagent_message_sent``
     in the Workflow Task that admits the message. Both agents write one Stream, so the marker
     comes before every event of the child's turn for every reader.
     """

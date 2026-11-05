@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
 import json
 import sys
 import uuid
@@ -19,7 +20,6 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-import temporalio.common
 from temporalio import workflow
 from temporalio.client import (
     Client,
@@ -61,7 +61,8 @@ from temporal_agent_harness.harness.stream_context import StreamBackend, TurnStr
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from tests._streams import STORE, agent_stream
 
-needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.common Streams")
+needs_a_stream = pytest.mark.skipif(STORE is None, reason="only temporalio.streams Streams")
+has_streams_api = importlib.util.find_spec("temporalio.streams") is not None
 
 # How many times each text went through ``flaky_tool``, so its first attempt can fail.
 _TOOL_ATTEMPTS: dict[str, int] = {}
@@ -616,15 +617,14 @@ def _tree_event(agent_id: str) -> AgentEvent:
 async def test_a_nexus_poll_gives_a_cursor_past_other_agents_records(client_and_queue):
     """A batch with no item of its agent gives a cursor past the records that it read, so a
     later poll doesn't read them again."""
-    from temporal_agent_harness.harness.contrib_stream import AgentEvents
     from temporal_agent_harness.nexus_agent_adapter.generated import PollMessagesInput
 
     client, task_queue = client_and_queue
-    stream = await client.create_stream(AgentEvents, id=f"tree-{uuid.uuid4()}")
+    stream = await client.create_stream[AgentEvent](f"tree-{uuid.uuid4()}")
     root = await stream.publish(_tree_event("root"))
     head = await stream.publish(*[_tree_event("root-child") for _ in range(20)]) + 1
     place = AgentStream(
-        handle={"id": stream.handle.id, "backend": stream.handle.backend}, agent_id="root"
+        handle={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root"
     )
     out = await _nexus_handler(client, task_queue)._poll_stream(
         "gone",
@@ -641,8 +641,8 @@ async def test_a_cursor_that_the_retention_passed_is_a_cursor_error(client_and_q
     from temporal_agent_harness.harness import contrib_stream
 
     client, _ = client_and_queue
-    stream = await client.create_stream(
-        contrib_stream.AgentEvents, id=f"tree-{uuid.uuid4()}", retention=timedelta(seconds=1)
+    stream = await client.create_stream[AgentEvent](
+        f"tree-{uuid.uuid4()}", retention=timedelta(seconds=1)
     )
     first = await stream.publish(_tree_event("root"))
     # Each write deletes the records that are older than the Retention, and keeps the Stream.
@@ -650,7 +650,7 @@ async def test_a_cursor_that_the_retention_passed_is_a_cursor_error(client_and_q
         await asyncio.sleep(0.3)
         await stream.publish(_tree_event("root"))
     place = AgentStream(
-        handle={"id": stream.handle.id, "backend": stream.handle.backend}, agent_id="root"
+        handle={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root"
     )
     with pytest.raises(contrib_stream.TurnCursorError):
         await contrib_stream.check_turn_cursor(client, place, str(first))
@@ -960,11 +960,10 @@ async def test_a_recorded_contrib_stream_session_replays():
 
 
 def test_contrib_stream_on_a_released_sdk_says_what_to_do(monkeypatch):
-    # A Streams build loads the Stream names of ``temporalio.common`` from ``_streams`` on first
-    # use. An SDK without the Streams API has neither.
-    monkeypatch.setitem(sys.modules, "temporalio.common._streams", None)
-    monkeypatch.delattr(temporalio.common, "__getattr__", raising=False)
-    assert not hasattr(temporalio.common, "StreamHandle")
+    # An SDK without the Streams API has no ``temporalio.streams`` to import.
+    monkeypatch.setitem(sys.modules, "temporalio.streams", None)
+    with pytest.raises(ImportError):
+        importlib.import_module("temporalio.streams")
     monkeypatch.delitem(sys.modules, "temporal_agent_harness.harness.contrib_stream", raising=False)
 
     with pytest.raises(RuntimeError, match=r"install-streams-sdk.*stream=WorkflowStream\(\)"):
@@ -994,13 +993,14 @@ class _UnansweredQuery:
     def get_workflow_handle(self, workflow_id: str, **options: Any) -> Any:
         return self
 
-    def get_stream(self, *args: Any, **kwargs: Any) -> Any:
-        # A Stream handle needs a backend and makes no call, so this client has no server.
+    @property
+    def get_stream(self) -> Any:
+        # A Stream ref needs a backend and makes no call, so this client has no server.
         from temporalio.contrib.stream.testing import MemoryStreamBackend
 
         backends = [MemoryStreamBackend(default=True)]
         streams = Client(object(), stream_backends=backends)  # type: ignore[arg-type]
-        return streams.get_stream(*args, **kwargs)
+        return streams.get_stream
 
     async def query(self, *args: Any, **kwargs: Any) -> Any:
         raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
@@ -1025,8 +1025,8 @@ async def test_a_nexus_poll_of_a_closed_agent_that_answers_no_query_keeps_its_ba
     assert await closed._stream_place("wf", poll(None)) is None
     with pytest.raises(RPCError):
         await running._stream_place("wf", poll(None))
-    if not hasattr(temporalio.common, "StreamHandle"):
-        pytest.skip("needs the Streams API in temporalio.common")
+    if not has_streams_api:
+        pytest.skip("needs the Streams API in temporalio.streams")
 
     place = await closed._stream_place("wf", poll("5"))
     assert place is not None and place.owner() == ("wf", "run1")
@@ -1067,8 +1067,8 @@ async def test_the_place_found_without_a_query_gives_the_agent_s_own_events(clie
 
 
 async def test_only_a_workflow_that_is_gone_ends_a_read():
-    if not hasattr(temporalio.common, "StreamHandle"):
-        pytest.skip("needs the Streams API in temporalio.common")
+    if not has_streams_api:
+        pytest.skip("needs the Streams API in temporalio.streams")
     from temporal_agent_harness.harness.contrib_stream import _ended
 
     flaky = _FailingDescribe(RPCStatusCode.UNAVAILABLE)

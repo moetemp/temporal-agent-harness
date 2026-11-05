@@ -528,7 +528,7 @@ Each agent picks where it publishes its turn events, with the required `stream=`
 `AgentWorkflowRunner`. There's no default, so one deployment can run agents on different backends.
 `stream=WorkflowStream()` keeps the events in the workflow's own history with
 `temporalio.contrib.workflow_streams`. `stream=ContribStream()` puts them on a Stream of
-`temporalio.common`, in a store such as Redis. Any other `StreamBackend` with `open_sink()` works
+`temporalio.streams`, in a store such as Redis. Any other `StreamBackend` with `open_sink()` works
 too.
 
 ```python
@@ -555,7 +555,7 @@ the Nexus adapter add the same backend when `STREAMS_STORE` is set.
 The end of an agent's run closes nothing on Redis, and the harness does not close the Stream
 either. A reader of an agent that ended stops once it finds that the agent no longer runs.
 
-`ContribStream` needs an SDK build with the Streams API in `temporalio.common`.
+`ContribStream` needs an SDK build with the Streams API in `temporalio.streams`.
 `just install-streams-sdk` installs the one the harness is tested with. Without it, a
 `ContribStream` agent fails its Workflow Task with an error that says so. The harness
 imports the Streams API only for a `ContribStream` agent, so an agent on `stream=WorkflowStream()`
@@ -574,7 +574,7 @@ passes its Stream on with `workflow.continue_as_new(self._runner.continue_as_new
 
 | | `ContribStream` | Workflow Streams |
 | --- | --- | --- |
-| What it needs | A Stream store, a Stream backend on every process, an SDK build with the Streams API in `temporalio.common` | Temporal only |
+| What it needs | A Stream store, a Stream backend on every process, an SDK build with the Streams API in `temporalio.streams` | Temporal only |
 | Where events go | Into the store, for the Stream's retention | Into each workflow's own log, in its history |
 | Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the store | Each activity flush is a Signal and each client read an Update, one Action each |
 | History | One Local Activity marker per write batch, with no event payloads | The Signals and Updates, with their payloads |

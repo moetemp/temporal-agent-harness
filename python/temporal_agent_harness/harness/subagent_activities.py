@@ -19,7 +19,7 @@
 # answer even when a view misses an event. The activity copies none of the child's events to
 # the parent's stream. On Workflow Streams it publishes ONE marker of its own onto the PARENT's
 # stream (the SubagentMessageSent dispatch event, when it actually sends the message; see
-# _publish_dispatch). On ``temporalio.common`` Streams the child publishes that marker, so it
+# _publish_dispatch). On ``temporalio.streams`` Streams the child publishes that marker, so it
 # comes before the child's events on the one Stream they share.
 #
 # DESIGN. Temporal Client: the activity needs a ``Client`` to talk to the *child* (the

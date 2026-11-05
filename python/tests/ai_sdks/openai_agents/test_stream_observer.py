@@ -297,15 +297,14 @@ async def test_factory_without_interval_defers_to_the_harness_default(
     assert fake_publisher.opened_with == [{"batch_interval": None}]
 
 
-def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_handle():
+def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_ref():
     """The Stream backend withdraws an earlier attempt's records when a retry starts, for each
-    Stream handle it finds in the decoded input. A token decoded as a plain dict hides the turn's
+    Stream ref it finds in the decoded input. A token decoded as a plain dict hides the turn's
     Stream, and then a retry that fails before it writes leaves the first attempt's half answer."""
     from pydantic import TypeAdapter
-    from temporalio import common
 
-    if not hasattr(common, "StreamHandle"):
-        pytest.skip("needs the Streams API in temporalio.common")
+    pytest.importorskip("temporalio.streams", reason="needs the Streams API")
+    from temporalio import streams
     from typing_extensions import Required, TypedDict
 
     from temporal_agent_harness.ai_sdks.openai_agents._invoke_model_activity import (
@@ -318,13 +317,11 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_hand
         stream_to: Required[typing.get_args(hint)[0]]
 
     wire = TypeAdapter(_StreamTo)
-    handle: common.StreamHandle[Any] = common.StreamHandle(
-        id="wf:run:agent_events", backend="memory"
-    )
-    context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=handle)
+    ref: streams.StreamRef[Any] = streams.StreamRef(id="wf:run:agent_events", backend="memory")
+    context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=ref)
     token = h.TurnStreamToken(context=context, model="m")
 
     received = wire.validate_json(wire.dump_json({"stream_to": token}))["stream_to"]
 
-    assert isinstance(received.context.stream, common.StreamHandle)
+    assert isinstance(received.context.stream, streams.StreamRef)
     assert wire.validate_json(b'{"stream_to": "events"}')["stream_to"] == "events"

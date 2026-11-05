@@ -322,7 +322,7 @@ class AgentEventType(StrEnum):
     ATTEMPT_SUPERSEDED = "attempt_superseded"
     """A failed attempt's records are withdrawn, so a consumer drops the ones it rendered.
 
-    Never published by a workflow. The ``temporalio.common`` Streams reader synthesizes it for a
+    Never published by a workflow. The ``temporalio.streams`` Streams reader synthesizes it for a
     ``Superseded`` item that withdraws records the read gave. Workflow Streams never gives one.
     See :class:`AttemptSuperseded`."""
 
