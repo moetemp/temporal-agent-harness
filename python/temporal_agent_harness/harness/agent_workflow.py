@@ -1373,7 +1373,7 @@ class _WorkflowStreamsSink:
     def child_place(self, agent_id: str) -> AgentStream:
         # A place with no Stream keeps the subagent on Workflow Streams, whatever its own
         # ``stream=`` says, since a client merges a Workflow Streams tree from each agent's log.
-        return AgentStream(handle={})
+        return AgentStream(ref={})
 
     def activity_ref(self) -> None:
         return None
@@ -2110,7 +2110,7 @@ class AgentWorkflowRunner:
         place = config.stream
         backend = callable(getattr(type(stream), "open_sink", None))
         self._sink: _WorkflowStreamsSink | Any
-        if place is not None and not place.handle:
+        if place is not None and not place.ref:
             # Built in this method because ``WorkflowStream`` accepts only a caller named
             # ``__init__``.
             own = cast(WorkflowStream, stream) if not backend else WorkflowStream()
@@ -2259,11 +2259,11 @@ class AgentWorkflowRunner:
         place = self._sink.place
         started_by = workflow.info().parent
         foreign = started_by is None or parent.agent_id != own_parent
-        if parent.stream is not None:
-            # The root agent owns the Stream, so an agent that owns it is no subagent.
+        if parent.ref is not None:
+            # The Stream is the root agent's, and a root agent is no subagent.
             foreign = foreign or (
                 place is None
-                or parent.stream.id != place.handle.get("id")
+                or parent.ref.id != place.ref.get("id")
                 or place.owner()[0] == workflow.info().workflow_id
             )
         if foreign:
@@ -2374,7 +2374,7 @@ class AgentWorkflowRunner:
                 )
             )
 
-        if dispatch is not None and dispatch.parent_stream_context.stream is not None:
+        if dispatch is not None and dispatch.parent_stream_context.ref is not None:
             self._announce_dispatch(message, dispatch, turn_number)
 
         # Published for EVERY admitted message, not only a queued one: it is the only event
@@ -3209,7 +3209,7 @@ class AgentWorkflowRunner:
         if ref is not None:
             # An activity gets the ref only in its input. A subagent's activities publish on
             # the root's Stream.
-            update["stream"] = ref
+            update["ref"] = ref
         return ctx.model_copy(update=update)
 
     @property
@@ -3714,7 +3714,7 @@ class AgentWorkflowRunner:
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
         call) to its parent workflow's :class:`WorkflowStream`, or to the
-        ``temporalio.streams`` Stream in ``context.stream``.
+        ``temporalio.streams`` Stream in ``context.ref``.
 
         Encapsulates the :class:`WorkflowStreamClient` or ``BufferedPublisher``
         lifecycle (entered for batched flushing, exited so the tail drains before
@@ -3740,7 +3740,7 @@ class AgentWorkflowRunner:
             (resolved from the activity context) and the given turn.
         """
         interval = DEFAULT_PUBLISH_BATCH_INTERVAL if batch_interval is None else batch_interval
-        if context.stream is not None:
+        if context.ref is not None:
             from temporal_agent_harness.harness.contrib_stream import activity_publisher
 
             async with activity_publisher(context, max_delay=interval) as buffered:

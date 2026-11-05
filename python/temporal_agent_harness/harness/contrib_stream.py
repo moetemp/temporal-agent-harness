@@ -206,7 +206,7 @@ class ContribSink:
         return str(self._next_offset) if self._next_offset else ""
 
     def child_place(self, agent_id: str) -> AgentStream:
-        return AgentStream(handle=self.place.handle, agent_id=agent_id)
+        return AgentStream(ref=self.place.ref, agent_id=agent_id)
 
     def activity_ref(self) -> StreamRef[AgentEvent]:
         return self._stream.ref
@@ -242,12 +242,12 @@ def open_root(choice: ContribStream) -> ContribSink:
         )
     except StreamConfigError as err:
         raise StreamConfigError(f"{_NO_BACKEND} ({err})") from err
-    return ContribSink(stream, AgentStream(handle=_ref_json(stream.ref)))
+    return ContribSink(stream, AgentStream(ref=_ref_json(stream.ref)))
 
 
 def open_place(place: AgentStream) -> ContribSink:
     """Write the Stream at ``place``, for a subagent or for a run after continue-as-new."""
-    return ContribSink(to_stream(_REF.validate_python(place.handle)), place)
+    return ContribSink(to_stream(_REF.validate_python(place.ref)), place)
 
 
 def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStream:
@@ -260,7 +260,7 @@ def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStre
     stream_id = _stream_id(workflow_id, first_run_id)
     backend = client.get_stream[AgentEvent](stream_id).ref.backend
     ref: StreamRef[AgentEvent] = StreamRef(stream_id, backend=backend)
-    return AgentStream(handle=_ref_json(ref))
+    return AgentStream(ref=_ref_json(ref))
 
 
 def _stream_id(workflow_id: str, first_run_id: str) -> str:
@@ -287,10 +287,10 @@ async def activity_publisher(
     Leaving the block writes the tail, also when the activity fails, so a reader sees what
     the attempt produced up to the failure.
     """
-    assert context.stream is not None
+    assert context.ref is not None
     # The Worker's client gives a Stream that writes as this attempt, so a retry withdraws the
     # records of the failed attempt.
-    stream = activity.client().to_stream(context.stream)
+    stream = activity.client().to_stream(context.ref)
     async with BufferedPublisher(stream, max_delay=max_delay) as events:
         yield events
 
@@ -366,7 +366,7 @@ def _position(cursor: str) -> _Position:
 
 
 def _client_stream(client: Client, place: AgentStream) -> Stream[AgentEvent]:
-    return client.to_stream(_REF.validate_python(place.handle), payload_type=AgentEvent)
+    return client.to_stream(_REF.validate_python(place.ref), payload_type=AgentEvent)
 
 
 async def next_offset(client: Client, place: AgentStream) -> int:

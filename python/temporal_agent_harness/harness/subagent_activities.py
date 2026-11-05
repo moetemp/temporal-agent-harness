@@ -123,7 +123,7 @@ class SubagentActivities:
         progress = self._resume_progress()
         if progress is None:
             progress = await self._submit(client, req)
-            if req.parent_stream_context.stream is None:
+            if req.parent_stream_context.ref is None:
                 # The send just happened, so NOW publish the dispatch marker onto the PARENT's
                 # stream (this is the accurate moment, vs. the parent's execute_activity
                 # dispatch time). Only on the fresh-send branch: a heartbeat-resume retry skips

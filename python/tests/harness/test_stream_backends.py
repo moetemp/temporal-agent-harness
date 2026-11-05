@@ -259,11 +259,8 @@ class RefusedWrite:
         from temporal_agent_harness.harness import contrib_stream
         from temporal_agent_harness.harness.agent_protocol import AgentStream
 
-        handle = {
-            "id": "missing:run1:agent_events",
-            "owner": {"type": "EXECUTION_TYPE_WORKFLOW", "businessId": "missing"},
-        }
-        sink = contrib_stream.open_place(AgentStream(handle=handle, agent_id="a"))
+        ref = {"id": "missing:run1:agent_events"}
+        sink = contrib_stream.open_place(AgentStream(ref=ref, agent_id="a"))
         event = AgentEvent(
             agent_id="a", turn_id="t", turn_number=1, timestamp=0.0, event=ReplyDelta(text="x")
         )
@@ -623,9 +620,7 @@ async def test_a_nexus_poll_gives_a_cursor_past_other_agents_records(client_and_
     stream = await client.create_stream[AgentEvent](f"tree-{uuid.uuid4()}")
     root = await stream.publish(_tree_event("root"))
     head = await stream.publish(*[_tree_event("root-child") for _ in range(20)]) + 1
-    place = AgentStream(
-        handle={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root"
-    )
+    place = AgentStream(ref={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root")
     out = await _nexus_handler(client, task_queue)._poll_stream(
         "gone",
         place,
@@ -649,9 +644,7 @@ async def test_a_cursor_that_the_retention_passed_is_a_cursor_error(client_and_q
     for _ in range(6):
         await asyncio.sleep(0.3)
         await stream.publish(_tree_event("root"))
-    place = AgentStream(
-        handle={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root"
-    )
+    place = AgentStream(ref={"id": stream.ref.id, "backend": stream.ref.backend}, agent_id="root")
     with pytest.raises(contrib_stream.TurnCursorError):
         await contrib_stream.check_turn_cursor(client, place, str(first))
     with pytest.raises(contrib_stream.TurnCursorError):
@@ -1059,7 +1052,7 @@ async def test_the_place_found_without_a_query_gives_the_agent_s_own_events(clie
             await items.aclose()
         return found
 
-    assert place.handle == status.stream.handle
+    assert place.ref == status.stream.ref
     # The subagent writes the same Stream, and the read leaves its events out.
     reported = await own(status.stream)
     assert reported == await own(place)

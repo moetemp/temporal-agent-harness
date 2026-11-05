@@ -633,11 +633,11 @@ class AgentStream(BaseModel):
     Every agent of a tree writes the Stream that its root creates. So one read of the Stream
     gives the whole tree in one order, and a reader keeps one agent's events by their
     ``AgentEvent.agent_id``. An agent on Workflow Streams reports no ``AgentStream``. A parent on
-    Workflow Streams gives its subagents one with an empty ``handle``, which keeps them on
+    Workflow Streams gives its subagents one with an empty ``ref``, which keeps them on
     Workflow Streams too.
     """
 
-    handle: dict[str, Any] = Field(
+    ref: dict[str, Any] = Field(
         description="The root agent's Stream, in the proto JSON form of a ``StreamRef``. Empty "
         "means Workflow Streams."
     )
@@ -666,7 +666,7 @@ class AgentStream(BaseModel):
         ``<workflow id>:<first run id>:<name>``, with each part percent-encoded, and this reads
         the first two back.
         """
-        parts = str(self.handle.get("id", "")).split(":")
+        parts = str(self.ref.get("id", "")).split(":")
         if len(parts) != 3:
             return None, None
         return unquote(parts[0]) or None, unquote(parts[1]) or None

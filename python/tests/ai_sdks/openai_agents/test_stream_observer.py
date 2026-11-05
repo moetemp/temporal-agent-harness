@@ -318,10 +318,10 @@ def test_the_streaming_activity_input_gives_a_harness_token_its_stream_as_a_ref(
 
     wire = TypeAdapter(_StreamTo)
     ref: streams.StreamRef[Any] = streams.StreamRef(id="wf:run:agent_events", backend="memory")
-    context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", stream=ref)
+    context = TurnStreamContext(turn_id="t", turn_number=1, agent_id="a", ref=ref)
     token = h.TurnStreamToken(context=context, model="m")
 
     received = wire.validate_json(wire.dump_json({"stream_to": token}))["stream_to"]
 
-    assert isinstance(received.context.stream, streams.StreamRef)
+    assert isinstance(received.context.ref, streams.StreamRef)
     assert wire.validate_json(b'{"stream_to": "events"}')["stream_to"] == "events"

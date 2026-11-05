@@ -47,7 +47,7 @@ class TurnStreamContext(BaseModel):
     Read on the workflow side from ``AgentWorkflowRunner.current_stream_context``, serialized
     across the activity boundary in the activity's request payload, and unpacked on the activity
     side by ``AgentWorkflowRunner.publisher_from_activity`` (which targets the activity's own
-    parent workflow, or the Stream that ``stream`` names). Callers thread it as one opaque value
+    parent workflow, or the Stream that ``ref`` names). Callers thread it as one opaque value
     rather than the individual fields.
     """
 
@@ -69,7 +69,7 @@ class TurnStreamContext(BaseModel):
         "derive it from ``activity.info()`` (which only knows the workflow_id), and the agent's id "
         "is no longer its workflow_id but a short, parent-assignable handle."
     )
-    stream: _StreamRef | None = Field(
+    ref: _StreamRef | None = Field(
         default=None,
         description="The ref of the ``temporalio.streams`` Stream the agent publishes on, or "
         "``None`` on Workflow Streams. An activity gets the ref only in its input.",
