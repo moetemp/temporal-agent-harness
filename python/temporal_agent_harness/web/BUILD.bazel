@@ -29,6 +29,7 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":agent_starts",
+        ":client",
         ":file_view",
         ":registry",
         ":session_manager",
@@ -66,6 +67,7 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//python/temporal_agent_harness:plugin",
+        "//python/temporal_agent_harness/harness:contrib_stream",
         "@pypi//temporalio",
     ],
 )

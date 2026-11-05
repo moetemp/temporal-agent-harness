@@ -165,3 +165,68 @@ jobs:
             "tests/harness/test_agent_schema.py::test_every_example_agent_has_a_deterministic_self_contained_schema[examples.nexus_hello.workflow:NexusHelloAgentWorkflow]"
           )
           uv run pytest -q "${tests[@]}"
+
+  # The Streams lanes. Each test agent passes `stream=ContribStream()` on the store that
+  # STREAMS_STORE names, with the Streams build of the SDK that the justfile pins. A released SDK
+  # has no Streams API, so the jobs above run those agents on Workflow Streams only.
+  pytest-streams:
+    name: pytest on Streams (${{ matrix.store }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [memory, redis]
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      STREAMS_STORE: ${{ matrix.store }}
+      STREAMS_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-suffix: streams
+          save-cache: ${{ env.SAVE_CACHE }}
+
+      # The Streams build compiles the SDK's Rust bridge.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: extractions/setup-just@v2
+
+      - name: Install the Streams build of the SDK
+        run: |
+          (cd python && uv sync)
+          just install-streams-sdk
+
+      # The Redis lane runs on a dev server, which TEMPORAL_ADDRESS names (tests/conftest.py).
+      - name: Start a Temporal dev server
+        if: matrix.store == 'redis'
+        run: |
+          curl -sSf https://temporal.download/cli.sh | sh
+          temporal="$HOME/.temporalio/bin/temporal"
+          "$temporal" server start-dev --headless --port 7233 > "$RUNNER_TEMP/temporal.log" 2>&1 &
+          for _ in $(seq 60); do
+            "$temporal" operator cluster health --address 127.0.0.1:7233 && break
+            sleep 1
+          done
+          echo "TEMPORAL_ADDRESS=127.0.0.1:7233" >> "$GITHUB_ENV"
+
+      # `--no-sync` keeps the Streams build, which a sync would replace with the locked release.
+      # The ignored tests read files at paths that only Bazel sets up.
+      - name: Run the tests on the Streams store
+        working-directory: python
+        run: |
+          uv run --no-sync pytest -q tests \
+            --ignore=tests/test_packaged_distributions.py \
+            --ignore=tests/web/test_registry.py \
+            --ignore=tests/web/test_packaged_ui.py \
+            --ignore=tests/web/test_typescript_agents.py \
+            --deselect tests/conformance/test_goldens.py::test_scenarios_exist

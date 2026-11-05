@@ -39,3 +39,40 @@ if os.environ.get("MONTY_BIN"):
 
 _default_server_path("start_local", "dev_server_existing_path", "TEMPORAL_CLI_PATH")
 _default_server_path("start_time_skipping", "test_server_existing_path", "TEMPORAL_TEST_SERVER_PATH")
+
+
+def _streams_lane() -> None:
+    """With ``STREAMS_STORE`` set, give every test client the Stream backend it names.
+
+    ``TEMPORAL_ADDRESS`` then gives a running server that ``start_time_skipping`` connects to,
+    since the Redis lane runs on a dev server. ``tests/_streams.py`` has the rest of the lane.
+    """
+    if not os.environ.get("STREAMS_STORE"):
+        return
+    from temporalio.client import Client
+
+    from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
+
+    # Read once, since a test of the web app's CLI sets TEMPORAL_ADDRESS for its own process.
+    address = os.environ.get("TEMPORAL_ADDRESS")
+    for name in ("start_local", "start_time_skipping"):
+        start = getattr(WorkflowEnvironment, name).__func__
+
+        def wrap(start: Any, name: str) -> Any:
+            @functools.wraps(start)
+            async def start_with_streams(
+                cls: type[WorkflowEnvironment], *args: Any, **kwargs: Any
+            ) -> WorkflowEnvironment:
+                kwargs["stream_backends"] = stream_backends_from_env()
+                if name == "start_time_skipping" and address:
+                    kwargs.pop("test_server_existing_path", None)
+                    client = await Client.connect(address, **kwargs)
+                    return WorkflowEnvironment.from_client(client)
+                return await start(cls, *args, **kwargs)
+
+            return classmethod(start_with_streams)
+
+        setattr(WorkflowEnvironment, name, wrap(start, name))
+
+
+_streams_lane()

@@ -32,7 +32,7 @@ generate: install-nexgen
 
 # Gets the contract from the local checkout. Use this in this monorepo.
 generate-from-local: install-nexgen
-	$$(go env GOPATH)/bin/nexgen go ../../temporal_agent_harness/nexus_agent_adapter/agent.nexusrpc.yaml --output agent/generated
+	$$(go env GOPATH)/bin/nexgen go ../../python/temporal_agent_harness/nexus_agent_adapter/agent.nexusrpc.yaml --output agent/generated
 
 build:
 	go build ./...

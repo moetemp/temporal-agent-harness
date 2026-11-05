@@ -6,7 +6,7 @@
 // flush, since the lane keys chapters by turn number — plus a second "Turn 1" row in the chat, and
 // a second turn-1 reply bubble beside the root's. The condition is a stream that
 // opened past the parent's `subagent_started`, so the children are unannounced: real frames off
-// /api/attach?from_offset=8 look exactly like the fixtures below.
+// a mid-session /api/attach?resume=... look exactly like the fixtures below.
 
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";

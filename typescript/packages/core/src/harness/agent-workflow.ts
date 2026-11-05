@@ -184,6 +184,8 @@ export class AgentWorkflowRunner {
   #currentTurn = 0;
   #currentTurnId: string | null = null;
   #participants = 0;
+  // The events this agent published from workflow code, stamped on each as `AgentEvent.seq`.
+  #eventSeq = 0;
   #pendingTurns: Admission[] = [];
   #joining: Admission[] = [];
   #policy: ToolApprovalPolicy;
@@ -294,6 +296,7 @@ export class AgentWorkflowRunner {
       current_turn: this.#currentTurn,
       turn_active: this.#participants > 0,
       turn_participants: this.#participants,
+      last_event_seq: this.#eventSeq,
       pending_turns: this.#pendingTurns.map((a, i) => ({
         turn_number: this.#currentTurn + i + 1,
         turn_id: a.turn_id,
@@ -1192,6 +1195,7 @@ export class AgentWorkflowRunner {
       turn_number: turnNumber,
       message_id: messageId === AMBIENT ? (messageIdStore.getStore() ?? null) : messageId,
       timestamp: Date.now() / 1000,
+      seq: ++this.#eventSeq,
       event,
     });
   }

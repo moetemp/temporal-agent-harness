@@ -811,7 +811,7 @@ export function createChatServer(opts: ChatServerOptions): Chat {
     // ONE iterator for the whole turn, stepped by hand. A `for await` that exits early calls
     // `.return()` on it, which would close the attach stream at the first gate and lose
     // everything after it.
-    const events = harness.attach(sessionId, accepted.accepted_offset);
+    const events = harness.attach(sessionId, accepted.resume);
     interface Frame {
       event: string;
       data: Record<string, unknown>;

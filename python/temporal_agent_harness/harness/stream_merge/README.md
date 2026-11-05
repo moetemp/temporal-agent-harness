@@ -8,6 +8,10 @@ stream without the caller knowing subagents exist.
 
 Full design + rationale: [`docs/internal/unified-subagent-event-stream.md`](../../../../docs/internal/unified-subagent-event-stream.md).
 
+It is the reader of the Workflow Streams backend (`stream=WorkflowStream()`). A `ContribStream`
+tree needs no merge. Every agent of it publishes on one Stream, in one order (see
+`contrib_stream.py`).
+
 ## The one invariant
 
 Ordering **never** uses timestamps (Temporal clocks across machines are uncoordinated). The merged
@@ -113,7 +117,8 @@ offset vector is ever needed — just the scalar root offset plus `subagent_mess
 The merge yields a `(event, resume_offset)` pair per step; `resume_offset` is a **root-stream**
 offset that advances **only on root events** — every subagent event between two root events carries
 the same value (the position just past the preceding root event). A consumer records the latest and
-hands it back to `attach(from_offset=...)`. Two consequences a consumer must understand:
+hands it back to `attach(resume=...)`, encoded in a `ResumePoint`. Two consequences a consumer
+must understand:
 
 - **Any root offset is a *valid* resume point** — the merge never produces a broken ordering or
   wedges from one. It is *not* the merged display ordinal (the cross-stream interleaving itself isn't
@@ -133,11 +138,11 @@ hands it back to `attach(from_offset=...)`. Two consequences a consumer must und
 stall_grace_seconds)` yields `(AgentEvent, resume_offset)` pairs. `AgentClient` wraps it:
 - **send_message** → `root_from_offset = reply.accepted_offset`, `skip_until_turn_id = reply.turn_id`,
   `select_live`, stop at the root's `turn_end` for that turn.
-- **attach (full replay)** → `from_offset = 0`, no skip, `select_replay`, stop via status re-query
-  (root idle and all turns through `current_turn` ended).
-- **attach (resume)** → `from_offset = <any resume offset the previous stream handed back>`, no skip,
-  `select_replay`; streams only events after it (a subagent whose turn began earlier is omitted; its
-  `reply_received` released by the unmounted-stuck give-up).
+- **attach (full replay)** → `root_from_offset = 0`, no skip, `select_replay`, stop via status
+  re-query (root idle and all turns through `current_turn` ended).
+- **attach (resume)** → `root_from_offset = <the offset of the resume point the previous stream
+  handed back>`, no skip, `select_replay`. It streams only events after it. A subagent whose turn
+  began earlier is omitted, and the unmounted-stuck give-up releases its `reply_received`.
 
 > **`send_message` precondition.** It is only valid for a message that gets a **turn of its own**
 > — i.e. a caller that is not already streaming. A `MidTurn.ACCEPT` message that JOINS an open turn
@@ -155,7 +160,7 @@ rule on every send:
 
 1. **Send with `submit_message`** — the bare update, no stream. It returns `AgentMessageReply`.
 2. **Then ensure a stream is live.** Already open → keep it, untouched. None open (never attached, or
-   the last one ended at quiescence) → `attach(from_offset=<last resume offset>)`.
+   the last one ended at quiescence) → `attach(resume=<last resume point>)`.
 
 The packaged UI implements exactly this as `agentRun.svelte.ts`'s `#ensureStreamLive()`.
 

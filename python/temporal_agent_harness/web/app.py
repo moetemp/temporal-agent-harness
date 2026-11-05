@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -13,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from temporalio.api.enums.v1 import EventType
@@ -33,12 +34,14 @@ from temporal_agent_harness.harness.agent_client import (
     AgentTurnError,
     AgentTurnTimeout,
     CallbackResultError,
+    ResumePoint,
     ToolApprovalError,
 )
 from temporal_agent_harness.harness.agent_protocol import (
     AgentConfig,
     AgentEvent,
     AgentMessage,
+    AgentMessageReply,
     AgentStatus,
     SEND_AGENT_MESSAGE_UPDATE,
 )
@@ -66,7 +69,10 @@ from temporal_agent_harness.web.session_manager import (
     Session,
     SessionManagerWorkflow,
 )
+from temporal_agent_harness.web.client import stream_backend_options
 from temporal_agent_harness.web.task_queue_status import describe_task_queue_workers
+
+logger = logging.getLogger(__name__)
 
 RegistrySource = AgentRegistry | Callable[[], AgentRegistry]
 _SESSION_PREVIEW_HISTORY_PAGE_SIZE = 16
@@ -158,10 +164,12 @@ def create_agent_harness_app(
         # worker and the session-manager worker get by adding the same plugin. An offloaded
         # payload is only readable by a process using the matching converter, so this app must
         # not spell one out of its own. The plugin's activity registration is a WORKER concern
-        # and this app hosts no worker, so it simply doesn't apply here.
+        # and this app hosts no worker, so it doesn't apply here. The Stream backend, if
+        # any, is the one the workers' clients have, because this process reads agent Streams.
         app.state.temporal = await Client.connect(
             **connect_config,
             plugins=[AgentHarnessPlugin(large_payload_offload=large_payload_offload)],
+            **stream_backend_options(),
         )
 
         resolved_registry = _resolve_registry(registry, registry_path)
@@ -302,13 +310,24 @@ def create_agent_harness_app(
         return JSONResponse(content=[fn.model_dump(mode="json") for fn in functions])
 
     @app.get("/api/attach")
-    async def attach(session_id: str, from_offset: int = 0) -> StreamingResponse:
+    async def attach(
+        session_id: str, resume: str = "", from_offset: int | None = None
+    ) -> Response:
         client = AgentClient(temporal=app.state.temporal, workflow_id=session_id)
-        return StreamingResponse(
-            await client.attach(on_item=_yield_item, from_offset=from_offset),
-            media_type="text/event-stream",
-            headers=_sse_headers(),
-        )
+        if from_offset is not None and not resume:
+            # A client that sends ``from_offset`` means a Workflow Streams root offset.
+            resume = ResumePoint(cursor=str(from_offset)).encode()
+        try:
+            items = await client.attach(on_item=_yield_item, resume=resume)
+        except ValueError as e:
+            # A stale tab after a store switch, or a point from another backend (a
+            # ``TurnCursorError``). The UI then reads from the beginning. The token isn't echoed.
+            logger.info("attach refused a resume point for %s: %r", session_id, e)
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_resume_point", "message": "invalid resume point"},
+            )
+        return StreamingResponse(items, media_type="text/event-stream", headers=_sse_headers())
 
     @app.post("/api/approve")
     async def approve_tool(req: ToolApprovalRequestBody):
@@ -361,26 +380,26 @@ def create_agent_harness_app(
             msg_type, payload = req.message["type"], req.message.get("payload") or {}
 
         result = await client.submit_message(msg_type, payload, update_id=_update_id(req))
-        return JSONResponse(content=asdict(result), headers={"Cache-Control": "no-store"})
+        return JSONResponse(content=_reply_json(result), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/chat")
     async def chat(req: ChatRequestBody):
-        def on_item(item: AgentStreamOutput, resume_offset: int) -> bytes:
+        def on_item(item: AgentStreamOutput, resume: ResumePoint) -> bytes:
             match item:
                 case AgentTurnTimeout():
                     return _sse(
                         STREAM_ERROR_SSE_EVENT,
                         {"kind": "timeout", "message": str(item)},
-                        resume_offset,
+                        resume,
                     )
                 case AgentTurnError():
                     return _sse(
                         STREAM_ERROR_SSE_EVENT,
                         {"kind": "agent", "message": str(item)},
-                        resume_offset,
+                        resume,
                     )
                 case _:
-                    return _yield_item(item, resume_offset)
+                    return _yield_item(item, resume)
 
         client = AgentClient(temporal=app.state.temporal, workflow_id=req.session_id)
         if isinstance(req.message, str):
@@ -407,7 +426,7 @@ def create_agent_harness_app(
             content={
                 "error": "joined_turn",
                 "message": str(exc),
-                "reply": asdict(exc.reply),
+                "reply": _reply_json(exc.reply),
             },
         )
 
@@ -736,14 +755,34 @@ def _update_id(req: ChatRequestBody) -> str | None:
     return f"msg-{req.request_id}" if req.request_id else None
 
 
-def _sse(event: str, data: dict, resume_offset: int | None = None) -> bytes:
+def _reply_json(reply: AgentMessageReply) -> dict[str, Any]:
+    # The place and the raw cursor are for a reader in this process, and a Stream offset is too
+    # large for a JavaScript number to keep exact. A caller attaches from ``resume`` to catch this
+    # dispatch.
+    content = {k: v for k, v in asdict(reply).items() if k not in ("stream", "accepted_cursor")}
+    offset = reply.accepted_offset
+    cursor = reply.accepted_cursor or (str(offset) if offset else "")
+    content["resume"] = ResumePoint(cursor=cursor).encode()
+    return content
+
+
+def _sse(event: str, data: dict, resume: ResumePoint | None = None) -> bytes:
     payload = {**data}
-    if resume_offset is not None:
-        payload["resume_offset"] = resume_offset
+    if resume is not None:
+        # The encoded point a browser sends back to ``/api/attach?resume=`` after a disconnect.
+        # A point with nothing in it would send a browser back to the beginning, so it is left
+        # out and the browser keeps the one it has.
+        encoded = resume.encode()
+        if encoded:
+            payload["resume"] = encoded
+        if resume.offset:
+            # The event's own place on the Stream, as a string, so an ``attempt_superseded``
+            # can name it exactly.
+            payload["event_offset"] = resume.offset
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()
 
 
-def _yield_item(item, resume_offset: int | None = None) -> bytes:
+def _yield_item(item, resume: ResumePoint | None = None) -> bytes:
     if isinstance(item, AgentEvent):
         payload = item.event
         data = {
@@ -756,8 +795,11 @@ def _yield_item(item, resume_offset: int | None = None) -> bytes:
             # older server that didn't say".
             "message_id": item.message_id,
             "timestamp": item.timestamp,
+            # The agent's own count, which a client compares with ``last_event_seq`` on
+            # ``/api/status`` to know it has caught up.
+            "seq": item.seq,
         }
-        return _sse(payload.type, data, resume_offset)
+        return _sse(payload.type, data, resume)
     return b""
 
 

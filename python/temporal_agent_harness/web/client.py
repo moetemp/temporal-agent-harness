@@ -9,7 +9,7 @@ in two launchers that could drift apart; here it lives once, so ``serve`` and
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from temporalio.client import Client
@@ -48,13 +48,29 @@ def ensure_temporal_address(explicit_address: str | None) -> None:
         os.environ["TEMPORAL_ADDRESS"] = DEFAULT_TEMPORAL_ADDRESS
 
 
+def stream_backend_options() -> dict[str, Any]:
+    """``stream_backends=`` with the Stream backend that ``STREAMS_STORE`` names, or no option
+    when it is unset.
+
+    A process that reads or runs ``ContribStream`` agents needs it. Unset serves
+    agents on ``WorkflowStream()`` only. An SDK without the Streams API has no
+    ``stream_backends=``, so unset passes no option at all.
+    """
+    if not os.environ.get("STREAMS_STORE"):
+        return {}
+    from temporal_agent_harness.harness.contrib_stream import stream_backends_from_env
+
+    return {"stream_backends": stream_backends_from_env()}
+
+
 async def connect_client() -> "Client":
     """Connect a Temporal client carrying the harness plugin.
 
     The plugin is where the shared data converter is DEFINED, so the session-manager worker, the
     web server, and every agent worker can read each other's payloads only because they all add
     it. Its default large-payload storage matches ``create_agent_harness_app``'s, keeping the
-    packaged entrypoints mutually readable out of the box.
+    packaged entrypoints mutually readable out of the box. With ``STREAMS_STORE`` set it also
+    has the Stream backend (see :func:`stream_backend_options`).
     """
     from temporalio.client import Client
     from temporalio.envconfig import ClientConfig
@@ -63,7 +79,9 @@ async def connect_client() -> "Client":
 
     connect_config = ClientConfig.load_client_connect_config()
     try:
-        return await Client.connect(**connect_config, plugins=[AgentHarnessPlugin()])
+        return await Client.connect(
+            **connect_config, plugins=[AgentHarnessPlugin()], **stream_backend_options()
+        )
     except RuntimeError as exc:
         # "no server running" is the commonest way a first run fails, and the SDK reports it as a
         # dozen frames of tonic/bridge internals. Translate just that failure into the two things

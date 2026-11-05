@@ -135,6 +135,18 @@ describe("the turn loop", () => {
     assert.deepStrictEqual(started, [3]);
   });
 
+  it("numbers the workflow's own events, not an activity's, and reports the last", async () => {
+    const h = await env.start("ToolRetryAgent");
+    await send(h, "act", { text: "x" });
+    const events = await collect(env.client, h.workflowId);
+    const fromActivity = events.filter((e) => ["tool_start", "tool_error"].includes(e.event.type));
+    assert.ok(fromActivity.length > 0);
+    for (const e of fromActivity) assert.equal(e.seq, null, e.event.type);
+    const seqs = events.flatMap((e) => (e.seq === null ? [] : [e.seq]));
+    assert.deepStrictEqual(seqs, seqs.map((_, i) => i + 1));
+    assert.equal((await status(h)).last_event_seq, seqs.at(-1));
+  });
+
   it("an activity tool heartbeats, so it may run past its heartbeat timeout", async () => {
     const h = await env.start("ToolRetryAgent");
     await send(h, "act", { text: "slow" });

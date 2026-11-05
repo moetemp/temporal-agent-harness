@@ -48,6 +48,26 @@ test("two messages streaming in one turn keep their own replies", () => {
   assert.equal(p.root!.agentStatus, "idle");
 });
 
+test("a superseded attempt's deltas are cut out and the earlier text stays", () => {
+  const f = new Frames();
+  const a = { message_id: "a" };
+  const p = project([
+    f.make("message_accepted", { handler: "ask", payload: {}, disposition: "opened" }, a),
+    f.make("turn_started"),
+    f.make("message_handler_start", {}, a),
+    f.make("reply_delta", { text: "First call. ", event_offset: "1879862925380812801" }, a),
+    f.make("reply_delta", { text: "half an ans", event_offset: "1879862925380812802" }, a),
+    f.make("attempt_superseded", { withdrawn_offsets: ["1879862925380812802"] }),
+    f.make("reply_delta", { text: "Whole answer", event_offset: "1879862925380812803" }, a),
+    f.make("message_handler_end", { output: { text: "Whole answer" } }, a),
+    f.make("turn_end")
+  ]);
+
+  assert.deepEqual(p.root!.messages[0]!.parts, [
+    { type: "reply_delta", text: "First call. Whole answer" }
+  ]);
+});
+
 test("a queued message stays accepted until its handler starts", () => {
   const f = new Frames();
   const q = { message_id: "q", turn_number: 2 };

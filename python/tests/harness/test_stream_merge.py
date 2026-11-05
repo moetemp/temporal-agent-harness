@@ -21,7 +21,7 @@ import pytest
 from temporalio.contrib.workflow_streams import WorkflowStreamItem
 
 import temporal_agent_harness.harness.stream_merge.cursor as cursor_mod
-from temporal_agent_harness.harness.agent_client import AgentClient, AgentTurnTimeout
+from temporal_agent_harness.harness.agent_client import AgentClient, AgentTurnTimeout, ResumePoint
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentEvent,
@@ -1057,8 +1057,8 @@ async def test_closing_send_message_stream_early_closes_the_merge():
         disposition=MessageDisposition.OPENED,
     )
     with patch.object(cursor_mod, "WorkflowStreamClient", fake):
-        stream = client._merged_turn(
-            reply, on_item=lambda item, _offset: item, timeout=None, stall_grace_seconds=5.0
+        stream = client._turn(
+            reply, on_item=lambda item, _resume: item, timeout=None, stall_grace_seconds=5.0
         )
         await _first_then_close(stream)
         assert closes == ["P"]
@@ -1069,10 +1069,10 @@ async def test_closing_attach_stream_early_closes_the_merge():
     fake = _FakeStreams(_live_root_turn(), closes=closes, live_tail_workflows={"P"})
     client = AgentClient(None, "P")  # type: ignore[arg-type]
     with patch.object(cursor_mod, "WorkflowStreamClient", fake):
-        stream = client._merged_attach(
-            on_item=lambda item, _offset: item,
-            from_offset=0,
-            stop_at_root_offset=2,
+        stream = client._attached(
+            on_item=lambda item, _resume: item,
+            place=None,
+            resume=ResumePoint(),
             stall_grace_seconds=5.0,
         )
         await _first_then_close(stream)
@@ -1092,8 +1092,8 @@ async def test_send_message_timeout_closes_the_merge_and_yields_the_timeout():
     with patch.object(cursor_mod, "WorkflowStreamClient", fake):
         items = [
             item
-            async for item in client._merged_turn(
-                reply, on_item=lambda item, _offset: item, timeout=0.2, stall_grace_seconds=5.0
+            async for item in client._turn(
+                reply, on_item=lambda item, _resume: item, timeout=0.2, stall_grace_seconds=5.0
             )
         ]
     assert isinstance(items[-1], AgentTurnTimeout)

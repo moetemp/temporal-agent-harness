@@ -400,6 +400,9 @@ export interface AgentStatus {
   current_turn: number;
   turn_active: boolean;
   turn_participants: number;
+  /** The `AgentEvent.seq` of the newest event the agent published from workflow code. A client
+   *  that has seen it while the agent is idle has caught up. */
+  last_event_seq: number;
   pending_turns: PendingTurn[];
   pending_approvals: PendingApproval[];
   pending_callbacks: PendingCallback[];

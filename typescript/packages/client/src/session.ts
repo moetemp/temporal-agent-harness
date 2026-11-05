@@ -157,7 +157,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
   readonly #flushListeners = new Set<(flush: SessionFlush<A>) => void>();
   #buffer: AgentSseFrame[] = [];
   #flushScheduled = false;
-  #resumeOffset = 0;
+  #resume = "";
   #observed = false;
   #run: AbortController | null = null;
   readonly #shareAcrossTabs: boolean;
@@ -344,7 +344,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
       let delivered = false;
       try {
         this.#counts.attaches++;
-        for await (const frame of this.#transport.attach(this.sessionId, this.#resumeOffset, signal)) {
+        for await (const frame of this.#transport.attach(this.sessionId, this.#resume, signal)) {
           if (signal.aborted) return;
           if (!delivered) {
             delivered = true;
@@ -467,8 +467,8 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
   // -- frames ----------------------------------------------------------------
 
   #receive(frame: AgentSseFrame): void {
-    // A re-attach resumes from a root-stream offset that several subagent frames share, so
-    // some frames arrive twice.
+    // On Workflow Streams a re-attach resumes after a root-stream point that several subagent
+    // frames share, so some frames arrive twice.
     const key = frameKey(frame);
     if (this.#frameKeys.has(key)) return;
     this.#frameKeys.add(key);
@@ -480,7 +480,8 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
       this.#frameTimes = this.#frameTimes.slice(this.#frameHead);
       this.#frameHead = 0;
     }
-    this.#resumeOffset = Math.max(this.#resumeOffset, frame.data.resume_offset);
+    // The point is opaque, so the session keeps the newest one. The stream gives them in order.
+    if (typeof frame.data.resume === "string") this.#resume = frame.data.resume;
     this.#buffer.push(frame);
     this.#projection.apply(frame);
     this.#scheduleFlush();
@@ -572,7 +573,7 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
         tabs.channel.postMessage({ frames: this.#state.frames, connection: this.#state.connection, census: true });
         // Calls the previous leader left waiting are this tab's to answer now.
         this.#flush();
-        // Resumes from the last offset this tab received, relayed or not.
+        // Resumes from the last point this tab received, relayed or not.
         this.#ensureLive();
         return new Promise((resolve) => tabs.release.signal.addEventListener("abort", resolve));
       })
@@ -663,10 +664,12 @@ export class AgentSessionCore<A extends AgentSchema = UntypedAgent> {
  *  reports one, else by its content, which is unique to it in practice. */
 export function frameKey(frame: AgentSseFrame): string {
   const data = frame.data as unknown as Record<string, unknown>;
-  if (typeof data.event_offset === "number" && data.event_offset >= 0 && "agent_id" in data) {
+  const offset = data.event_offset;
+  const known = typeof offset === "string" || (typeof offset === "number" && offset >= 0);
+  if (known && "agent_id" in data) {
     return `${String(data.agent_id)}|${data.event_offset}`;
   }
-  const { resume_offset: _resume, event_offset: _event, ...identity } = data;
+  const { resume: _resume, event_offset: _event, ...identity } = data;
   return `${frame.event}|${JSON.stringify(identity)}`;
 }
 

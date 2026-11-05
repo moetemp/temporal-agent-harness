@@ -29,7 +29,7 @@ const rootFrame = (event, data = {}) => {
       turn_id: "t1",
       turn_number: 1,
       timestamp: offset,
-      resume_offset: offset,
+      resume: `${offset}@c`,
       event_offset: offset,
       ...data
     }
@@ -77,13 +77,12 @@ function boot({ streamFor = () => [], reply = {}, interfaceFails = () => false }
         turn_number: 1,
         turn_id: "t1",
         message_id: `m-${session_id}`,
-        accepted_offset: 0,
         disposition: "opened",
         ...reply
       };
     },
-    async *attach(workflowId, fromOffset, signal) {
-      calls.attach.push({ workflowId, fromOffset });
+    async *attach(workflowId, resume, signal) {
+      calls.attach.push({ workflowId, resume });
       const frames = streamFor(workflowId, calls.attach.filter((c) => c.workflowId === workflowId).length);
       const items = Array.isArray(frames) ? frames : frames.items;
       for (const frame of items) yield frame;
@@ -94,15 +93,15 @@ function boot({ streamFor = () => [], reply = {}, interfaceFails = () => false }
   return { controller: new AgentRunController(api), calls };
 }
 
-async function storeRun(frames, offsets = {}) {
+async function storeRun(frames, resumes = {}) {
   cases += 1;
   parent = session(`wf-parent-${cases}`);
   await appendRunFrames(
     {
       runKey: runKeyOf(parent),
       workflowId: parent.workflow_id,
-      lastResumeOffset: frames.at(-1)?.data.resume_offset ?? 0,
-      offsets,
+      lastResume: frames.at(-1)?.data.resume ?? "",
+      resumes,
       count: frames.length,
       lastAccess: Date.now()
     },
@@ -112,8 +111,8 @@ async function storeRun(frames, offsets = {}) {
 }
 
 describe("Temporal actions the console spends", () => {
-  it("resumes a subagent's own stream from its stored offset, not from 0", async () => {
-    await storeRun([subagentStarted("wf-kid", "kid")], { "wf-kid": 7 });
+  it("resumes a subagent's own stream from its stored point, not from the start", async () => {
+    await storeRun([subagentStarted("wf-kid", "kid")], { "wf-kid": "7@c" });
     const { controller, calls } = boot();
     void controller.initialize();
     await waitFor("the parent's attach", () => calls.attach.length === 1);
@@ -121,8 +120,8 @@ describe("Temporal actions the console spends", () => {
     await waitFor("the subagent's attach", () => calls.attach.some((c) => c.workflowId === "wf-kid"));
     assert.deepEqual(
       calls.attach.find((c) => c.workflowId === "wf-kid"),
-      { workflowId: "wf-kid", fromOffset: 7 },
-      "attach(0) replays the child's whole history, a batch of Queries and an Update at a time"
+      { workflowId: "wf-kid", resume: "7@c" },
+      "an empty point replays the child's whole history, a batch of Queries and an Update at a time"
     );
     controller.pause();
   });

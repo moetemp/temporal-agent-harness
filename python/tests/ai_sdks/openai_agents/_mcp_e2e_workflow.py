@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 
 with workflow.unsafe.imports_passed_through():
+    from tests._streams import agent_stream
     from agents import Agent as OpenAIAgent
     from agents import Runner
 
@@ -38,7 +38,7 @@ class McpStreamingAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
