@@ -29,6 +29,13 @@ from temporal_agent_harness.web import file_view
 from temporal_agent_harness.web.app import create_agent_harness_app
 from temporal_agent_harness.web.session_manager import AgentRegistry
 
+# The streams lane points the time-skipping server at a dev server, which has standalone
+# activities.
+_needs_time_skipping_server = pytest.mark.skipif(
+    bool(os.environ.get("TEMPORAL_ADDRESS")),
+    reason="needs the time-skipping server, which TEMPORAL_ADDRESS replaces",
+)
+
 FILES = {
     "notes.md": b"# Notes\n",
     "idea.md": b"---\ntype: Idea\ntitle: An idea\n---\nSee [the notes](notes.md).\n",
@@ -151,6 +158,7 @@ async def test_a_queue_with_no_worker_times_out(env, monkeypatch):
     assert (response.status_code, response.json()["error"]) == (504, "no_worker")
 
 
+@_needs_time_skipping_server
 async def test_a_server_without_standalone_activities_says_so():
     test_server = await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter
@@ -184,6 +192,7 @@ async def test_an_okf_graph_failure_comes_back_as_an_http_error(env, task_queue)
     assert (response.status_code, response.json()["error"]) == (400, "ValueError")
 
 
+@_needs_time_skipping_server
 async def test_an_okf_graph_needs_standalone_activities():
     test_server = await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter

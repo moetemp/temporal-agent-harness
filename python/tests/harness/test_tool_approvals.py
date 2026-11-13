@@ -27,14 +27,12 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from datetime import timedelta
 
 import pytest
 import pytest_asyncio
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -51,7 +49,6 @@ from temporal_agent_harness.harness.agent_client import AgentClient, ToolApprova
 from temporal_agent_harness.harness.agent_protocol import (
     APPROVAL_SHORT_ID_LENGTH,
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -60,6 +57,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TextReply,
     AgentMessageReply,
 )
+from tests._streams import agent_stream, turn_records
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +174,7 @@ class ApprovalProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             # Safe-by-default baseline: gate everything. Tests relax it per session via
             # AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
@@ -217,7 +215,7 @@ class EvaluatorProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_EVALUATED,
             auto_mode_evaluator=_approve_gated_activity_tool,
@@ -238,7 +236,7 @@ class VerdictEvaluatorProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_EVALUATED,
             auto_mode_evaluator=_verdict_evaluator,
@@ -264,7 +262,7 @@ class SlowEvaluatorProbeAgent(_BaseProbe):
         self._evaluator_cancelled = False
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_EVALUATED,
             auto_mode_evaluator=self._deny_once_released,
@@ -303,7 +301,7 @@ class NonsenseEvaluatorProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_EVALUATED,
             auto_mode_evaluator=_nonsense_evaluator,
@@ -323,7 +321,7 @@ class BrokenEvaluatorProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.auto_mode(),
             auto_approval_criteria_default=_EVALUATED,
             auto_mode_evaluator=_exploding_evaluator,
@@ -394,13 +392,7 @@ async def _send(handle, text: str) -> AgentMessageReply:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_records(client, workflow_id)
 
 
 async def _drain_to_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:

@@ -97,6 +97,9 @@ $defs:
       streamHeadOffset:
         type: integer
         description: "Stream offset when the message was accepted; start the first pollMessages call here to skip earlier turns"
+      streamCursor:
+        type: string
+        description: "Opaque cursor to start the first pollMessages call from, on an agent that uses temporalio.common Streams. Unset on Workflow Streams, which uses streamHeadOffset."
     required:
       - turnNumber
       - turnId
@@ -388,6 +391,9 @@ $defs:
       cursor:
         type: integer
         description: "Stream offset to read from: streamHeadOffset for a new message, else the previous call's next_offset"
+      streamCursor:
+        type: string
+        description: "Opaque cursor of an agent that uses temporalio.common Streams, from streamCursor or next_cursor. Unset on Workflow Streams, which uses cursor."
     required:
       - sessionId
       - cursor
@@ -410,7 +416,10 @@ $defs:
         description: "True when more items are immediately available (the batch was capped)"
       closed:
         type: boolean
-        description: "True only when the session had already ended"
+        description: "True only when the session had already ended and the batch has no items"
+      next_cursor:
+        type: string
+        description: "Opaque cursor for the next pollMessages call on temporalio.common Streams. Unset on Workflow Streams, which uses next_offset."
     required:
       - items
       - next_offset
@@ -429,7 +438,7 @@ $defs:
         description: "base64 of a serialized Temporal Payload whose data is the event's JSON (the harness's AgentStreamItem)"
       offset:
         type: integer
-        description: "Absolute position of this item in the stream"
+        description: "Absolute position of this item in the stream, on Workflow Streams. 0 on temporalio.common Streams, whose cursor is next_cursor. So a caller can't apply an attempt_superseded event there, since its withdrawn_offsets name items by offsets that this field doesn't give"
     required:
       - topic
       - data

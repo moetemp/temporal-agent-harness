@@ -38,9 +38,9 @@ An accepted message may open a turn, join a running turn, or be queued. Acceptan
 completion. Save the returned `message_id` and follow the event stream for its result. Reuse
 `request_id` only when retrying the same delivery; distinct user messages need distinct IDs.
 
-Attach with `GET /api/attach?session_id=...&from_offset=0` (URL-encode the ID). The response is
-SSE (`text/event-stream`). Events carry JSON data, including `resume_offset` when available.
-Save the last processed resume offset and pass it as `from_offset` on reconnect. Do not assume
+Attach with `GET /api/attach?session_id=...` (URL-encode the ID) to read from the start. The
+response is SSE (`text/event-stream`). Events carry JSON data, including an opaque `resume` point
+when available. Save the last processed `resume` and pass it as `resume` on reconnect. Do not assume
 browser `Last-Event-ID` is the resume mechanism. Read the event's handler/message/agent identity:
 a session can contain queued messages, mid-turn handlers, and subagent events.
 

@@ -1716,14 +1716,26 @@ class _PollMessagesInputTransferTypeConverter(
             if cursor_value_parsed is not None:
                 cursor_value = cursor_value_parsed
 
+        stream_cursor_value: str | None = None
+        if "streamCursor" in raw:
+            stream_cursor_value_raw = raw["streamCursor"]
+            if stream_cursor_value_raw is None:
+                violations.append(Violation(path="streamCursor", reason="explicit null not allowed"))
+            else:
+                if not isinstance(stream_cursor_value_raw, str):
+                    violations.append(Violation(path="streamCursor", reason="expected string"))
+                else:
+                    stream_cursor_value = stream_cursor_value_raw
+
         for key in raw:
-            if key != "sessionId" and key != "cursor":
+            if key != "sessionId" and key != "cursor" and key != "streamCursor":
                 violations.append(Violation(path=_member_path(key), reason="unknown field"))
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return PollMessagesInput(
             session_id=session_id_value,
             cursor=cursor_value,
+            stream_cursor=stream_cursor_value,
         )
 
     @typing_extensions.override
@@ -1750,6 +1762,11 @@ class _PollMessagesInputTransferTypeConverter(
                 if abs(cursor_value) > 9007199254740991:
                     violations.append(Violation(path="cursor", reason="exceeds ±(2^53-1) integer cap"))
             out["cursor"] = cursor_value
+        stream_cursor_value: typing.Any = runtime_value.stream_cursor
+        if stream_cursor_value is not None:
+            if not (isinstance(stream_cursor_value, str)):
+                violations.append(Violation(path="streamCursor", reason="expected string"))
+            out["streamCursor"] = stream_cursor_value
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -1765,6 +1782,11 @@ class PollMessagesInput:
     cursor: int
     """Stream offset to read from: streamHeadOffset for a new message, else the previous
     call's next_offset
+    """
+
+    stream_cursor: str | None = None
+    """Opaque cursor of an agent that uses temporalio.common Streams, from streamCursor or
+    next_cursor. Unset on Workflow Streams, which uses cursor.
     """
 
 
@@ -1831,8 +1853,19 @@ class _PollMessagesOutputTransferTypeConverter(
                 else:
                     closed_value = closed_value_raw
 
+        next_cursor_value: str | None = None
+        if "next_cursor" in raw:
+            next_cursor_value_raw = raw["next_cursor"]
+            if next_cursor_value_raw is None:
+                violations.append(Violation(path="next_cursor", reason="explicit null not allowed"))
+            else:
+                if not isinstance(next_cursor_value_raw, str):
+                    violations.append(Violation(path="next_cursor", reason="expected string"))
+                else:
+                    next_cursor_value = next_cursor_value_raw
+
         for key in raw:
-            if key != "items" and key != "next_offset" and key != "more_ready" and key != "closed":
+            if key != "items" and key != "next_offset" and key != "more_ready" and key != "closed" and key != "next_cursor":
                 violations.append(Violation(path=_member_path(key), reason="unknown field"))
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
@@ -1841,6 +1874,7 @@ class _PollMessagesOutputTransferTypeConverter(
             next_offset=next_offset_value,
             more_ready=more_ready_value,
             closed=closed_value,
+            next_cursor=next_cursor_value,
         )
 
     @typing_extensions.override
@@ -1888,6 +1922,11 @@ class _PollMessagesOutputTransferTypeConverter(
             if not (isinstance(closed_value, bool)):
                 violations.append(Violation(path="closed", reason="expected boolean"))
             out["closed"] = closed_value
+        next_cursor_value: typing.Any = runtime_value.next_cursor
+        if next_cursor_value is not None:
+            if not (isinstance(next_cursor_value, str)):
+                violations.append(Violation(path="next_cursor", reason="expected string"))
+            out["next_cursor"] = next_cursor_value
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -1910,7 +1949,12 @@ class PollMessagesOutput:
     """True when more items are immediately available (the batch was capped)"""
 
     closed: bool | None = None
-    """True only when the session had already ended"""
+    """True only when the session had already ended and the batch has no items"""
+
+    next_cursor: str | None = None
+    """Opaque cursor for the next pollMessages call on temporalio.common Streams. Unset on
+    Workflow Streams, which uses next_offset.
+    """
 
 
 class _ProvideCallbackResultInputTransferTypeConverter(
@@ -2513,8 +2557,19 @@ class _SendMessageOutputTransferTypeConverter(
             if stream_head_offset_value_parsed is not None:
                 stream_head_offset_value = stream_head_offset_value_parsed
 
+        stream_cursor_value: str | None = None
+        if "streamCursor" in raw:
+            stream_cursor_value_raw = raw["streamCursor"]
+            if stream_cursor_value_raw is None:
+                violations.append(Violation(path="streamCursor", reason="explicit null not allowed"))
+            else:
+                if not isinstance(stream_cursor_value_raw, str):
+                    violations.append(Violation(path="streamCursor", reason="expected string"))
+                else:
+                    stream_cursor_value = stream_cursor_value_raw
+
         for key in raw:
-            if key != "turnNumber" and key != "turnId" and key != "messageId" and key != "disposition" and key != "streamHeadOffset":
+            if key != "turnNumber" and key != "turnId" and key != "messageId" and key != "disposition" and key != "streamHeadOffset" and key != "streamCursor":
                 violations.append(Violation(path=_member_path(key), reason="unknown field"))
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
@@ -2524,6 +2579,7 @@ class _SendMessageOutputTransferTypeConverter(
             message_id=message_id_value,
             disposition=disposition_value,
             stream_head_offset=stream_head_offset_value,
+            stream_cursor=stream_cursor_value,
         )
 
     @typing_extensions.override
@@ -2577,6 +2633,11 @@ class _SendMessageOutputTransferTypeConverter(
                 if abs(stream_head_offset_value) > 9007199254740991:
                     violations.append(Violation(path="streamHeadOffset", reason="exceeds ±(2^53-1) integer cap"))
             out["streamHeadOffset"] = stream_head_offset_value
+        stream_cursor_value: typing.Any = runtime_value.stream_cursor
+        if stream_cursor_value is not None:
+            if not (isinstance(stream_cursor_value, str)):
+                violations.append(Violation(path="streamCursor", reason="expected string"))
+            out["streamCursor"] = stream_cursor_value
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -2603,6 +2664,11 @@ class SendMessageOutput:
     stream_head_offset: int
     """Stream offset when the message was accepted; start the first pollMessages call here
     to skip earlier turns
+    """
+
+    stream_cursor: str | None = None
+    """Opaque cursor to start the first pollMessages call from, on an agent that uses
+    temporalio.common Streams. Unset on Workflow Streams, which uses streamHeadOffset.
     """
 
 
@@ -2880,7 +2946,11 @@ class StreamItem:
     """
 
     offset: int
-    """Absolute position of this item in the stream"""
+    """Absolute position of this item in the stream, on Workflow Streams. 0 on
+    temporalio.common Streams, whose cursor is next_cursor. So a caller can't apply an
+    attempt_superseded event there, since its withdrawn_offsets name items by offsets
+    that this field doesn't give
+    """
 
 
 class _SubagentInfoTransferTypeConverter(

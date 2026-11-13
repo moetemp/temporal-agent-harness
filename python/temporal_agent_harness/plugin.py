@@ -159,6 +159,9 @@ class AgentHarnessPlugin(SimplePlugin):
       ``tools``.
     * **Filesystem activities** — the ``vfs.<name>.*`` activities of each
       :class:`~temporal_agent_harness.harness.code_mode.ActivityFileSystem` in ``filesystems``.
+    * **Stream activities**, the two Local Activities through which the Workflow code of a
+      ``stream=ContribStream()`` agent creates and writes its Stream. They need a Stream Store
+      on the client only when such an agent runs.
 
     Args:
         tools: The agent's tools. The activity-backed ones get their durable bodies
@@ -187,12 +190,19 @@ class AgentHarnessPlugin(SimplePlugin):
         # to mean the one other thing a caller might want: no offloading at all.
         large_payload_offload: ExternalStorage | None = DEFAULT_PAYLOAD_STORAGE,
     ) -> None:
+        from temporal_agent_harness.harness.contrib_stream_activities import (
+            append_events,
+            create_event_stream,
+        )
+
         # Resolved eagerly so a bad `tools` entry surfaces at plugin construction, next to the
         # developer's own call, rather than deep inside Worker() where the traceback points at
         # SDK internals.
         self._worker_activities: list[Callable[..., Any]] = [
             *_tool_activities(tools),
             *_filesystem_activities(filesystems),
+            create_event_stream,
+            append_events,
         ]
 
         def data_converter(converter: DataConverter | None) -> DataConverter:

@@ -16,7 +16,7 @@ const meta = (seconds) => ({
   turn_number: 1,
   message_id: "m1",
   timestamp: 1_700_000_000 + seconds,
-  resume_offset: seconds
+  resume: `${seconds}@c`
 });
 
 const requested = {

@@ -18,7 +18,7 @@ const toolEnd = (tool_output) => ({
     turn_number: 1,
     message_id: "m",
     timestamp: 1,
-    resume_offset: 0,
+    resume: "0",
     tool_id: "call-1",
     tool_name: "lookup",
     tool_output

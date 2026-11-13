@@ -19,7 +19,7 @@ class FakeTransport implements SessionTransport {
   readonly scripts = new Map<string, AgentSseFrame[][]>();
   open = 0;
 
-  async *attach(sessionId: string, _from: number, signal: AbortSignal): AsyncIterable<AgentSseFrame> {
+  async *attach(sessionId: string, _resume: string, signal: AbortSignal): AsyncIterable<AgentSseFrame> {
     this.attaches.push(sessionId);
     this.open += 1;
     try {
@@ -33,7 +33,7 @@ class FakeTransport implements SessionTransport {
     }
   }
   async submitMessage(): Promise<SubmitMessageResponse> {
-    return { turn_number: 1, turn_id: "t", message_id: "m-sent", accepted_offset: 0, disposition: "opened" };
+    return { turn_number: 1, turn_id: "t", message_id: "m-sent", disposition: "opened" };
   }
   async approveTool(): Promise<void> {}
   async provideCallbackResult(): Promise<void> {}
@@ -57,7 +57,8 @@ function frame(event: string, data: Record<string, unknown>, env: { agent_id?: s
       turn_number: 1,
       message_id: env.message_id ?? null,
       timestamp: ++offset,
-      resume_offset: offset,
+      seq: null,
+      resume: `${offset}@c${offset}`,
       ...data
     }
   } as unknown as AgentSseFrame;

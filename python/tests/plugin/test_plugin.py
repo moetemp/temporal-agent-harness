@@ -1,5 +1,5 @@
 # ABOUTME: Tests for AgentHarnessPlugin — the one plugin that wires a client + worker for the
-# harness. Covers what it registers (subagent, Jev approval, and tool activities), what it
+# harness. Covers what it registers (subagent, Stream, Jev approval and tool activities), what it
 # refuses (a non-harness "tool"), how its data converter composes with an AI-SDK plugin's, and
 # that it never double-registers an activity a worker already passed by hand.
 #
@@ -23,6 +23,10 @@ from temporalio.workflow import ActivityConfig
 
 from temporal_agent_harness.harness import agent
 from temporal_agent_harness.harness.agent_protocol import RUN_SUBAGENT_TURN_ACTIVITY
+from temporal_agent_harness.harness.contrib_stream_activities import (
+    APPEND_EVENTS_ACTIVITY,
+    CREATE_EVENT_STREAM_ACTIVITY,
+)
 from temporal_agent_harness.plugin import AgentHarnessPlugin
 from temporal_agent_harness.utils.large_payload import (
     DEFAULT_PAYLOAD_STORAGE,
@@ -53,6 +57,10 @@ async def plain_function(x: int) -> int:
     return x
 
 
+# The Local Activities through which the Workflow code of a ``ContribStream`` agent writes.
+STREAM_ACTIVITIES = {CREATE_EVENT_STREAM_ACTIVITY, APPEND_EVENTS_ACTIVITY}
+
+
 @workflow.defn(name="PluginTestWorkflow")
 class _StubWorkflow:
     """A placeholder so ``Worker`` has something to host (it rejects an empty worker)."""
@@ -73,7 +81,8 @@ def _registered_activity_names(worker: Worker) -> set[str]:
     """The activity names a built ``Worker`` will actually serve.
 
     ``active_config=True`` is the post-plugin view; the default returns the arguments the
-    caller passed, which is exactly what the plugin is meant to shrink.
+    caller passed, which is exactly what the plugin is meant to shrink. The Stream backend of a
+    streams test lane adds its own activities, which are not the harness plugin's.
     """
     return {
         name
@@ -83,7 +92,7 @@ def _registered_activity_names(worker: Worker) -> set[str]:
             )
             for fn in worker.config(active_config=True)["activities"]
         )
-        if name is not None
+        if name is not None and not name.startswith("__temporal_streams_")
     }
 
 
@@ -155,7 +164,7 @@ def test_offload_can_be_turned_off():
 def test_tools_registers_activity_bodies_and_skips_bodiless_tools():
     plugin = AgentHarnessPlugin(tools=[durable_tool, inline_tool, callback_tool])
     names = _plugin_activity_names(plugin)
-    assert names == {"durable_tool"}
+    assert names == {"durable_tool", *STREAM_ACTIVITIES}
 
 
 def test_tools_rejects_a_non_harness_tool():
@@ -179,6 +188,7 @@ async def test_worker_gets_every_harness_activity_from_the_plugin():
         assert _registered_activity_names(worker) == {
             "durable_tool",
             RUN_SUBAGENT_TURN_ACTIVITY,
+            *STREAM_ACTIVITIES,
         }
 
 
@@ -204,11 +214,11 @@ async def test_hand_registered_harness_activities_are_not_duplicated():
             activities=hand_written,
             plugins=[AgentHarnessPlugin(tools=[durable_tool])],
         )
-        activities = worker.config(active_config=True)["activities"]
-        assert len(activities) == len(hand_written)
+        assert len(_registered_activity_names(worker)) == len(hand_written) + len(STREAM_ACTIVITIES)
         assert _registered_activity_names(worker) == {
             "durable_tool",
             RUN_SUBAGENT_TURN_ACTIVITY,
+            *STREAM_ACTIVITIES,
         }
 
 
@@ -229,6 +239,7 @@ async def test_unrelated_worker_activities_survive():
         assert _registered_activity_names(worker) == {
             "unrelated",
             RUN_SUBAGENT_TURN_ACTIVITY,
+            *STREAM_ACTIVITIES,
         }
 
 
@@ -257,6 +268,7 @@ async def test_client_registered_plugin_reaches_the_worker():
         assert _registered_activity_names(worker) == {
             "durable_tool",
             RUN_SUBAGENT_TURN_ACTIVITY,
+            *STREAM_ACTIVITIES,
         }
 
 

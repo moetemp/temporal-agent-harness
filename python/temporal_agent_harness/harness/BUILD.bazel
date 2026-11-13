@@ -31,6 +31,7 @@ py_library(
     imports = ["../.."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":contrib_stream",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "//python/temporal_agent_harness/harness/stream_merge:__init__",
         "//python/temporal_agent_harness/harness/stream_merge:cursor",
@@ -60,6 +61,7 @@ py_library(
     imports = ["../.."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":contrib_stream",
         ":steering",
         ":stream_context",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
@@ -110,6 +112,40 @@ py_library(
         ":agent_workflow",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "@pypi//pydantic",
+        "@pypi//temporalio",
+    ],
+)
+
+py_library(
+    name = "contrib_stream",
+    srcs = ["contrib_stream.py"],
+    imports = ["../.."],
+    visibility = ["//python:__subpackages__"],
+    deps = [
+        ":_contrib_stream_parts",
+        ":contrib_stream_activities",
+        ":stream_context",
+        "//python/temporal_agent_harness/harness/agent_protocol:__init__",
+        "@pypi//temporalio",
+    ],
+)
+
+py_library(
+    name = "_contrib_stream_parts",
+    srcs = ["_contrib_stream_parts.py"],
+    imports = ["../.."],
+    visibility = ["//python:__subpackages__"],
+    deps = ["@pypi//temporalio"],
+)
+
+py_library(
+    name = "contrib_stream_activities",
+    srcs = ["contrib_stream_activities.py"],
+    imports = ["../.."],
+    visibility = ["//python:__subpackages__"],
+    deps = [
+        ":_contrib_stream_parts",
+        "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "@pypi//temporalio",
     ],
 )

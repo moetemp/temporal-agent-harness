@@ -39,7 +39,7 @@ function server() {
         turn_number: n,
         message_id: `m${n}`,
         timestamp: log.length,
-        resume_offset: log.length + 1,
+        resume: `${log.length + 1}@c`,
         event_offset: log.length,
         ...extra
       }
@@ -79,11 +79,12 @@ function tab(srv) {
     },
     async submitMessage() {
       srv.turn(srv.status.current_turn + 1);
-      return { turn_number: srv.status.current_turn, turn_id: "t", message_id: `m${srv.status.current_turn}`, accepted_offset: 0, disposition: "opened" };
+      return { turn_number: srv.status.current_turn, turn_id: "t", message_id: `m${srv.status.current_turn}`, disposition: "opened" };
     },
-    async *attach(_id, fromOffset) {
-      attaches.push(fromOffset);
-      for (const frame of srv.log.slice(fromOffset)) yield frame;
+    async *attach(_id, resume) {
+      attaches.push(resume);
+      const seen = srv.log.findIndex((frame) => frame.data.resume === resume);
+      for (const frame of srv.log.slice(seen + 1)) yield frame;
     }
   };
   const controller = new AgentRunController(api);
@@ -109,11 +110,11 @@ describe("a caught-up session", () => {
     // A read that delivered is read once more, after the first 500ms backoff.
     await waitFor("both tabs to catch up", () => a.attaches.length === 2 && b.attaches.length === 2);
     await sleep(100);
-    assert.deepEqual(b.attaches, [0, 4], "fixture: the second tab is caught up and quiet");
+    assert.deepEqual(b.attaches, ["", "4@c"], "fixture: the second tab is caught up and quiet");
 
     await a.controller.sendMessage({ text: "hello" });
     await waitFor("the other tab to show the new turn", () => replies(b.controller) === 2);
-    assert.deepEqual(b.attaches, [0, 4, 4], "it re-attaches once, from where it stopped");
+    assert.deepEqual(b.attaches, ["", "4@c", "4@c"], "it re-attaches once, from where it stopped");
   });
 
   it("notices a turn another client started, polling only while the page is shown", async () => {
@@ -128,7 +129,7 @@ describe("a caught-up session", () => {
     await waitFor("the tab to catch up", () => t.attaches.length === 2);
     const before = t.statusAsks();
     await waitFor("the idle poll to ask", () => t.statusAsks() >= before + 3);
-    assert.deepEqual(t.attaches, [0, 4], "a poll that finds nothing new does not re-attach");
+    assert.deepEqual(t.attaches, ["", "4@c"], "a poll that finds nothing new does not re-attach");
 
     page.hidden = true;
     page.dispatchEvent(new Event("visibilitychange"));
@@ -141,6 +142,6 @@ describe("a caught-up session", () => {
     page.hidden = false;
     page.dispatchEvent(new Event("visibilitychange"));
     await waitFor("the external turn to show", () => replies(t.controller) === 2, 1_000);
-    assert.deepEqual(t.attaches, [0, 4, 4]);
+    assert.deepEqual(t.attaches, ["", "4@c", "4@c"]);
   });
 });

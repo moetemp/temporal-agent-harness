@@ -70,7 +70,7 @@ function stubTabs(t: TestContext, page?: object): void {
   });
 }
 
-test("one tab attaches for all; another takes over from its last offset when it goes", async (t) => {
+test("one tab attaches for all; another takes over from its last point when it goes", async (t) => {
   stubTabs(t);
 
   const f = new Frames();
@@ -102,11 +102,11 @@ test("one tab attaches for all; another takes over from its last offset when it 
   await until(() => b.state.messages[1]?.status === "done" && a.state.connection === "idle");
   assert.deepEqual(b.state.frames, a.state.frames);
   assert.equal(b.state.connection, "idle");
-  assert.deepEqual(tabA.attaches, [0]);
+  assert.deepEqual(tabA.attaches, [""]);
   assert.deepEqual(tabB.attaches, []);
 
   // A follower sends directly, and wakes the leader to read the reply.
-  tabB.submitReply = () => ({ turn_number: 3, turn_id: "turn-3", message_id: "m2", accepted_offset: 12, disposition: "opened" });
+  tabB.submitReply = () => ({ turn_number: 3, turn_id: "turn-3", message_id: "m2", disposition: "opened" });
   await b.core.sendMessage("ask", { text: "from b" });
   assert.equal(tabB.submitted.length, 1);
   await until(() => tabA.attaches.length === 2);
@@ -114,7 +114,7 @@ test("one tab attaches for all; another takes over from its last offset when it 
 
   a.core.stop();
   await until(() => tabB.attaches.length === 1 && b.state.connection === "idle");
-  assert.deepEqual(tabB.attaches, [12]);
+  assert.deepEqual(tabB.attaches, ["12@c12"]);
   assert.equal(b.state.frames.length, 12);
 });
 
@@ -204,7 +204,7 @@ test("the leader polls while any tab is shown, and a follower being shown polls 
 
   show(pages[1]!, true);
   await until(() => a.asks() >= 2);
-  assert.deepEqual(a.transport.attaches, [0], "a follower being shown costs a status poll, not an attach");
+  assert.deepEqual(a.transport.attaches, [""], "a follower being shown costs a status poll, not an attach");
   assert.equal(b.asks() + c.asks(), 0, "followers never poll");
 
   show(pages[1]!, false);

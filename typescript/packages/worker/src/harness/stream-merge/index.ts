@@ -310,6 +310,7 @@ export async function* mergeStream(options: {
         turn_number: 0,
         message_id: null,
         timestamp: 0,
+        seq: null,
         event: {
           type: "subagent_stream_unavailable",
           subagent_id: subagentId,
