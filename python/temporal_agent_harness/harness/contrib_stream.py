@@ -4,13 +4,12 @@
 # An agent tree shares ONE Stream, which the root agent creates. Every agent publishes its turn
 # events there, so one read of the Stream gives every agent's events in one order. A reader keeps
 # one agent's events, or its subtree's, by ``AgentEvent.agent_id``. Workflow code writes the
-# Stream with one append at a time, through a Local Activity of the harness
-# (``contrib_stream_activities``). An Activity writes it through an ``AppendBuffer``, and a client
-# reads it through ``Client.get_stream``.
+# Stream with the SDK's Stream API, one append at a time, and the SDK runs each call in a Local
+# Activity. An Activity writes it through an ``AppendBuffer``, and a client reads it through
+# ``Client.get_stream``.
 #
-# Only this module, ``_contrib_stream_parts`` and the bodies of the Local Activities import the
-# Streams API. The rest of the harness imports them lazily, so an agent on ``WorkflowStream()``
-# runs on an SDK without that API.
+# Only this module and ``_contrib_stream_parts`` import the Streams API. The rest of the harness
+# imports them lazily, so an agent on ``WorkflowStream()`` runs on an SDK without that API.
 
 from __future__ import annotations
 
@@ -21,18 +20,26 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from temporalio import activity, workflow
 from temporalio.api.enums.v1 import StreamErrorReason
-from temporalio.client import Client, StreamStore, WorkflowExecutionStatus
+from temporalio.client import (
+    Client,
+    StreamConfig,
+    StreamStore,
+    StreamStoreCallOptions,
+    WorkflowExecutionStatus,
+)
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import FailureError, StreamError
+from temporalio.exceptions import ApplicationError, FailureError, StreamConfigError, StreamError
 from temporalio.nexus.system.stream_service import (
+    AppendRecordsResponse,
     Producer,
     ProducerKindLocalActivity,
     ReadRecordsResponse,
+    StreamIdConflictPolicy,
     StreamRecord,
     StreamRef,
 )
@@ -51,12 +58,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     AgentEventType,
     AgentStream,
     AttemptSuperseded,
-)
-from temporal_agent_harness.harness.contrib_stream_activities import (
-    NO_STORE,
-    append_events,
-    create_event_stream,
-    has_store,
 )
 from temporal_agent_harness.harness.stream_context import StreamBackend, TurnStreamContext
 
@@ -91,12 +92,14 @@ _TRANSIENT = frozenset(
 )
 # Every client of this process shares one memory Store, so they all see the same Streams.
 _memory: StreamStore | None = None
-# The options of the Local Activities that write for Workflow code. A Store outage holds the run
-# and loses no event, so a call retries with no limit until the Store is back. An attempt that
-# wrote and then timed out writes again, as a higher epoch of its Local Activity, so a reader
-# withdraws the first copy. Every other Stream error is non-retryable and fails at once.
-_LOCAL_ACTIVITY_TIMEOUT = timedelta(seconds=60)
-_HOLD_ON_OUTAGE = RetryPolicy(maximum_attempts=0)
+# The options of the Local Activity in which the SDK runs each Stream call of Workflow code. A
+# Store outage holds the run and loses no event, so a call retries with no limit until the Store is
+# back. A retry in the same Workflow Task writes once, and a retried Workflow Task writes again as
+# a higher epoch, so a reader withdraws the first copy. Every other Stream error fails at once.
+_HOLD_ON_OUTAGE = StreamStoreCallOptions(
+    start_to_close_timeout=timedelta(seconds=60),
+    retry_policy=RetryPolicy(maximum_attempts=0),
+)
 
 
 _STREAM_NAME = "agent_events"
@@ -106,8 +109,8 @@ class TurnCursorError(ValueError):
     """A turn cursor that is not a position on the agent's Stream."""
 
 
-def stream_stores_from_env() -> list[StreamStore]:
-    """The Store that ``STREAMS_STORE`` names, as the list for ``stream_stores=``. Empty when unset.
+def stream_config_from_env() -> StreamConfig | None:
+    """The Stream config with the Store that ``STREAMS_STORE`` names. ``None`` when unset.
 
     ``redis`` is the Redis at ``STREAMS_REDIS_URL``. The web app, the Nexus adapter and the
     workers are separate processes, and they must all reach one Redis. ``STREAMS_KEY_PREFIX``
@@ -115,36 +118,37 @@ def stream_stores_from_env() -> list[StreamStore]:
     on one Redis apart. ``memory`` keeps the Streams in this process, for tests and a single
     process only. Unset means the process serves agents on ``WorkflowStream()`` only.
 
-    Register the result as ``Client.connect(..., stream_stores=stores)``. Workers built from
-    that client take it. The list has one Store, so a place found without asking the agent
-    (``root_place``) is on it. Every call gives the one memory Store, so all clients of the
-    process see the same Streams.
+    Pass the result as ``Client.connect(..., stream_config=stream_config_from_env())``.
+    Workers built from that client take it. The config has one Store, so a place found without
+    asking the agent (``root_place``) is on it. Every call gives the one memory Store, so all
+    clients of the process see the same Streams.
 
-    The Store needs no retry setting for Workflow code. The Local Activities of the harness that
-    write for it retry with no limit, so a Store outage holds the run until the Store is back,
-    and loses no event. The Redis Store sets no ``last_write_ttl``, so it keeps an idle session's
-    Stream. Build a Store of your own to set one.
+    The config's ``workflow_call_options`` retry each Stream call of Workflow code with no
+    limit, with a 60 second timeout for each attempt. So a Store outage holds the run until the
+    Store is back, and loses no event. The Redis Store sets no ``last_write_ttl``, so it keeps
+    an idle session's Stream. Build a Store of your own to set one.
     """
     global _memory
-    store = os.environ.get(STORE_ENV)
-    if not store:
-        return []
-    if store == "memory":
+    kind = os.environ.get(STORE_ENV)
+    if not kind:
+        return None
+    store: StreamStore
+    if kind == "memory":
         from temporalio.testing import MemoryStreamStore
 
         if _memory is None:
             _memory = MemoryStreamStore()
-        return [_memory]
-    if store != "redis":
-        raise ValueError(f"{STORE_ENV}={store!r} is not a Stream Store")
-    from temporalio.contrib.redis.streams import RedisStreamStore
+        store = _memory
+    elif kind == "redis":
+        from temporalio.contrib.redis.streams import RedisStreamStore
 
-    return [
-        RedisStreamStore(
+        store = RedisStreamStore(
             os.environ.get(REDIS_URL_ENV, DEFAULT_REDIS_URL),
             key_prefix=os.environ.get(KEY_PREFIX_ENV) or None,
         )
-    ]
+    else:
+        raise ValueError(f"{STORE_ENV}={kind!r} is not a Stream Store")
+    return StreamConfig(stores=[store], workflow_call_options=_HOLD_ON_OUTAGE)
 
 
 class ContribStream(StreamBackend):
@@ -153,8 +157,7 @@ class ContribStream(StreamBackend):
     Pass ``stream=ContribStream()`` to ``AgentWorkflowRunner``. The root agent creates the
     tree's Stream on the Worker's Store, and its subagents publish there too, whatever their
     own ``stream=`` says. The Worker's client needs a Redis or memory Stream Store, such as
-    the one ``stream_stores_from_env`` gives, and the Worker needs the Local Activities that
-    ``AgentHarnessPlugin`` registers. The harness never closes the Stream, so the
+    the one ``stream_config_from_env`` gives. The harness never closes the Stream, so the
     Store keeps every Record until its ``last_write_ttl`` after the last write, or for good
     with none. Its Retention, which counts from a close, doesn't apply.
     """
@@ -164,10 +167,14 @@ class ContribStream(StreamBackend):
 
 
 def _store_name(client: Client) -> str:
-    """The name of the client's Store. A client takes at most one."""
-    if not has_store(client):
-        raise RuntimeError(NO_STORE)
-    return client.config(active_config=True)["stream_stores"][0].name
+    """The name of the first Store of the client's Stream config."""
+    config = client.config(active_config=True).get("stream_config")
+    if config is None:
+        # A Stream call of the client raises the same error. This finds it before the first call.
+        raise StreamConfigError(
+            "This client has no Stream Store. Give one in stream_config=StreamConfig(stores=[...])."
+        )
+    return config.stores[0].name
 
 
 # ---------------------------------------------------------------------------
@@ -175,23 +182,31 @@ def _store_name(client: Client) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _WorkflowStream(Protocol):
+    """What the sink uses of the Stream that ``workflow.create_stream`` or ``get_stream`` gives."""
+
+    ref: StreamRef[AgentEvent]
+
+    async def append(self, *records: AgentEvent) -> AppendRecordsResponse: ...
+
+
 class ContribSink:
     """What the runner publishes through on a Stream of the SDK's Streams API.
 
     ``publish`` puts the event in a queue. One writer task takes everything queued and writes it
-    as one append, through the harness's Local Activity ``append_events``, then loops. So one
-    append is in flight at a time, the Records keep the order of ``publish``, and a burst of
-    events costs one Local Activity. Each append gives the offset of its last Record, which
-    tells the runner where its own Records reached.
+    as one append, which the SDK runs as one Local Activity, then loops. So one append is in
+    flight at a time, the Records keep the order of ``publish``, and a burst of events costs one
+    Local Activity. Each append gives the offset of its last Record, which tells the runner
+    where its own Records reached.
 
     If the Store refuses an append, the live view loses those events, the sink logs how many,
-    and the agent continues. A Store outage is not a refusal. The Local Activity retries until
-    the Store is back, the events after it wait, and so does the end of the run.
+    and the agent continues. A Store outage is not a refusal. With the config of
+    ``stream_config_from_env``, the append retries until the Store is back, the events after it
+    wait, and so does the end of the run.
     """
 
-    def __init__(self, ref: dict[str, Any] | None, place: AgentStream | None) -> None:
-        # The Stream's ref as ``ref_to_data`` writes it, which the Local Activities take.
-        self._ref = ref
+    def __init__(self, stream: _WorkflowStream | None, place: AgentStream | None) -> None:
+        self._stream = stream
         # A root's sink has no place until its create returns, so nothing gives the place out
         # before the Stream exists.
         self.place = place
@@ -245,45 +260,43 @@ class ContribSink:
         return AgentStream(ref=self.place.ref, agent_id=agent_id)
 
     def activity_ref(self) -> dict[str, Any]:
-        assert self._ref is not None, "the runner waits for opened() first"
-        return dict(self._ref)
+        assert self._stream is not None, "the runner waits for opened() first"
+        return ref_to_data(self._stream.ref)
 
     async def _open(self, stream_id: str) -> None:
-        ref = await workflow.execute_local_activity(
-            create_event_stream,
-            stream_id,
-            start_to_close_timeout=_LOCAL_ACTIVITY_TIMEOUT,
-            retry_policy=_HOLD_ON_OUTAGE,
-        )
-        self._ref = ref
-        self.place = AgentStream(ref=dict(ref))
+        try:
+            stream = await workflow.create_stream(
+                id=stream_id,
+                body_type=AgentEvent,
+                id_conflict_policy=StreamIdConflictPolicy.StreamIdConflictPolicyUseExisting,
+            )
+        except StreamConfigError as err:
+            # The SDK fails the Workflow Task, which retries until the Worker has a Store. The
+            # run fails at once instead, with the SDK's text, which names the missing setup.
+            raise ApplicationError(str(err), type="StreamConfigError", non_retryable=True) from err
+        self._stream = stream
+        self.place = AgentStream(ref=ref_to_data(stream.ref))
         self._wake()
 
     def _wake(self) -> None:
-        if self._ref is not None and self._writer is None and self._queue:
-            self._writer = asyncio.create_task(self._write(self._ref))
+        if self._stream is not None and self._writer is None and self._queue:
+            self._writer = asyncio.create_task(self._write(self._stream))
 
-    async def _write(self, ref: dict[str, Any]) -> None:
+    async def _write(self, stream: _WorkflowStream) -> None:
         try:
             while self._queue:
                 batch = self._queue[:MAX_APPEND_RECORDS]
                 del self._queue[:MAX_APPEND_RECORDS]
                 try:
-                    last = await workflow.execute_local_activity(
-                        append_events,
-                        args=[ref, batch],
-                        start_to_close_timeout=_LOCAL_ACTIVITY_TIMEOUT,
-                        retry_policy=_HOLD_ON_OUTAGE,
-                    )
-                except FailureError as err:
-                    # A refused append costs its events and not the run.
+                    written = await stream.append(*batch)
+                except (FailureError, StreamConfigError) as err:
+                    # A refused append costs its events and not the run. So does a Worker with
+                    # no Store for a Stream that another Worker created.
                     workflow.logger.warning(
-                        "%d agent events were not written to their Stream: %s",
-                        len(batch),
-                        err.cause or err,
+                        "%d agent events were not written to their Stream: %s", len(batch), err
                     )
                     continue
-                offset = bytes.fromhex(last)
+                offset = written.last_offset
                 if offset and (self._newest is None or offset > self._newest):
                     self._newest = offset
         finally:
@@ -293,14 +306,13 @@ class ContribSink:
 def open_root() -> ContribSink:
     """Start the create of the tree's Stream in a root agent's ``@agent.init``.
 
-    The harness's Local Activity ``create_event_stream`` creates the Stream, or finds the one
-    that exists. The Stream id holds the workflow id and the first run id, so a retry run, or a
-    run after a plain ``workflow.continue_as_new``, gets the Stream of the first run. A write to
-    a Stream that nobody created fails at once, so the runner waits for ``opened()`` before it
-    gives the place out, in a reply, a subagent or an Activity. A status can't wait, so it names
-    the Stream before the create returns, and its reader waits. With no Store on the Worker's
-    client, the create fails with a non-retryable error that names the missing setup, and so
-    does the run.
+    ``workflow.create_stream`` creates the Stream, or finds the one that exists. The Stream id
+    holds the workflow id and the first run id, so a retry run, or a run after a plain
+    ``workflow.continue_as_new``, gets the Stream of the first run. A write to a Stream that
+    nobody created fails at once, so the runner waits for ``opened()`` before it gives the place
+    out, in a reply, a subagent or an Activity. A status can't wait, so it names the Stream
+    before the create returns, and its reader waits. With no Store on the Worker's client, the
+    create fails with a non-retryable error that names the missing setup, and so does the run.
 
     Nothing closes the Stream. The end of the run chain closes nothing, and the harness never
     closes it, so an idle session keeps its Stream. The Store deletes an open Stream after its
@@ -315,7 +327,7 @@ def open_root() -> ContribSink:
 
 def open_place(place: AgentStream) -> ContribSink:
     """Write the Stream at ``place``, for a subagent or for a run after continue-as-new."""
-    return ContribSink(ref_to_data(ref_from_data(place.ref)), place)
+    return ContribSink(workflow.get_stream(ref_from_data(place.ref), body_type=AgentEvent), place)
 
 
 def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStream:
@@ -323,7 +335,8 @@ def root_place(client: Client, workflow_id: str, first_run_id: str) -> AgentStre
 
     The root agent picks its Stream id from its workflow id and first run id, so the ref needs
     no call. Only the agent's status gives its agent id, so this place has none. It is on the
-    client's Store, which raises ``RuntimeError`` when the client has none.
+    first Store of the client's Stream config. A client with no config raises
+    ``StreamConfigError``, which is a ``RuntimeError``.
     """
     ref: StreamRef[AgentEvent] = StreamRef(
         id=_stream_id(workflow_id, first_run_id), store=_store_name(client)
@@ -570,7 +583,7 @@ async def read_turn_events(
 
 
 def _task(producer: Producer | None) -> tuple[str, int, int] | None:
-    """The run and Workflow Task of a Local Activity Producer, such as the harness's append."""
+    """The run and Workflow Task of a Local Activity Producer, such as a Workflow append's."""
     if producer is None or not isinstance(producer.kind, ProducerKindLocalActivity):
         return None
     local = producer.kind.value

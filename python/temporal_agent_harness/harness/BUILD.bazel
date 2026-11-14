@@ -123,7 +123,6 @@ py_library(
     visibility = ["//python:__subpackages__"],
     deps = [
         ":_contrib_stream_parts",
-        ":contrib_stream_activities",
         ":stream_context",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "@pypi//temporalio",
@@ -136,16 +135,4 @@ py_library(
     imports = ["../.."],
     visibility = ["//python:__subpackages__"],
     deps = ["@pypi//temporalio"],
-)
-
-py_library(
-    name = "contrib_stream_activities",
-    srcs = ["contrib_stream_activities.py"],
-    imports = ["../.."],
-    visibility = ["//python:__subpackages__"],
-    deps = [
-        ":_contrib_stream_parts",
-        "//python/temporal_agent_harness/harness/agent_protocol:__init__",
-        "@pypi//temporalio",
-    ],
 )

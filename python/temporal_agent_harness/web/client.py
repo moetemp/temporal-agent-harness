@@ -49,18 +49,18 @@ def ensure_temporal_address(explicit_address: str | None) -> None:
 
 
 def stream_store_options() -> dict[str, Any]:
-    """``stream_stores=`` with the Stream Store that ``STREAMS_STORE`` names, or no option
+    """``stream_config=`` with the Stream Store that ``STREAMS_STORE`` names, or no option
     when it is unset.
 
     A process that reads or runs ``ContribStream`` agents needs it. Unset serves
     agents on ``WorkflowStream()`` only. An SDK without the Streams API has no
-    ``stream_stores=``, so unset passes no option at all.
+    ``stream_config=``, so unset passes no option at all.
     """
     if not os.environ.get("STREAMS_STORE"):
         return {}
-    from temporal_agent_harness.harness.contrib_stream import stream_stores_from_env
+    from temporal_agent_harness.harness.contrib_stream import stream_config_from_env
 
-    return {"stream_stores": stream_stores_from_env()}
+    return {"stream_config": stream_config_from_env()}
 
 
 async def connect_client() -> "Client":

@@ -15,9 +15,7 @@ py_library(
     imports = [".."],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//python/temporal_agent_harness:plugin",
         "//python/temporal_agent_harness/harness:contrib_stream",
-        "//python/temporal_agent_harness/harness:contrib_stream_activities",
         "@pypi//temporalio",
     ],
 )

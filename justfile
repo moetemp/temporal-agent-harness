@@ -54,10 +54,10 @@ buildifier:
     bazel run //:buildifier
 
 # The temporalio build with the Streams API and its memory and Redis Stream Stores, which
-# ContribStream needs. It's moetemp/sdk-python at this commit, built with the bridge's
-# `streams-redis` feature. The lock keeps the released temporalio, which Workflow Streams and
-# Bazel use.
-streams_sdk := "git+https://github.com/moetemp/sdk-python@b09717642e7e0effa9e6a25251fb4e6bb1c8fba4"
+# ContribStream needs. It's temporalio/sdk-python at this commit of its `moe/streams-api` branch,
+# built with the bridge's `streams-redis` feature. The lock keeps the released temporalio, which
+# Workflow Streams and Bazel use.
+streams_sdk := "git+https://github.com/temporalio/sdk-python@fc6b8d3b3faffdcd044a6ce59056653adecf0f95"
 
 # Install that build into python/.venv (`uv sync` makes it), for ContribStream agents and the
 # STREAMS_STORE test lanes. It compiles the Rust bridge, so it needs cargo and protoc.

@@ -36,14 +36,14 @@ if STORE:
 
 
 def stream_store_options() -> dict[str, Any]:
-    """The lane's ``stream_stores=`` for a client or ``Replayer`` that the conftest does not
+    """The lane's ``stream_config=`` for a client or ``Replayer`` that the conftest does not
     build. Without a lane it is no option, since an SDK without the Streams API has no
-    ``stream_stores=``."""
+    ``stream_config=``."""
     if STORE is None:
         return {}
-    from temporal_agent_harness.harness.contrib_stream import stream_stores_from_env
+    from temporal_agent_harness.harness.contrib_stream import stream_config_from_env
 
-    return {"stream_stores": stream_stores_from_env()}
+    return {"stream_config": stream_config_from_env()}
 
 
 def agent_stream() -> WorkflowStream | ContribStream:

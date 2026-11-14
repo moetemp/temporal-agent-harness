@@ -48,34 +48,12 @@ def _streams_lane() -> None:
     from its own config with the Store added. ``TEMPORAL_ADDRESS`` then gives a running server
     that ``start_time_skipping`` connects to, since the Redis lane runs on a dev server.
     ``tests/_streams.py`` has the rest of the lane.
-
-    The client also gets a plugin with the Local Activities that write the Stream for Workflow
-    code. ``AgentHarnessPlugin`` registers them, and many test Workers run their agents without
-    it.
     """
     if not os.environ.get("STREAMS_STORE"):
         return
     from temporalio.client import Client
-    from temporalio.plugin import SimplePlugin
 
-    from temporal_agent_harness.harness.contrib_stream import stream_stores_from_env
-    from temporal_agent_harness.harness.contrib_stream_activities import (
-        append_events,
-        create_event_stream,
-    )
-    from temporal_agent_harness.plugin import _merge_activities
-
-    class _StreamActivities(SimplePlugin):
-        def __init__(self) -> None:
-            super().__init__(
-                "StreamLaneActivities",
-                activities=lambda found: _merge_activities(
-                    found, [create_event_stream, append_events]
-                ),
-            )
-
-    def with_lane_plugin(plugins: Any) -> list[Any]:
-        return [*(plugins or []), _StreamActivities()]
+    from temporal_agent_harness.harness.contrib_stream import stream_config_from_env
 
     # Read once, since a test of the web app's CLI sets TEMPORAL_ADDRESS for its own process.
     address = os.environ.get("TEMPORAL_ADDRESS")
@@ -87,25 +65,14 @@ def _streams_lane() -> None:
             async def start_with_streams(
                 cls: type[WorkflowEnvironment], *args: Any, **kwargs: Any
             ) -> WorkflowEnvironment:
-                stores = stream_stores_from_env()
+                stream_config = stream_config_from_env()
                 if name == "start_time_skipping" and address:
                     kwargs.pop("test_server_existing_path", None)
-                    plugins = with_lane_plugin(kwargs.pop("plugins", None))
-                    client = await Client.connect(
-                        address, **kwargs, plugins=plugins, stream_stores=stores
-                    )
+                    client = await Client.connect(address, **kwargs, stream_config=stream_config)
                     return WorkflowEnvironment.from_client(client)
                 env = await start(cls, *args, **kwargs)
-                config = env.client.config()
                 return _WithStore(
-                    env,
-                    Client(
-                        **{
-                            **config,
-                            "plugins": with_lane_plugin(config["plugins"]),
-                            "stream_stores": stores,
-                        }
-                    ),
+                    env, Client(**{**env.client.config(), "stream_config": stream_config})
                 )
 
             return classmethod(start_with_streams)
