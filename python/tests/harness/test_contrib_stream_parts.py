@@ -1,5 +1,5 @@
 """The parts of ``contrib_stream`` that the SDK's Streams API leaves to the harness, and the
-Local Activities through which its Workflow code writes.
+Stream config that the harness builds from the environment.
 
 They need no server. A released SDK has no Streams API, so the tests skip there.
 """
@@ -11,16 +11,6 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from temporalio.client import Client
-from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.exceptions import ApplicationError
-
-from temporal_agent_harness.harness.agent_protocol import AgentEvent, ReplyDelta
-from temporal_agent_harness.harness.contrib_stream_activities import (
-    NO_STORE,
-    append_events,
-    create_event_stream,
-)
 
 # A released SDK has no Streams API. The tests still collect there and skip, since a module
 # with no test fails its Bazel target.
@@ -39,7 +29,6 @@ try:
         Timestamp,
         WorkflowTaskEpoch,
     )
-    from temporalio.testing import ActivityEnvironment, MemoryStreamStore
 
     from temporal_agent_harness.harness._contrib_stream_parts import (
         MAX_APPEND_RECORDS,
@@ -222,53 +211,20 @@ def test_a_cursor_is_hex_and_keeps_its_grammar():
             contrib_stream.parse_cursor(bad)
 
 
-def _client(*stores: Any) -> Client:
-    # The Store answers every Stream call, so the client needs no server.
-    return Client(
-        service_client=object(),  # type: ignore[arg-type]
-        data_converter=pydantic_data_converter,
-        stream_stores=stores,
-    )
+def test_the_config_from_the_environment_holds_a_run_through_a_store_outage(monkeypatch):
+    from temporal_agent_harness.harness import contrib_stream
 
+    monkeypatch.setenv("STREAMS_STORE", "memory")
+    config = contrib_stream.stream_config_from_env()
 
-def _event(text: str) -> AgentEvent:
-    return AgentEvent(
-        agent_id="a", turn_id="t", turn_number=1, timestamp=0.0, event=ReplyDelta(text=text)
-    )
+    assert config is not None and [store.name for store in config.stores] == ["memory"]
+    # Each Stream call of Workflow code retries until the Store is back.
+    options = config.workflow_call_options
+    assert options.retry_policy.maximum_attempts == 0
+    assert options.start_to_close_timeout == timedelta(seconds=60)
+    # Every client of the process gets the one memory Store.
+    again = contrib_stream.stream_config_from_env()
+    assert again is not None and again.stores[0] is config.stores[0]
 
-
-async def test_a_later_create_of_the_same_stream_finds_it():
-    """A later run of the chain creates the root's Stream again, with a new request id."""
-    activities = ActivityEnvironment(client=_client(MemoryStreamStore()))
-
-    first = await activities.run(create_event_stream, "wf:run1:agent_events")
-    await activities.run(append_events, first, [_event("kept")])
-    again = await activities.run(create_event_stream, "wf:run1:agent_events")
-
-    assert again == first == {"id": "wf:run1:agent_events", "store": "memory"}
-
-
-async def test_an_append_gives_the_offset_of_its_last_record_in_hex():
-    client = _client(MemoryStreamStore())
-    activities = ActivityEnvironment(client=client)
-    ref = await activities.run(create_event_stream, "wf:run1:agent_events")
-
-    last = await activities.run(append_events, ref, [_event("a"), _event("b")])
-
-    stream = client.get_stream(ref_from_data(ref), body_type=AgentEvent)
-    records = [record async for record in stream.iter_read_items()]
-    assert [record.body.event.text for record in records] == ["a", "b"]
-    assert last == records[-1].offset.hex()
-
-
-async def test_a_worker_with_no_store_fails_the_call_at_once_and_says_why():
-    activities = ActivityEnvironment(client=_client())
-
-    for call, args in (
-        (create_event_stream, ["wf:run1:agent_events"]),
-        (append_events, [{"id": "wf:run1:agent_events", "store": None}, [_event("x")]]),
-    ):
-        with pytest.raises(ApplicationError) as raised:
-            await activities.run(call, *args)
-        assert raised.value.message == NO_STORE
-        assert raised.value.type == "NoStreamStore" and raised.value.non_retryable
+    monkeypatch.delenv("STREAMS_STORE")
+    assert contrib_stream.stream_config_from_env() is None

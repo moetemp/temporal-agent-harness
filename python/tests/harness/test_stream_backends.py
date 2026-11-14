@@ -702,9 +702,13 @@ async def test_a_nexus_poll_gives_a_cursor_past_other_agents_records(client_and_
 async def test_a_cursor_that_the_retention_passed_is_a_cursor_error(client_and_queue):
     from temporal_agent_harness.harness import contrib_stream
 
+    from temporalio.client import StreamConfig
+
     lane, _ = client_and_queue
     # The Retention is a setting of the Store, so this client has one of its own.
-    client = Client(**{**lane.config(), "stream_stores": [_short_retention_store()]})
+    client = Client(
+        **{**lane.config(), "stream_config": StreamConfig(stores=[_short_retention_store()])}
+    )
     stream = await client.create_stream(id=f"tree-{uuid.uuid4()}", body_type=AgentEvent)
     first = await stream.append(_tree_event("root"))
     await stream.append(_tree_event("root"))
@@ -1037,9 +1041,9 @@ def _contrib_stream_choice() -> Any:
     return ContribStream()
 
 
-# The agents of histories/contrib_stream_subagent.json, a session on a memory Stream. Each create
-# and append is a Local Activity of the harness there, so a change to what they publish breaks
-# the replay.
+# The agents of histories/contrib_stream_subagent.json, a session on a memory Stream. The SDK ran
+# each create and append in a Local Activity there, so a change to what they publish breaks the
+# replay.
 @agent.defn
 class ContribReplayChild:
     @agent.init
@@ -1081,11 +1085,10 @@ class ContribReplayParent:
 @needs_a_stream
 async def test_a_recorded_contrib_stream_session_replays():
     """A parent and subagent session on a memory Stream replays on this code. The replay takes
-    each Stream call's result from its Local Activity marker, so it needs no Store."""
-    from temporal_agent_harness.harness.contrib_stream_activities import (
-        APPEND_EVENTS_ACTIVITY,
-        CREATE_EVENT_STREAM_ACTIVITY,
-    )
+    each Stream call's result from its Local Activity marker. It needs a Stream config, since a
+    Stream call with none fails the Workflow Task, but it calls no method of the Store."""
+    from temporalio.client import StreamConfig
+    from temporalio.testing import MemoryStreamStore
 
     recorded = json.loads(
         (Path(__file__).parent / "histories" / "contrib_stream_subagent.json").read_text()
@@ -1094,16 +1097,17 @@ async def test_a_recorded_contrib_stream_session_replays():
         name: WorkflowHistory.from_json(f"wf-{name}", history)
         for name, history in recorded.items()
     }
-    # The session wrote through the harness's own Local Activities.
+    # The session wrote through the Local Activity that the SDK registers for the memory Store.
     assert {
         activity_type
         for history in histories.values()
         for activity_type in _local_activity_types(history)
-    } == {CREATE_EVENT_STREAM_ACTIVITY, APPEND_EVENTS_ACTIVITY}
+    } == {"__temporal_stream_store_call:memory"}
     replayer = Replayer(
         workflows=[ContribReplayParent, ContribReplayChild],
         data_converter=pydantic_data_converter,
         workflow_runner=UnsandboxedWorkflowRunner(),
+        stream_config=StreamConfig(stores=[MemoryStreamStore()]),
     )
     for history in histories.values():
         await replayer.replay_workflow(history)
@@ -1122,11 +1126,10 @@ def _local_activity_types(history: WorkflowHistory) -> list[str]:
 
 @needs_a_stream
 async def test_a_root_on_a_worker_with_no_store_fails_at_once_and_says_why(client_and_queue):
-    """The create's Local Activity fails as non-retryable with what the Worker's client lacks."""
-    from temporal_agent_harness.harness.contrib_stream_activities import NO_STORE
-
+    """The create fails the run as non-retryable, with the SDK's text of what the Worker's
+    client lacks."""
     client, _ = client_and_queue
-    bare = Client(**{**client.config(), "stream_stores": []})
+    bare = Client(**{**client.config(), "stream_config": None})
     task_queue = f"no-store-{uuid.uuid4()}"
     async with Worker(
         bare,
@@ -1150,12 +1153,17 @@ async def test_a_root_on_a_worker_with_no_store_fails_at_once_and_says_why(clien
     while failure is not None:
         causes.append(failure)
         failure = failure.__cause__ or getattr(failure, "cause", None)
-    [missing] = [
+    # The first is the harness's non-retryable error. Its cause is the SDK's own error.
+    missing = next(
         cause
         for cause in causes
-        if isinstance(cause, ApplicationError) and cause.type == "NoStreamStore"
-    ]
-    assert missing.non_retryable and missing.message == NO_STORE
+        if isinstance(cause, ApplicationError) and cause.type == "StreamConfigError"
+    )
+    assert missing.non_retryable
+    assert missing.message == (
+        "The client of this Worker has no Stream Store. "
+        "Give one in stream_config=StreamConfig(stores=[...])."
+    )
 
 
 class _FailingDescribe:
@@ -1182,9 +1190,10 @@ class _UnansweredQuery:
 
     def config(self, **options: Any) -> Any:
         # The place found without a query names the client's Store and makes no call.
+        from temporalio.client import StreamConfig
         from temporalio.testing import MemoryStreamStore
 
-        return {"stream_stores": [MemoryStreamStore()]}
+        return {"stream_config": StreamConfig(stores=[MemoryStreamStore()])}
 
     async def query(self, *args: Any, **kwargs: Any) -> Any:
         raise RPCError("no worker answered", RPCStatusCode.DEADLINE_EXCEEDED, b"")
