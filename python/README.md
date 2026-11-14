@@ -469,9 +469,7 @@ The worker declares only its workflows. Adding the plugin brings:
   client, worker, and server in the deployment so they all agree on it;
 - the durable **activity body** of each `@agent.activity_tool_defn` tool in `tools=` (pass your
   whole toolset — tools with no worker-side body are skipped);
-- the **subagent** and **Code Mode** activities, and the two **Stream** Local Activities
-  through which the Workflow code of a `stream=ContribStream()` agent creates and writes its
-  Stream.
+- the **subagent** and **Code Mode** activities.
 
 Order it last, after any AI SDK's plugin, so that SDK's payload converter wins. Registering it
 on the client is enough — Temporal applies a client's plugins to workers built from it.
@@ -491,46 +489,46 @@ self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_poli
 ```
 
 A `ContribStream` deployment has the same Stream Store on every client. Workers take their
-client's Store.
+client's Stream config, and need nothing else for Streams.
 
 ```python
-from temporal_agent_harness.harness.contrib_stream import stream_stores_from_env
+from temporal_agent_harness.harness.contrib_stream import stream_config_from_env
 
 client = await Client.connect(
-    ..., plugins=[AgentHarnessPlugin()], stream_stores=stream_stores_from_env()
+    ..., plugins=[AgentHarnessPlugin()], stream_config=stream_config_from_env()
 )
 ```
 
-`stream_stores_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL`
-and `STREAMS_KEY_PREFIX`. It gives a list with a `RedisStreamStore`
+`stream_config_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL`
+and `STREAMS_KEY_PREFIX`. It gives a `StreamConfig` with a `RedisStreamStore`
 (`temporalio.contrib.redis.streams`) or a `MemoryStreamStore` (`temporalio.testing`). With
-`STREAMS_STORE` unset the list is empty. The web app and the Nexus adapter add the same Store
+`STREAMS_STORE` unset it gives `None`. The web app and the Nexus adapter add the same Store
 when `STREAMS_STORE` is set.
 
 The end of an agent's run closes nothing, and the harness does not close the Stream either. A
 reader of an agent that ended stops once it finds that the agent no longer runs. The Store keeps
 an open Stream until its `last_write_ttl` after the last write. The Store that
-`stream_stores_from_env()` gives sets none, so build a Store of your own to set one.
+`stream_config_from_env()` gives sets none, so build a Store of your own to set one.
 
 A root agent gives out its Stream's place, in a reply, a subagent or an Activity, only after the
 create of the Stream returned. A status can't wait, so it names the Stream from the start. A
 reader of a Stream that doesn't exist yet waits for it while the agent runs.
 
-Workflow code can't do I/O, so it writes the Stream through two Local Activities of the harness.
-`agent_harness.create_event_stream` creates the root's Stream, or finds it on a later run of the
-chain. `agent_harness.append_events` writes a batch of events. Both use the client's Streams API
-through `activity.client()`, and `AgentHarnessPlugin` registers them. The Workflow sends one
-append at a time. Each append takes every event that waits, so a burst of events is one append,
-and the events keep their order. An Activity buffers its events and writes them at most
-`batch_interval` apart, and also when it fails.
+Workflow code writes the Stream with the SDK's Stream API (`workflow.create_stream`,
+`workflow.get_stream` and `append`). The SDK runs each call in a Local Activity that the Store
+registers on the Worker. The root's create finds its Stream again on a later run of the chain.
+The Workflow sends one append at a time. Each append takes every event that waits, so a burst of
+events is one append, and the events keep their order. An Activity buffers its events and writes
+them at most `batch_interval` apart, and also when it fails.
 
 `ContribStream` needs an SDK build with the Streams API. `just install-streams-sdk` installs the
 one the harness is tested with. The harness imports the Streams API only for a `ContribStream`
 agent, so an agent on `stream=WorkflowStream()` runs on a released SDK. On a Worker whose client
-has no Store, the Local Activity that creates the root's Stream fails as non-retryable with what
-to pass, and so does the run. A client or an Activity with no Store raises a `RuntimeError` that
-says what to pass. The examples pass `stream=WorkflowStream()`. An agent written with the
-TypeScript SDK publishes on Workflow Streams (see `typescript/docs/python-parity.md`).
+has no Store, the root's create fails the run as non-retryable, with the SDK's text of what to
+pass. A client or an Activity with no Store raises the SDK's `StreamConfigError`, a
+`RuntimeError` that says what to pass. The examples pass `stream=WorkflowStream()`. An agent
+written with the TypeScript SDK publishes on Workflow Streams (see
+`typescript/docs/python-parity.md`).
 
 The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
 web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
@@ -550,7 +548,7 @@ passes its Stream on with `workflow.continue_as_new(self._runner.continue_as_new
 | History | One Local Activity marker per append, with no event payloads | The Signals and Updates, with their payloads |
 | Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
 | A retried attempt | A reader gets `attempt_superseded` with the offsets of the earlier attempt's records, of an Activity or of a Workflow Task | Its events show twice |
-| A Store outage | The Local Activity of each Workflow append retries with no limit, and the end of a run waits for its appends. So events come late, and the run can't finish until the Store is back | No Store to fail |
+| A Store outage | On the config of `stream_config_from_env()`, the Local Activity of each Workflow append retries with no limit, and the end of a run waits for its appends. So events come late, and the run can't finish until the Store is back | No Store to fail |
 
 A Nexus caller of `pollMessages` can't apply `attempt_superseded` on `ContribStream`. Each item
 there has `offset` 0, so the caller can't tell which items the event withdraws. The Go driver in

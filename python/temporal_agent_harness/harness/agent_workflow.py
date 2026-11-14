@@ -2065,10 +2065,8 @@ class AgentWorkflowRunner:
         own. A ``WorkflowStream`` of ``temporalio.contrib.workflow_streams`` keeps them in the
         workflow's own history and runs on a released SDK. A ``ContribStream`` puts the whole
         agent tree on one Stream of the SDK's Streams API. It needs a temporalio build that has
-        that API (``just install-streams-sdk``), a Stream Store on the Worker's client, and the
-        Local Activities of the harness that ``AgentHarnessPlugin`` registers, through which
-        Workflow code writes the Stream. Any other ``StreamBackend`` with ``open_sink()`` works
-        too. A subagent publishes where its
+        that API (``just install-streams-sdk``) and a Stream Store on the Worker's client. Any
+        other ``StreamBackend`` with ``open_sink()`` works too. A subagent publishes where its
         parent does, whatever it passes here. The README compares the two.
 
         ``auto_approval_criteria_default`` is the agent's built-in auto-mode rulebook (see
