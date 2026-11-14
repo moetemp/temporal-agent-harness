@@ -387,10 +387,13 @@ def test_poll_result_decodes_as_poll_messages_output() -> None:
 
 
 def test_poll_result_and_poll_messages_output_have_the_same_wire_fields() -> None:
+    # The mirror stated as a field-set equality, so an added PollResult field is caught
+    # even if no test happens to carry a value for it. ``closed`` and ``next_cursor`` are the
+    # handler's own: a synchronous answer, and the cursor of a temporalio.streams Streams agent.
     poll_result_fields = {f.name for f in dataclasses.fields(PollResult)}
     output_fields = {f.name for f in dataclasses.fields(PollMessagesOutput)}
 
-    assert poll_result_fields == output_fields - {"closed"}
+    assert poll_result_fields == output_fields - {"closed", "next_cursor"}
     assert {f.name for f in dataclasses.fields(_WorkflowStreamWireItem)} == {
         f.name for f in dataclasses.fields(StreamItem)
     }

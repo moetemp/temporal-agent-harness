@@ -8,6 +8,7 @@ py_library(
     visibility = ["//python:__subpackages__"],
     deps = [
         "//python/temporal_agent_harness/harness:agent_client",
+        "//python/temporal_agent_harness/harness:contrib_stream",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "//python/temporal_agent_harness/nexus_agent_adapter/generated:__init__",
         "@pypi//nexus_rpc",

@@ -23,7 +23,7 @@ const meta = () => ({
   turn_number: 1,
   message_id: "msg-1",
   timestamp: 1_700_000_000 + offset,
-  resume_offset: `${offset++}`
+  resume: `${offset++}@c`
 });
 const frame = (event, data) => ({ event, data: { ...meta(), type: event, ...data } });
 const accepted = (handler = "clean") =>

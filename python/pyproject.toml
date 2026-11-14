@@ -26,6 +26,9 @@ classifiers = [
 # pydantic. AI-SDK and external-storage needs are opt-in extras below, so installing the
 # harness doesn't drag in Gemini or boto3.
 dependencies = [
+    # An agent on stream=ContribStream() needs a build with the Streams API in
+    # temporalio.streams (`just install-streams-sdk`). stream=WorkflowStream() runs on this
+    # release range.
     "temporalio>=1.35.0",  # temporalio.contrib.workflow_streams (experimental), readable after the run closes
     "pydantic>=2.12",
     "pyyaml>=6.0",  # reading and writing OKF bundles (code_mode.okf)

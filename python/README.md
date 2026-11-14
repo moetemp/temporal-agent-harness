@@ -474,6 +474,91 @@ The worker declares only its workflows. Adding the plugin brings:
 Order it last, after any AI SDK's plugin, so that SDK's payload converter wins. Registering it
 on the client is enough — Temporal applies a client's plugins to workers built from it.
 
+## Choosing the event stream
+
+Each agent picks where it publishes its turn events, with the required `stream=` of
+`AgentWorkflowRunner`. There's no default, so one deployment can run agents on both kinds.
+`stream=WorkflowStream()` keeps the events in the workflow's own history with
+`temporalio.contrib.workflow_streams`. `stream=ContribStream()` puts them on a Stream of the
+SDK's Streams API, in a Stream Store such as Redis. Any other `StreamBackend` with `open_sink()`
+works too.
+
+```python
+self._runner = AgentWorkflowRunner(config, stream=WorkflowStream(), approval_policy_default=...)
+self._runner = AgentWorkflowRunner(config, stream=ContribStream(), approval_policy_default=...)
+```
+
+A `ContribStream` deployment has the same Stream Store on every client. Workers take their
+client's Stream config, and need nothing else for Streams.
+
+```python
+from temporal_agent_harness.harness.contrib_stream import stream_config_from_env
+
+client = await Client.connect(
+    ..., plugins=[AgentHarnessPlugin()], stream_config=stream_config_from_env()
+)
+```
+
+`stream_config_from_env()` reads `STREAMS_STORE` (`redis` or `memory`), `STREAMS_REDIS_URL`
+and `STREAMS_KEY_PREFIX`. It gives a `StreamConfig` with a `RedisStreamStore`
+(`temporalio.contrib.redis.streams`) or a `MemoryStreamStore` (`temporalio.testing`). With
+`STREAMS_STORE` unset it gives `None`. The web app and the Nexus adapter add the same Store
+when `STREAMS_STORE` is set.
+
+The end of an agent's run closes nothing, and the harness does not close the Stream either. A
+reader of an agent that ended stops once it finds that the agent no longer runs. The Store keeps
+an open Stream until its `last_write_ttl` after the last write. The Store that
+`stream_config_from_env()` gives sets none, so build a Store of your own to set one.
+
+A root agent gives out its Stream's place, in a reply, a subagent or an Activity, only after the
+create of the Stream returned. A status can't wait, so it names the Stream from the start. A
+reader of a Stream that doesn't exist yet waits for it while the agent runs.
+
+Workflow code writes the Stream with the SDK's Stream API (`workflow.create_stream`,
+`workflow.get_stream` and `append`). The SDK runs each call in a Local Activity that the Store
+registers on the Worker. The root's create finds its Stream again on a later run of the chain.
+The Workflow sends one append at a time. Each append takes every event that waits, so a burst of
+events is one append, and the events keep their order. An Activity buffers its events and writes
+them at most `batch_interval` apart, and also when it fails.
+
+`ContribStream` needs an SDK build with the Streams API. `just install-streams-sdk` installs the
+one the harness is tested with. The harness imports the Streams API only for a `ContribStream`
+agent, so an agent on `stream=WorkflowStream()` runs on a released SDK. On a Worker whose client
+has no Store, the root's create fails the run as non-retryable, with the SDK's text of what to
+pass. A client or an Activity with no Store raises the SDK's `StreamConfigError`, a
+`RuntimeError` that says what to pass. The examples pass `stream=WorkflowStream()`. An agent
+written with the TypeScript SDK publishes on Workflow Streams (see
+`typescript/docs/python-parity.md`).
+
+The rest of the harness is the same on both. A client reads an agent through `AgentClient`, the
+web app or the Nexus adapter, and the agent says where it publishes (`AgentStatus.stream`). A
+subagent's answer comes back from the child's `await_message` update, not from its events, so a
+lost event can't lose a subagent's result. Resume points are opaque strings on both.
+
+A subagent publishes where its parent does, whatever its own `stream=` says. On `ContribStream`
+the whole agent tree shares the root's Stream, and a reader keeps one agent's events by their
+`agent_id`. On Workflow Streams each agent has its own log. An agent that continues as new
+passes its Stream on with `workflow.continue_as_new(self._runner.continue_as_new_config(config))`.
+
+| | `ContribStream` | Workflow Streams |
+| --- | --- | --- |
+| What it needs | A Stream Store, the same Store on every process, an SDK build with the Streams API | Temporal only |
+| Where events go | Into the Store, until its `last_write_ttl` after the last write, since nothing closes the Stream | Into each workflow's own log, in its history |
+| Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the Store | Each activity flush is a Signal and each client read an Update, one Action each |
+| History | One Local Activity marker per append, with no event payloads | The Signals and Updates, with their payloads |
+| Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
+| A retried attempt | A reader gets `attempt_superseded` with the offsets of the earlier attempt's records, of an Activity or of a Workflow Task | Its events show twice |
+| A Store outage | On the config of `stream_config_from_env()`, the Local Activity of each Workflow append retries with no limit, and the end of a run waits for its appends. So events come late, and the run can't finish until the Store is back | No Store to fail |
+
+A Nexus caller of `pollMessages` can't apply `attempt_superseded` on `ContribStream`. Each item
+there has `offset` 0, so the caller can't tell which items the event withdraws. The Go driver in
+`nexus/ui_connector/agent` skips the event, so a retried model call shows the text of both
+attempts.
+
+Changing an agent's `stream=` changes its workflow code, so drain or terminate its open sessions
+first, or deploy it with worker versioning. Upgrade the workers before the clients, since the
+client reads `AgentStatus.last_event_seq` and `AgentEvent.seq` from the worker.
+
 
 ## Further reading
 

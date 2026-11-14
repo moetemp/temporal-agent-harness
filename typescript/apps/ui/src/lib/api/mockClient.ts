@@ -172,6 +172,7 @@ export class MockAgentApi implements AgentApi {
       current_turn: 0,
       turn_active: false,
       turn_participants: 0,
+      last_event_seq: 0,
       pending_turns: [],
       pending_approvals: [],
       subagents: [],
@@ -197,7 +198,7 @@ export class MockAgentApi implements AgentApi {
 
   async *attach(
     sessionId: WorkflowId,
-    fromOffset = 0,
+    resume = "",
     signal?: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
     const stream = this.#scenario.streams?.[sessionId] ?? this.#scenario.frames;
@@ -205,6 +206,11 @@ export class MockAgentApi implements AgentApi {
       await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }));
       return;
     }
+    /* The point is opaque, so resuming means finding the frame that has it and starting after
+       that one. An unknown point replays from the beginning, like an empty one on the server. */
+    const answered = this.#answers.findIndex((item) => item.data.resume === resume);
+    const seen = stream.findIndex((item) => item.data.resume === resume);
+    const start = answered !== -1 ? stream.length : seen + 1;
     const instant = this.#scenario.instantFrames ?? 0;
     /* A real server has already made durable everything it streamed before a reload, so it
        replays that at once, flagged, instead of pacing the tail out a second time. */
@@ -212,17 +218,17 @@ export class MockAgentApi implements AgentApi {
     const durable = Number(globalThis.sessionStorage?.getItem(durableKey)) || 0;
     for (const [index, item] of stream.entries()) {
       if (signal?.aborted) return;
-      if (item.data.resume_offset <= fromOffset) continue;
-      const replay = index < instant || item.data.resume_offset <= durable;
+      if (index < start) continue;
+      const replay = index < instant || index < durable;
       /* A backfill lands in network-sized chunks, not one macrotask per frame. */
       if (!replay) await sleep(this.#scenario.liveIntervalMs ?? 40);
       else if (index % 100 === 0) await sleep(0);
       if (signal?.aborted) return;
-      if (!replay) globalThis.sessionStorage?.setItem(durableKey, String(item.data.resume_offset));
+      if (!replay) globalThis.sessionStorage?.setItem(durableKey, String(index + 1));
       yield replay ? ({ ...item, data: { ...item.data, replay: true } } as AgentSseFrame) : item;
     }
     if (!this.#scenario.answersApprovals) return;
-    for (let next = 0; !signal?.aborted; ) {
+    for (let next = answered + 1; !signal?.aborted; ) {
       const item = this.#answers[next];
       if (!item) {
         await new Promise<void>((wake) => {
@@ -232,7 +238,7 @@ export class MockAgentApi implements AgentApi {
         continue;
       }
       next += 1;
-      if (item.data.resume_offset > fromOffset) yield item;
+      yield item;
     }
   }
 
@@ -252,13 +258,12 @@ export class MockAgentApi implements AgentApi {
       turn_number: turn,
       turn_id: `mock-turn-${turn}`,
       message_id: `mock-msg-${turn}`,
-      accepted_offset: 0,
       disposition: "opened"
     };
   }
 
   async *chat(_request: ChatRequest, signal?: AbortSignal): AsyncIterable<AgentSseFrame> {
-    yield* this.attach("agent-session-mock-qa", 0, signal);
+    yield* this.attach("agent-session-mock-qa", "", signal);
   }
 
   async approve(request: ToolApprovalRequest): Promise<ToolApprovalResponse> {

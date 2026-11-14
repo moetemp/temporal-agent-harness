@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Any
+from urllib.parse import unquote
 
 from pydantic import (
     BaseModel,
@@ -634,6 +635,70 @@ class ToolApprovalPolicy(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AgentStream(BaseModel):
+    """Where an agent publishes its turn events on ``ContribStream``.
+
+    Every agent of a tree writes the Stream that its root creates. So one read of the Stream
+    gives the whole tree in one order, and a reader keeps one agent's events by their
+    ``AgentEvent.agent_id``. An agent on Workflow Streams reports no ``AgentStream``. A parent on
+    Workflow Streams gives its subagents one with an empty ``ref``, which keeps them on
+    Workflow Streams too.
+    """
+
+    ref: dict[str, Any] = Field(
+        description="The root agent's Stream, as ``{\"id\": ..., \"store\": ...}``. Empty "
+        "means Workflow Streams."
+    )
+    agent_id: str | None = Field(
+        default=None,
+        description="The agent whose events a reader of this place keeps. ``None`` is a root "
+        "agent found without asking it. Its reader keeps the events of one-segment ids, since a "
+        "top-level agent makes a one-segment id for itself.",
+    )
+    seq: int = Field(
+        default=0,
+        description="How many events the agent has published from workflow code. A run that "
+        "continues as new passes it on, so ``AgentEvent.seq`` keeps counting.",
+    )
+    cursor: str = Field(
+        default="",
+        description="The cursor past the newest record that the agent's run chain wrote. A run "
+        "that continues as new passes it on, so its first send gives a cursor past the earlier "
+        "turns.",
+    )
+
+    def owner(self) -> tuple[str | None, str | None]:
+        """The workflow id and first run id of the root agent's run chain, if known.
+
+        A Stream that a Workflow creates has no owner. So the root agent picks its Stream id as
+        ``<workflow id>:<first run id>:<name>``, with each part percent-encoded, and this reads
+        the first two back.
+        """
+        parts = str(self.ref.get("id", "")).split(":")
+        if len(parts) != 3:
+            return None, None
+        return unquote(parts[0]) or None, unquote(parts[1]) or None
+
+
+class MessageResult(BaseModel):
+    """What ``await_message`` returns once a message's turn has ended.
+
+    The turn ends after the handler, so nothing the message started still runs. Exactly one
+    of ``output`` and ``error`` is set.
+    """
+
+    message_id: str
+    turn_id: str
+    turn_number: int
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    stream_offset: int = Field(
+        default=0,
+        description="On Workflow Streams, the child's stream head just past the turn's "
+        "``turn_end``. The parent passes it on as the next turn's ``from_offset``.",
+    )
+
+
 class AgentConfig(BaseModel):
     """The single, harness-defined input contract every agent workflow accepts.
 
@@ -692,9 +757,8 @@ class AgentConfig(BaseModel):
     this when starting a subagent — pushing down the same ``handle`` it uses to reference the child
     (its own id plus one fresh segment) — so the child's own event stream is labelled with the
     id the parent (and a UI merging the streams) already knows it by. ``None`` → a top-level agent
-    generates its own single-segment id. Besides ``close_after_idle`` (always ``timedelta(0)`` for
-    a subagent), it is the one ``AgentConfig`` field a parent sets per child rather than passing
-    through unchanged.
+    generates its own single-segment id. A parent also sets ``close_after_idle`` (always
+    ``timedelta(0)``) and ``stream`` per child. The other fields pass through unchanged.
 
     ``close_after_idle`` — how long the agent may sit idle (no turn running, nothing queued)
     before the runner closes it, exactly as a ``close`` signal would but with
@@ -703,6 +767,15 @@ class AgentConfig(BaseModel):
     caller switches off an agent's default. Crosses the wire as a number of seconds. A
     subagent never closes on idle: its parent starts it with ``timedelta(0)``, so a child never
     closes under a parent still holding its handle.
+
+    ``stream`` is where a subagent publishes, on its parent's event stream (see
+    :class:`AgentStream`). The parent sets it with ``agent_id``. A run that continues as new
+    passes its own on with ``AgentWorkflowRunner.continue_as_new_config``. ``None`` → the
+    agent's own ``stream=`` choice.
+
+    ``unclaimed_results`` are the results of a parent's messages that the parent had not read
+    when the run continued as new, so the next run still gives them to ``await_message``.
+    ``continue_as_new_config`` sets it.
     """
 
     model_config = ConfigDict(ser_json_temporal="seconds")
@@ -711,6 +784,8 @@ class AgentConfig(BaseModel):
     auto_approval_criteria: AutoApprovalCriteria | None = None
     agent_id: AgentId | None = None
     close_after_idle: timedelta | None = None
+    stream: AgentStream | None = None
+    unclaimed_results: list[MessageResult] = Field(default_factory=list)
 
     @field_validator("close_after_idle")
     @classmethod
@@ -921,6 +996,12 @@ class AgentMessageReply:
     turn's ``turn_started`` offset, which capture-at-acceptance guarantees); the BFF/UI never
     sees or stores it. For a queued message it is the head mid the active prior turn; the
     skip-to-``turn_started`` preamble normalizes that.
+
+    ``accepted_cursor`` is the same read-start hint as an opaque cursor, on both event
+    streams. Workflow code can't read the head of a ``ContribStream`` Stream, so there it's the
+    position past the newest Record that this run knows it wrote.
+
+    ``stream`` is where the agent publishes, or ``None`` on Workflow Streams.
     """
 
     turn_number: int
@@ -928,6 +1009,8 @@ class AgentMessageReply:
     message_id: str
     disposition: MessageDisposition
     accepted_offset: int = 0
+    accepted_cursor: str = ""
+    stream: AgentStream | None = None
 
 
 @dataclass
@@ -1115,6 +1198,11 @@ class AgentStatus:
     # closes — and ``turn_end`` publishes — when this reaches 0, which is what makes
     # ``turn_active`` an honest answer rather than "the first participant is still going".
     turn_participants: int = 0
+    # The ``AgentEvent.seq`` of the newest event the agent published from workflow code. A
+    # stream position can't tell a reader that nothing comes after it, and this count can.
+    last_event_seq: int = 0
+    # Where the agent publishes, or ``None`` on Workflow Streams.
+    stream: AgentStream | None = None
     pending_turns: list[PendingTurn] = field(default_factory=list)
     pending_approvals: list[PendingApproval] = field(default_factory=list)
     # Callback tool calls currently awaiting a client-supplied result (its own machine executes

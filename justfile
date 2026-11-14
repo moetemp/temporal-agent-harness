@@ -53,6 +53,20 @@ gazelle:
 buildifier:
     bazel run //:buildifier
 
+# The temporalio build with the Streams API and its memory and Redis Stream Stores, which
+# ContribStream needs. It's temporalio/sdk-python at this commit of its `moe/streams-api` branch,
+# built with the bridge's `streams-redis` feature. The lock keeps the released temporalio, which
+# Workflow Streams and Bazel use.
+streams_sdk := "git+https://github.com/temporalio/sdk-python@fc6b8d3b3faffdcd044a6ce59056653adecf0f95"
+
+# Install that build into python/.venv (`uv sync` makes it), for ContribStream agents and the
+# STREAMS_STORE test lanes. It compiles the Rust bridge, so it needs cargo and protoc.
+install-streams-sdk:
+    # `--no-deps` keeps the locked packages, so the exact nexus-rpc that this SDK requires goes in
+    # by name.
+    cd "{{python}}" && uv pip install --no-deps --reinstall \
+        -C build-args="--features streams-redis" "temporalio @ {{streams_sdk}}" "nexus-rpc==1.5.0"
+
 # ===== Run ALL example agents behind one UI (each example is still runnable from its own dir) =====
 
 # Start a local Temporal dev server (Web UI: http://localhost:8233; needs the `temporal` CLI).
