@@ -34,7 +34,7 @@ const meta = () => ({
   turn_id: "turn-1",
   turn_number: 1,
   timestamp: 1_700_000_000 + offset,
-  resume_offset: `${offset++}`
+  resume: `${offset++}`
 });
 const frame = (event, data) => ({ event, data: { ...meta(), type: event, ...data } });
 

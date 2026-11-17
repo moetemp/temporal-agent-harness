@@ -27,6 +27,7 @@ const ev = (
   turn_number: turn,
   message_id: null,
   timestamp: 0,
+  seq: null,
   event,
 });
 const ts = (a: string, t: number) => ev(a, t, { type: "turn_started" });

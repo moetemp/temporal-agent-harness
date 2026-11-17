@@ -28,7 +28,6 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -40,7 +39,6 @@ from temporal_agent_harness.harness.agent_client import (
 )
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
-    TURN_EVENTS_TOPIC,
     AgentConfig,
     AgentEvent,
     AgentEventType,
@@ -49,6 +47,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TextMessage,
     TextReply,
 )
+from tests._streams import agent_stream, turn_records
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +95,7 @@ class CallbackProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             # Default: no gate, so the callback mechanics are isolated. The gating-parity test
             # overrides this per session via AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
@@ -169,13 +168,7 @@ async def _send(handle, text: str) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
-    )
+    return turn_records(client, workflow_id)
 
 
 async def _drain_to_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:

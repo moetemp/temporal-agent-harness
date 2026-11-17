@@ -13,7 +13,7 @@ const meta = {
   turn_number: 1,
   message_id: "message-1",
   timestamp: 1,
-  resume_offset: 1,
+  resume: "1@c",
   output_schema: { type: "string" }
 };
 

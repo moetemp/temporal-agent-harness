@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.api.enums.v1 import EventType
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -46,6 +45,7 @@ from temporal_agent_harness.nexus_agent_adapter.generated import (
     StartConfig,
 )
 from temporal_agent_harness.nexus_agent_adapter.handler import AgentServiceHandler, Config
+from tests._streams import STORE, agent_stream
 
 _DEV_SERVER_ARGS = [
     "--dynamic-config-value",
@@ -80,7 +80,7 @@ class ProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -196,11 +196,13 @@ async def test_poll_messages_delivers_the_reply_via_async_callback(env: Workflow
         assert result.turn_number == 1
         assert result.reply == {"text": "echo: hi"}
 
-        # Proves pollMessages completed asynchronously, through its callback.
         history = await handle.fetch_history()
         op_types = {e.event_type for e in history.events}
-        assert EventType.EVENT_TYPE_NEXUS_OPERATION_STARTED in op_types
         assert EventType.EVENT_TYPE_NEXUS_OPERATION_COMPLETED in op_types
+        if STORE is None:
+            # Proves the async callback path was taken, not a sync completion. A poll of an
+            # agent on a Stream reads one batch and answers in the operation's start.
+            assert EventType.EVENT_TYPE_NEXUS_OPERATION_STARTED in op_types
 
 
 class SendOnlyOutput(BaseModel):
@@ -388,7 +390,7 @@ class GatedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.always_require_human_approval(),
         )
 
@@ -632,7 +634,7 @@ class GreetingProbeAgent:
         self._prefix = data.prefix
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 

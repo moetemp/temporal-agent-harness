@@ -28,6 +28,7 @@ harness_pytest_test(
         "//python/temporal_agent_harness:plugin",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "//python/temporal_agent_harness/harness/code_mode:activity_fs",
+        "//python/tests:_streams",
         "//python/tests:conftest",
         "@pypi//pytest",
         "@pypi//pytest_asyncio",

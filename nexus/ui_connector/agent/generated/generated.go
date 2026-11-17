@@ -1444,6 +1444,9 @@ type PollMessagesInput struct {
 	// Cursor Stream offset to read from: streamHeadOffset for a new message, else the
 	// previous call's next_offset
 	Cursor int64 `json:"cursor"`
+	// StreamCursor Opaque cursor of an agent that uses temporalio.common Streams, from
+	// streamCursor or next_cursor. Unset on Workflow Streams, which uses cursor.
+	StreamCursor *string `json:"streamCursor,omitempty"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -1469,7 +1472,7 @@ func (m *PollMessagesInput) UnmarshalJSON(data []byte) error {
 	var errs []Violation
 	for k := range all {
 		switch k {
-		case "sessionId", "cursor":
+		case "sessionId", "cursor", "streamCursor":
 		default:
 			errs = append(errs, Violation{memberPath(k), "unknown field"})
 		}
@@ -1487,6 +1490,9 @@ func (m *PollMessagesInput) UnmarshalJSON(data []byte) error {
 	if v, ok := parseIntegerField(get("cursor"), "cursor", true, false, &errs); ok {
 		m.Cursor = v
 	}
+	if v, ok := parseStringField(get("streamCursor"), "streamCursor", false, false, &errs); ok {
+		m.StreamCursor = &v
+	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
 	}
@@ -1501,6 +1507,9 @@ func (m PollMessagesInput) MarshalJSON() ([]byte, error) {
 	out := map[string]json.RawMessage{}
 	marshalField(out, "sessionId", m.SessionID, &errs)
 	marshalField(out, "cursor", m.Cursor, &errs)
+	if m.StreamCursor != nil {
+		marshalField(out, "streamCursor", *m.StreamCursor, &errs)
+	}
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
 	}
@@ -1517,8 +1526,11 @@ type PollMessagesOutput struct {
 	NextOffset int64 `json:"next_offset"`
 	// MoreReady True when more items are immediately available (the batch was capped)
 	MoreReady bool `json:"more_ready"`
-	// Closed True only when the session had already ended
+	// Closed True only when the session had already ended and the batch has no items
 	Closed *bool `json:"closed,omitempty"`
+	// NextCursor Opaque cursor for the next pollMessages call on temporalio.common
+	// Streams. Unset on Workflow Streams, which uses next_offset.
+	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -1548,7 +1560,7 @@ func (m *PollMessagesOutput) UnmarshalJSON(data []byte) error {
 	var errs []Violation
 	for k := range all {
 		switch k {
-		case "items", "next_offset", "more_ready", "closed":
+		case "items", "next_offset", "more_ready", "closed", "next_cursor":
 		default:
 			errs = append(errs, Violation{memberPath(k), "unknown field"})
 		}
@@ -1594,6 +1606,9 @@ func (m *PollMessagesOutput) UnmarshalJSON(data []byte) error {
 	if v, ok := parseBoolField(get("closed"), "closed", false, false, &errs); ok {
 		m.Closed = &v
 	}
+	if v, ok := parseStringField(get("next_cursor"), "next_cursor", false, false, &errs); ok {
+		m.NextCursor = &v
+	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
 	}
@@ -1615,6 +1630,9 @@ func (m PollMessagesOutput) MarshalJSON() ([]byte, error) {
 	marshalField(out, "more_ready", m.MoreReady, &errs)
 	if m.Closed != nil {
 		marshalField(out, "closed", *m.Closed, &errs)
+	}
+	if m.NextCursor != nil {
+		marshalField(out, "next_cursor", *m.NextCursor, &errs)
 	}
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
@@ -2128,6 +2146,10 @@ type SendMessageOutput struct {
 	// StreamHeadOffset Stream offset when the message was accepted; start the first
 	// pollMessages call here to skip earlier turns
 	StreamHeadOffset int64 `json:"streamHeadOffset"`
+	// StreamCursor Opaque cursor to start the first pollMessages call from, on an agent
+	// that uses temporalio.common Streams. Unset on Workflow Streams, which uses
+	// streamHeadOffset.
+	StreamCursor *string `json:"streamCursor,omitempty"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -2161,7 +2183,7 @@ func (m *SendMessageOutput) UnmarshalJSON(data []byte) error {
 	var errs []Violation
 	for k := range all {
 		switch k {
-		case "turnNumber", "turnId", "messageId", "disposition", "streamHeadOffset":
+		case "turnNumber", "turnId", "messageId", "disposition", "streamHeadOffset", "streamCursor":
 		default:
 			errs = append(errs, Violation{memberPath(k), "unknown field"})
 		}
@@ -2194,6 +2216,9 @@ func (m *SendMessageOutput) UnmarshalJSON(data []byte) error {
 	if v, ok := parseIntegerField(get("streamHeadOffset"), "streamHeadOffset", true, false, &errs); ok {
 		m.StreamHeadOffset = v
 	}
+	if v, ok := parseStringField(get("streamCursor"), "streamCursor", false, false, &errs); ok {
+		m.StreamCursor = &v
+	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
 	}
@@ -2211,6 +2236,9 @@ func (m SendMessageOutput) MarshalJSON() ([]byte, error) {
 	marshalField(out, "messageId", m.MessageID, &errs)
 	marshalField(out, "disposition", m.Disposition, &errs)
 	marshalField(out, "streamHeadOffset", m.StreamHeadOffset, &errs)
+	if m.StreamCursor != nil {
+		marshalField(out, "streamCursor", *m.StreamCursor, &errs)
+	}
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
 	}
@@ -2389,7 +2417,10 @@ type StreamItem struct {
 	// Data base64 of a serialized Temporal Payload whose data is the event's JSON (the
 	// harness's AgentStreamItem)
 	Data string `json:"data"`
-	// Offset Absolute position of this item in the stream
+	// Offset Absolute position of this item in the stream, on Workflow Streams. 0 on
+	// temporalio.common Streams, whose cursor is next_cursor. So a caller can't apply an
+	// attempt_superseded event there, since its withdrawn_offsets name items by offsets
+	// that this field doesn't give
 	Offset int64 `json:"offset"`
 }
 

@@ -164,6 +164,10 @@ class IdleParentAgent:
 @pytest_asyncio.fixture
 async def env_and_queue():
     env = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)
+    if not env.supports_time_skipping:
+        # The Redis lane runs on a dev server, where these idle times pass in real time.
+        await env.shutdown()
+        pytest.skip("needs the time-skipping test server")
     task_queue = f"close-after-idle-{uuid.uuid4()}"
     async with Worker(
         env.client,

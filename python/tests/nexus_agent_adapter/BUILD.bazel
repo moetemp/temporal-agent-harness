@@ -10,6 +10,7 @@ harness_pytest_test(
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
         "//python/temporal_agent_harness/nexus_agent_adapter:handler",
         "//python/temporal_agent_harness/nexus_agent_adapter/generated:__init__",
+        "//python/tests:_streams",
         "//python/tests:conftest",
         "@pypi//pydantic",
         "@pypi//pytest_asyncio",

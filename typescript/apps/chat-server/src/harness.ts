@@ -49,8 +49,8 @@ export interface MessageAccepted {
   turn_number: number;
   /** `opened` a new turn, `joined` the running one, or `queued` behind it. */
   disposition: 'opened' | 'joined' | 'queued';
-  /** Stream offset captured at acceptance: where to start reading to catch this dispatch. */
-  accepted_offset: number;
+  /** The opaque point captured at acceptance: where to start reading to catch this dispatch. */
+  resume: string;
 }
 
 export interface AgentStatus {
@@ -179,14 +179,15 @@ export class HarnessClient {
     }
   }
 
-  /** Attach to the session's event stream from `fromOffset`. */
+  /** Attach to the session's event stream after `resume`, an opaque point that a frame gave
+   *  (empty for the beginning). */
   async *attach(
     sessionId: string,
-    fromOffset: number,
+    resume: string,
   ): AsyncGenerator<{ event: string; data: Record<string, unknown> }> {
     const url = new URL('/api/attach', this.baseUrl);
     url.searchParams.set('session_id', sessionId);
-    url.searchParams.set('from_offset', String(fromOffset));
+    url.searchParams.set('resume', resume);
 
     const response = await fetch(url, { headers: { accept: 'text/event-stream' } });
     if (!response.ok || !response.body) throw new Error(`attach ${sessionId} -> ${response.status}`);

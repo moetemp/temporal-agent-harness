@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -13,7 +15,12 @@ from nexusrpc import HandlerError, HandlerErrorType
 from nexusrpc.handler import StartOperationContext, service_handler, sync_operation
 from pydantic import JsonValue, ValidationError
 from temporalio import nexus
-from temporalio.client import Client, WorkflowUpdateStage
+from temporalio.client import (
+    Client,
+    WorkflowExecutionStatus,
+    WorkflowQueryFailedError,
+    WorkflowUpdateStage,
+)
 from temporalio.contrib.workflow_streams import PollInput
 from temporalio.exceptions import ApplicationError
 from temporalio.service import RPCError, RPCStatusCode
@@ -27,6 +34,7 @@ from temporal_agent_harness.harness.agent_client import (
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentConfig,
+    AgentStream,
     AutoApprovalCriteria,
     PendingApproval,
     PendingCallback,
@@ -61,6 +69,7 @@ from temporal_agent_harness.nexus_agent_adapter.generated import (
     SendAgentMessageInput,
     SendMessageOutput,
     StartConfig,
+    StreamItem,
     SubagentInfo as NexusSubagentInfo,
 )
 from temporal_agent_harness.nexus_agent_adapter.generated import AgentService as AgentServiceDefinition
@@ -76,6 +85,15 @@ _CLOSE_SIGNAL = "close"
 
 # The ApplicationError type behind sendAgentMessage's BAD_REQUEST when the agent is busy.
 _MID_TURN_REJECTED = "MidTurnRejected"
+
+# A poll of a ContribStream agent is answered in the operation's start, so one call
+# has to answer well inside the operation's own deadline. A caller wanting to wait longer polls
+# again.
+_MAX_STREAM_POLL_SECONDS = 8.0
+_STREAM_POLL_BATCH_LIMIT = 100
+# Once one event has arrived, the poll gathers the events after it within this window and then
+# answers, so the caller doesn't wait for the whole timeout.
+_STREAM_POLL_BATCH_GRACE_SECONDS = 0.05
 
 
 def _is_workflow_already_completed(exc: Exception) -> bool:
@@ -237,6 +255,9 @@ class AgentServiceHandler:
             message_id=reply.message_id,
             disposition=reply.disposition.value,
             stream_head_offset=reply.accepted_offset,
+            # A caller starts its first poll here, so a turn's poll skips the session's earlier
+            # turns on either event stream.
+            stream_cursor=reply.accepted_cursor if reply.stream is not None else None,
         )
 
     @sync_operation
@@ -340,13 +361,23 @@ class AgentServiceHandler:
         client: nexus.TemporalNexusClient,
         input: PollMessagesInput,
     ) -> nexus.TemporalOperationResult[PollMessagesOutput]:
-        """Attaches to WorkflowStream's poll update with a completion callback, so the
-        update's result completes the operation. Returns closed=True synchronously when the
-        target workflow has already completed.
+        """Long-polls the agent's turn events after the caller's cursor.
+
+        On Workflow Streams it attaches to WorkflowStream's poll update with a completion
+        callback, so the update's result completes the operation. It returns closed=True
+        synchronously when the target workflow has already completed. On ``ContribStream`` it
+        reads one batch from the Stream and answers synchronously, with an opaque
+        ``next_cursor``.
         """
+        workflow_id = self._workflow_id(input.session_id)
+        place = await self._stream_place(workflow_id, input)
+        if place is not None:
+            return nexus.TemporalOperationResult.sync(
+                await self._poll_stream(workflow_id, place, input)
+            )
         try:
             return await client.start_workflow_update(
-                self._workflow_id(input.session_id),
+                workflow_id,
                 _WORKFLOW_STREAM_POLL_UPDATE,
                 PollInput(from_offset=input.cursor, topics=[TURN_EVENTS_TOPIC]),
                 wait_for_stage=WorkflowUpdateStage.ACCEPTED,
@@ -360,3 +391,128 @@ class AgentServiceHandler:
                     items=[], more_ready=False, next_offset=input.cursor, closed=True
                 )
             )
+
+    async def _stream_place(
+        self, workflow_id: str, input: PollMessagesInput
+    ) -> AgentStream | None:
+        """Where the agent publishes on ``ContribStream``, or ``None``.
+
+        A Workflow Streams caller past its first poll has an offset and no stream cursor, so
+        it costs no query.
+        """
+        if not input.stream_cursor and input.cursor:
+            return None
+        try:
+            status = await AgentClient(self._client, workflow_id).get_status()
+        except RPCError as e:
+            # The Workflow Streams path answers for a workflow that is gone.
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return None
+            return await self._closed_place(workflow_id, input, e)
+        except WorkflowQueryFailedError as e:
+            # A closed workflow whose code has no status query fails it on replay.
+            return await self._closed_place(workflow_id, input, e)
+        return status.stream
+
+    async def _closed_place(
+        self, workflow_id: str, input: PollMessagesInput, error: Exception
+    ) -> AgentStream | None:
+        """The place of an agent whose status query failed, which a closed one can do when no
+        worker runs its code any more. ``error`` is raised for a running one.
+
+        A caller with a stream cursor reads a Stream, and its tail is still there. Any other
+        caller goes to the Workflow Streams path, which answers for a closed workflow.
+        """
+        try:
+            description = await self._client.get_workflow_handle(workflow_id).describe()
+        except RPCError as e:
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return None
+            raise
+        if description.status == WorkflowExecutionStatus.RUNNING:
+            raise error
+        if not input.stream_cursor:
+            return None
+        from temporal_agent_harness.harness import contrib_stream
+
+        info = description.raw_description.workflow_execution_info
+        return contrib_stream.root_place(self._client, workflow_id, info.first_run_id)
+
+    async def _poll_stream(
+        self,
+        workflow_id: str,
+        place: AgentStream,
+        input: PollMessagesInput,
+        timeout: float = _MAX_STREAM_POLL_SECONDS,
+    ) -> PollMessagesOutput:
+        """One batch of the agent's own turn events after ``input.stream_cursor``.
+
+        ``closed`` is set only on a batch with no items, so a caller that stops at ``closed``
+        never drops the last events of an agent that finished. A read that gets no item asks
+        whether the agent still runs, since the end of a run closes nothing on Redis or
+        memory.
+        """
+        from temporal_agent_harness.harness import contrib_stream
+
+        converter = self._client.data_converter.payload_converter
+        items: list[StreamItem] = []
+        cursor = input.stream_cursor or ""
+        more_ready = False
+        ended = False
+
+        def moved(position: str) -> None:
+            # The cursor of a batch with no item is past the records that the batch skipped.
+            nonlocal cursor
+            cursor = position
+
+        events = contrib_stream.read_turn_events(
+            self._client, place, workflow_id=workflow_id, after=cursor, on_cursor=moved
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            async with asyncio.timeout_at(deadline) as window:
+                async for item in events:
+                    payload = converter.to_payloads([item.event])[0]
+                    cursor = item.cursor
+                    items.append(
+                        StreamItem(
+                            topic=TURN_EVENTS_TOPIC,
+                            data=base64.b64encode(payload.SerializeToString()).decode("ascii"),
+                            # Workflow Streams only. The cursor of a Stream is ``next_cursor``.
+                            offset=0,
+                        )
+                    )
+                    if len(items) >= _STREAM_POLL_BATCH_LIMIT:
+                        more_ready = True
+                        break
+                    window.reschedule(
+                        min(deadline, loop.time() + _STREAM_POLL_BATCH_GRACE_SECONDS)
+                    )
+                else:
+                    ended = True
+        except TimeoutError:
+            pass
+        except contrib_stream.TurnCursorError as e:
+            # The cursor is not a position, which is the caller's mistake.
+            raise HandlerError(str(e), type=HandlerErrorType.BAD_REQUEST) from e
+        finally:
+            await events.aclose()
+        closed = not items and (ended or not await self._running(workflow_id))
+        return PollMessagesOutput(
+            items=items,
+            more_ready=more_ready,
+            next_offset=input.cursor,
+            closed=closed,
+            next_cursor=cursor,
+        )
+
+    async def _running(self, workflow_id: str) -> bool:
+        try:
+            description = await self._client.get_workflow_handle(workflow_id).describe()
+        except RPCError as e:
+            # Only a workflow that is gone is not running. Another error tells nothing about it.
+            if e.status == RPCStatusCode.NOT_FOUND:
+                return False
+            raise
+        return description.status == WorkflowExecutionStatus.RUNNING

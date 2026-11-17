@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.service import RPCError, RPCStatusCode
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent
@@ -47,6 +46,7 @@ from temporal_agent_harness.web.session_manager import (
     Session,
     SessionManagerWorkflow,
 )
+from tests._streams import agent_stream
 
 
 class Brief(BaseModel):
@@ -61,7 +61,7 @@ class BriefedAgent:
     def __init__(self, config: AgentConfig, brief: Brief) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 

@@ -11,6 +11,7 @@ harness_pytest_test(
         "//python/temporal_agent_harness/harness:agent_client",
         "//python/temporal_agent_harness/harness:agent_workflow",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
+        "//python/tests:_streams",
         "//python/tests:conftest",
         "@pypi//httpx2",
         "@pypi//pydantic",

@@ -9,6 +9,7 @@ harness_pytest_test(
         "//python/temporal_agent_harness:plugin",
         "//python/temporal_agent_harness/ai_sdks:typesafe_harness",
         "//python/temporal_agent_harness/harness/agent_protocol:__init__",
+        "//python/tests:_streams",
         "//python/tests:conftest",
         "@pypi//httpx2",
         "@pypi//pytest",

@@ -40,6 +40,15 @@ func derefOrZero[T any](p *T) T {
 
 func ptr[T any](v T) *T { return &v }
 
+// optional is nil for the zero value, so an unset field stays off the wire.
+func optional[T comparable](v T) *T {
+	var zero T
+	if v == zero {
+		return nil
+	}
+	return &v
+}
+
 // streamItem matches the turn event payload written by WorkflowStream._log.
 type streamItem struct {
 	TurnID     string    `json:"turn_id"`
@@ -256,6 +265,9 @@ type turnHandle struct {
 	// turn shows only its own events.
 	MessageID string `json:"messageId,omitempty"`
 	Cursor    int64  `json:"cursor"`
+	// StreamCursor is the cursor of an agent on temporalio.common Streams, whose offsets
+	// do not fit the integer cursor. Empty on Workflow Streams.
+	StreamCursor string `json:"streamCursor,omitempty"`
 }
 
 const noSessionReply = "No agent session exists yet. Send a chat message first; then use /help to list supported requests."
@@ -437,10 +449,11 @@ func startHandler(ctx workflow.Context, c workflow.NexusClient, sessionID, msgTy
 		return router.Start{}, err
 	}
 	handle, err := json.Marshal(turnHandle{
-		SessionID:  sessionID,
-		TurnNumber: sendOut.TurnNumber,
-		MessageID:  sendOut.MessageID,
-		Cursor:     sendOut.StreamHeadOffset,
+		SessionID:    sessionID,
+		TurnNumber:   sendOut.TurnNumber,
+		MessageID:    sendOut.MessageID,
+		Cursor:       sendOut.StreamHeadOffset,
+		StreamCursor: derefOrZero(sendOut.StreamCursor),
 	})
 	if err != nil {
 		return router.Start{}, err
@@ -478,15 +491,15 @@ func (d *Driver) Poll(ctx workflow.Context, handle router.Handle) (router.Poll, 
 	}
 	var pollOut harnessgen.PollMessagesOutput
 	if err := d.client().ExecuteOperation(ctx, harnessgen.AgentService.PollMessages,
-		harnessgen.PollMessagesInput{SessionID: h.SessionID, Cursor: h.Cursor},
+		harnessgen.PollMessagesInput{
+			SessionID:    h.SessionID,
+			Cursor:       h.Cursor,
+			StreamCursor: optional(h.StreamCursor),
+		},
 		workflow.NexusOperationOptions{ScheduleToCloseTimeout: 120 * time.Second},
 	).Get(ctx, &pollOut); err != nil {
 		return router.Poll{}, err
 	}
-	if derefOrZero(pollOut.Closed) {
-		return router.Poll{Done: true}, nil
-	}
-
 	messageScoped := h.MessageID != ""
 	var events []protocol.Event
 	for _, item := range pollOut.Items {
@@ -516,7 +529,15 @@ func (d *Driver) Poll(ctx workflow.Context, handle router.Handle) (router.Poll, 
 		}
 	}
 
+	// The items are sent before the close, since a batch may have the last events of an agent
+	// that just finished.
+	if derefOrZero(pollOut.Closed) {
+		return router.Poll{Events: events, Done: true}, nil
+	}
 	h.Cursor = pollOut.NextOffset
+	if pollOut.NextCursor != nil {
+		h.StreamCursor = *pollOut.NextCursor
+	}
 	next, err := json.Marshal(h)
 	if err != nil {
 		return router.Poll{}, err

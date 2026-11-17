@@ -20,6 +20,7 @@ const ev = (event: AgentStreamItem): AgentEvent => ({
   turn_number: 1,
   message_id: null,
   timestamp: 0,
+  seq: null,
   event,
 });
 

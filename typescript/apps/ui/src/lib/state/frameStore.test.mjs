@@ -15,12 +15,12 @@ import {
 
 const { stores, options } = installFakeIndexedDb();
 
-const frame = (offset) => ({ event: "reply_delta", data: { resume_offset: offset } });
+const frame = (offset) => ({ event: "reply_delta", data: { resume: `${offset}@c` } });
 const run = (runKey, over = {}) => ({
   runKey,
   workflowId: runKey.split("|")[0],
-  lastResumeOffset: 1,
-  offsets: {},
+  lastResume: "1@c",
+  resumes: {},
   count: 1,
   lastAccess: Date.now(),
   ...over
@@ -151,8 +151,8 @@ describe("frameStore reads", () => {
     await appendRunFrames(run("wf-count|1", { count: 2 }), 0, [frame(1), frame(2)]);
     await appendRunFrames(run("wf-count|1", { count: 2 }), 2, [frame(3)]);
     assert.deepEqual(
-      (await readRun("wf-count|1"))?.frames.map((f) => f.data.resume_offset),
-      [1, 2]
+      (await readRun("wf-count|1"))?.frames.map((f) => f.data.resume),
+      ["1@c", "2@c"]
     );
   });
 });

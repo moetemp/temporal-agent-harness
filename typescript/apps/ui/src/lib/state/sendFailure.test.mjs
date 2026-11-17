@@ -49,7 +49,6 @@ describe("a failed send", () => {
       turn_number: 1,
       turn_id: "t1",
       message_id: "m1",
-      accepted_offset: 0,
       disposition: "opened"
     }));
     assert.equal(await controller.sendMessage({ type: "ask", payload: { text: "hi" } }), true);

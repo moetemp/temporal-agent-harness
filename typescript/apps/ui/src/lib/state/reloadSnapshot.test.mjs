@@ -31,8 +31,9 @@ function api(frames) {
     async workflowStatus(workflowId) {
       return { workflow_id: workflowId, execution_status: "RUNNING", closed: false };
     },
-    async *attach(_id, fromOffset, signal) {
-      for (const frame of frames) if (frame.data.resume_offset > fromOffset) yield frame;
+    async *attach(_id, resume, signal) {
+      const seen = frames.findIndex((frame) => frame.data.resume === resume);
+      for (const frame of frames.slice(seen + 1)) yield frame;
       await new Promise((resolve) => signal?.addEventListener("abort", resolve));
     }
   };
@@ -94,7 +95,7 @@ describe("the reload snapshot", () => {
         turn_number: 1,
         message_id: "m1",
         timestamp: offset,
-        resume_offset: offset,
+        resume: `${offset}@c`,
         event_offset: offset - 1,
         delta: `#${offset} `,
         replay: false
@@ -103,8 +104,8 @@ describe("the reload snapshot", () => {
     const record = {
       runKey: runKeyOf(stored),
       workflowId: stored.workflow_id,
-      lastResumeOffset: 3,
-      offsets: {},
+      lastResume: "3@c",
+      resumes: {},
       count: 3,
       lastAccess: Date.now()
     };
@@ -126,8 +127,8 @@ describe("the reload snapshot", () => {
       async agentStatus() {
         return { turn_active: false, pending_turns: [], current_turn: 1 };
       },
-      async *attach(_id, fromOffset) {
-        attachedFrom.push(fromOffset);
+      async *attach(_id, resume) {
+        attachedFrom.push(resume);
       }
     });
     controller.idlePollMs = 0;
@@ -135,7 +136,7 @@ describe("the reload snapshot", () => {
 
     await waitFor("the stored frames", () => controller.frames.length === 3);
     await waitFor("the stream", () => attachedFrom.length === 1);
-    assert.equal(attachedFrom[0], 3, "the stream resumes past what was restored");
+    assert.equal(attachedFrom[0], "3@c", "the stream resumes past what was restored");
     await waitFor("the stream to go idle", () => !controller.connecting);
     assert.equal(controller.connectingSince, null);
   });
@@ -153,7 +154,7 @@ describe("the reload snapshot", () => {
         turn_number: 1,
         message_id: `m-${workflowId}`,
         timestamp: offset,
-        resume_offset: offset,
+        resume: `${offset}@c`,
         event_offset: offset - 1,
         text,
         replay: false
@@ -166,8 +167,8 @@ describe("the reload snapshot", () => {
         {
           runKey: runKeyOf(row),
           workflowId: row.workflow_id,
-          lastResumeOffset: 1,
-          offsets: {},
+          lastResume: "1@c",
+          resumes: {},
           count: 1,
           lastAccess: Date.now()
         },

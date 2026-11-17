@@ -13,7 +13,7 @@ const meta = {
   turn_id: "turn-1",
   turn_number: 1,
   timestamp: 1_700_000_000,
-  resume_offset: 0
+  resume: "0@c"
 };
 
 const log = buildReplayLog([

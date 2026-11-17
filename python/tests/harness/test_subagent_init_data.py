@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import Client, WorkflowFailureError, WorkflowHandle
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -33,6 +32,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     TextReply,
     ToolApprovalPolicy,
 )
+from tests._streams import agent_stream
 
 
 class Trip(BaseModel):
@@ -47,7 +47,7 @@ class TripPlannerChild:
     def __init__(self, config: AgentConfig, data: Trip | None = None) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._trip = data
@@ -68,7 +68,7 @@ class RequiredTripPlannerChild:
     def __init__(self, config: AgentConfig, data: Trip) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._trip = data
@@ -89,7 +89,7 @@ class UntypedChild:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -142,7 +142,7 @@ class PlannerParent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
+            stream=agent_stream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
         self._next_traveler = ""

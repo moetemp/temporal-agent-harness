@@ -7,6 +7,7 @@
 # (TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, ...), with the harness's data converter.
 # Env vars: AGENT_WORKFLOW_NAME (required), AGENT_WORKFLOW_ID_PREFIX, AGENT_TASK_QUEUE,
 # NEXUS_AGENT_TASK_QUEUE — see the defaults below.
+# STREAMS_STORE and the variables beside it give the Stream Store of ContribStream agents.
 
 from __future__ import annotations
 
