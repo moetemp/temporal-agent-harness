@@ -125,7 +125,7 @@ def stream_config_from_env() -> StreamConfig | None:
 
     The config's ``workflow_call_options`` retry each Stream call of Workflow code with no
     limit, with a 60 second timeout for each attempt. So a Store outage holds the run until the
-    Store is back, and loses no event. The Redis Store sets no ``last_write_ttl``, so it keeps
+    Store is back, and loses no event. The Redis Store sets no ``producer_idle_ttl``, so it keeps
     an idle session's Stream. Build a Store of your own to set one.
     """
     global _memory
@@ -158,7 +158,7 @@ class ContribStream(StreamBackend):
     tree's Stream on the Worker's Store, and its subagents publish there too, whatever their
     own ``stream=`` says. The Worker's client needs a Redis or memory Stream Store, such as
     the one ``stream_config_from_env`` gives. The harness never closes the Stream, so the
-    Store keeps every Record until its ``last_write_ttl`` after the last write, or for good
+    Store keeps every Record until its ``producer_idle_ttl`` after the last write, or for good
     with none. Its Retention, which counts from a close, doesn't apply.
     """
 
@@ -316,7 +316,7 @@ def open_root() -> ContribSink:
 
     Nothing closes the Stream. The end of the run chain closes nothing, and the harness never
     closes it, so an idle session keeps its Stream. The Store deletes an open Stream after its
-    ``last_write_ttl`` with no write, if it sets one. A reader checks whether the run has ended.
+    ``producer_idle_ttl`` with no write, if it sets one. A reader checks whether the run has ended.
     """
     info = workflow.info()
     sink = ContribSink(None, None)

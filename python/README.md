@@ -507,7 +507,7 @@ when `STREAMS_STORE` is set.
 
 The end of an agent's run closes nothing, and the harness does not close the Stream either. A
 reader of an agent that ended stops once it finds that the agent no longer runs. The Store keeps
-an open Stream until its `last_write_ttl` after the last write. The Store that
+an open Stream until its `producer_idle_ttl` after the last write. The Store that
 `stream_config_from_env()` gives sets none, so build a Store of your own to set one.
 
 A root agent gives out its Stream's place, in a reply, a subagent or an Activity, only after the
@@ -543,7 +543,7 @@ passes its Stream on with `workflow.continue_as_new(self._runner.continue_as_new
 | | `ContribStream` | Workflow Streams |
 | --- | --- | --- |
 | What it needs | A Stream Store, the same Store on every process, an SDK build with the Streams API | Temporal only |
-| Where events go | Into the Store, until its `last_write_ttl` after the last write, since nothing closes the Stream | Into each workflow's own log, in its history |
+| Where events go | Into the Store, until its `producer_idle_ttl` after the last write, since nothing closes the Stream | Into each workflow's own log, in its history |
 | Temporal Cloud Actions | All Local Activity writes of one Workflow Task count as one Action, and each Workflow Task heartbeat adds one. Activity writes and client reads go to the Store | Each activity flush is a Signal and each client read an Update, one Action each |
 | History | One Local Activity marker per append, with no event payloads | The Signals and Updates, with their payloads |
 | Subagents | One Stream per tree in one order. A resume point advances on every event | One stream per agent, which the client merges. A resume point advances on root events only |
